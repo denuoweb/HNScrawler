@@ -67,6 +67,8 @@ Latest live-check result per name.
 - `checked_at`
 - `next_check_at`
 
+`https_status = tls_unverified` means the TLS connection completed only when WebPKI verification was disabled for certificate capture. It is not automatically a failure if `dane_status = valid`.
+
 ## `provider_summary`
 
 Materialized provider counts for site generation.

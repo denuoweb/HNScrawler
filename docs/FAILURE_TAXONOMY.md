@@ -16,10 +16,9 @@ Failure reasons are stable lowercase identifiers. They should not be renamed cas
 | `tlsa_wrong_owner` | TLSA data exists under an owner name that does not match the checked endpoint. |
 | `stale_tlsa_spki_mismatch` | TLSA association data no longer matches the HTTPS certificate or SPKI. |
 | `https_connect_failed` | TCP/TLS connection to HTTPS failed. |
-| `certificate_mismatch` | HTTPS certificate identity did not match the requested name where PKIX was required. |
+| `certificate_mismatch` | HTTPS connected but WebPKI certificate validation failed and no matching TLSA record cleared the failure. |
 | `doh_fallback_only` | Name appears to work only through a fallback resolver path. |
 | `malformed_resource` | HNS resource data could not be decoded into expected records. |
 | `unknown_error` | The checker failed in a way that needs a narrower taxonomy entry. |
 
 New failure reasons should be added only when they change user-facing diagnosis or materially improve analysis.
-

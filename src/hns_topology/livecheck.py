@@ -100,6 +100,7 @@ def check_name(row: dict, config: LiveCheckConfig, limiter: RateLimiter) -> Live
         resolver.nameservers = [config.resolver]
 
     try:
+        limiter.wait()
         addresses = sorted(set(_configured_addresses(row) + _resolve_addresses(resolver, name)))
         if not addresses:
             failure_reason = "no_a_or_aaaa"
@@ -109,17 +110,21 @@ def check_name(row: dict, config: LiveCheckConfig, limiter: RateLimiter) -> Live
             strict_hns_status = "candidate"
             https_result = _https_connect(name, addresses[0], config.timeout)
             https_status = https_result.status
-            if https_result.status != "working":
-                failure_reason = "https_connect_failed"
+            failure_reason = https_result.failure_reason
             tlsa_records = _resolve_tlsa(resolver, name)
             if tlsa_records:
                 tlsa_status = "present"
                 if https_result.cert_der and _match_any_tlsa(https_result.cert_der, tlsa_records):
                     dane_status = "valid"
                     strict_hns_status = "working"
+                    failure_reason = None
                 else:
                     dane_status = "invalid"
-                    failure_reason = "stale_tlsa_spki_mismatch"
+                    failure_reason = (
+                        "stale_tlsa_spki_mismatch"
+                        if https_result.cert_der
+                        else "https_connect_failed"
+                    )
             else:
                 tlsa_status = "missing"
                 if failure_reason is None:
@@ -183,18 +188,53 @@ def _resolve_tlsa(resolver: dns.resolver.Resolver, name: str) -> list[tuple[int,
 class HttpsResult:
     status: str
     cert_der: bytes | None
+    failure_reason: str | None = None
 
 
 def _https_connect(hostname: str, address: str, timeout: float) -> HttpsResult:
-    context = ssl.create_default_context()
+    verified_context = ssl.create_default_context()
     try:
-        with (
-            socket.create_connection((address, 443), timeout=timeout) as sock,
-            context.wrap_socket(sock, server_hostname=hostname) as tls,
-        ):
-            return HttpsResult("working", tls.getpeercert(binary_form=True))
+        return _tls_connect(
+            hostname,
+            address,
+            timeout,
+            verified_context,
+            status="working",
+            failure_reason=None,
+        )
+    except ssl.SSLCertVerificationError:
+        unverified_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        unverified_context.check_hostname = False
+        unverified_context.verify_mode = ssl.CERT_NONE
+        try:
+            return _tls_connect(
+                hostname,
+                address,
+                timeout,
+                unverified_context,
+                status="tls_unverified",
+                failure_reason="certificate_mismatch",
+            )
+        except Exception:
+            return HttpsResult("failed", None, "https_connect_failed")
     except Exception:
-        return HttpsResult("failed", None)
+        return HttpsResult("failed", None, "https_connect_failed")
+
+
+def _tls_connect(
+    hostname: str,
+    address: str,
+    timeout: float,
+    context: ssl.SSLContext,
+    *,
+    status: str,
+    failure_reason: str | None,
+) -> HttpsResult:
+    with (
+        socket.create_connection((address, 443), timeout=timeout) as sock,
+        context.wrap_socket(sock, server_hostname=hostname) as tls,
+    ):
+        return HttpsResult(status, tls.getpeercert(binary_form=True), failure_reason)
 
 
 def _match_any_tlsa(cert_der: bytes, records: Iterable[tuple[int, int, int, bytes]]) -> bool:

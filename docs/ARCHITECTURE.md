@@ -79,3 +79,5 @@ Live checks are intentionally limited to promising names:
 - user-submitted names, once that queue exists
 
 Checks are rate-limited and store only status metadata.
+
+HTTPS certificate capture is independent from WebPKI validation. The checker first tries a normal verified TLS connection. If WebPKI validation fails, it retries with certificate verification disabled only to capture the peer certificate/SPKI for TLSA matching. A matching TLSA record can therefore produce `dane_status = valid` even when `https_status = tls_unverified`.
