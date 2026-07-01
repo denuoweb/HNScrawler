@@ -122,6 +122,11 @@ function snapshot(summary) {
   </section>`;
 }
 
+function liveCheckMeta(summary) {
+  if (!summary.live_check_started_at) return "";
+  return `<p class="meta">Live checks ${fmt.format(summary.live_check_checked_count ?? 0)} of ${fmt.format(summary.live_check_candidate_count ?? 0)} due · concurrency ${fmt.format(summary.live_check_concurrency ?? 0)} · delay ${fmt.format(summary.live_check_min_delay_ms ?? 0)}ms · timeout ${summary.live_check_timeout_seconds ?? ""}s</p>`;
+}
+
 async function renderOverview(app) {
   const [summary, providers, classes, broken] = await Promise.all([
     loadJson("data/summary.json"),
@@ -142,7 +147,8 @@ async function renderOverview(app) {
         <a href="data/topology.sqlite.gz">topology.sqlite.gz</a>
         <a href="data/manifest.json">manifest.json</a>
       </div><p class="meta">Height ${summary.last_indexed_height ?? ""} generated ${summary.generated_at ?? ""}</p>
-      <p class="meta">Source ${escapeHtml(summary.source_type || "unknown")} · rules v${summary.provider_rules_version ?? ""} ${escapeHtml((summary.provider_rules_hash || "").slice(0, 12))}</p></article>
+      <p class="meta">Source ${escapeHtml(summary.source_type || "unknown")} · rules v${summary.provider_rules_version ?? ""} ${escapeHtml((summary.provider_rules_hash || "").slice(0, 12))}</p>
+      ${liveCheckMeta(summary)}</article>
     </section>`;
 }
 

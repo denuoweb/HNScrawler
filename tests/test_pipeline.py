@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from hns_topology.db import connect
+from hns_topology.db import connect, set_meta, upsert_live_status
 from hns_topology.exporter import build_faq_answers, build_summary
 from hns_topology.indexer import (
     UnpaginatedGetNamesError,
@@ -13,6 +13,7 @@ from hns_topology.indexer import (
     index_changed_names,
     rollback_reorg,
 )
+from hns_topology.models import LiveStatus
 from hns_topology.provider_rules import ProviderRules
 from hns_topology.site_generator import generate_site
 from hns_topology.validator import release_is_valid, validate_public_release, validate_release
@@ -212,6 +213,41 @@ def test_release_validator_enforces_live_check_gate(tmp_path):
     failed = {check.name: check.detail for check in checks if not check.ok}
     assert "live_status_present" in failed
     assert "live_check_timestamps" in failed
+
+
+def test_release_validator_requires_live_check_run_metadata(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    out = tmp_path / "public"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+        upsert_live_status(
+            conn,
+            LiveStatus(
+                name="direct",
+                dns_reachable="reachable",
+                dnssec_status="not_delegated",
+                tlsa_status="missing",
+                dane_status="unknown",
+                https_status="working",
+                strict_hns_status="working",
+                doh_fallback_status="not_required",
+                failure_reason=None,
+                checked_at="2026-01-01T00:00:00Z",
+                next_check_at="2026-01-08T00:00:00Z",
+            ),
+        )
+        set_meta(conn, "live_check_started_at", "2026-01-01T00:00:00Z")
+        set_meta(conn, "live_check_finished_at", "2026-01-01T00:01:00Z")
+        conn.commit()
+        generate_site(conn, db_path=db_path, out_dir=out)
+
+    checks = validate_release(db_path=db_path, public_dir=out, require_live_checks=True)
+
+    assert not release_is_valid(checks)
+    failed = {check.name: check.detail for check in checks if not check.ok}
+    assert "live_check_config" in failed
+    assert "live_check_counts" in failed
 
 
 def test_release_validators_enforce_min_indexed_height(tmp_path):

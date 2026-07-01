@@ -61,6 +61,22 @@ def run_live_checks(conn, *, limit: int | None, config: LiveCheckConfig) -> int:
     return checked
 
 
+def count_live_check_candidates(conn) -> int:
+    class_placeholders = ",".join("?" for _ in PROMISING_CLASSES)
+    sql = f"""
+      SELECT COUNT(*)
+      FROM names n
+      JOIN resource_summary rs ON rs.name = n.name
+      LEFT JOIN live_status ls ON ls.name = n.name
+      WHERE n.expired = 0
+        AND n.onchain_class IN ({class_placeholders})
+        AND (ls.next_check_at IS NULL OR ls.next_check_at <= ?)
+    """
+    params: list = [*sorted(PROMISING_CLASSES), utc_now()]
+    row = conn.execute(sql, params).fetchone()
+    return int(row[0] if row else 0)
+
+
 def select_live_check_candidates(conn, *, limit: int | None) -> list[dict]:
     class_placeholders = ",".join("?" for _ in PROMISING_CLASSES)
     sql = f"""

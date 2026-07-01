@@ -170,6 +170,14 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
         "stale_tlsa_only": stale_tlsa,
         "live_check_started_at": get_meta(conn, "live_check_started_at", ""),
         "live_check_finished_at": get_meta(conn, "live_check_finished_at", ""),
+        "live_check_limit": get_meta(conn, "live_check_limit", ""),
+        "live_check_candidate_count": _meta_int(conn, "live_check_candidate_count"),
+        "live_check_checked_count": _meta_int(conn, "live_check_checked_count"),
+        "live_check_concurrency": _meta_int(conn, "live_check_concurrency"),
+        "live_check_min_delay_ms": _meta_int(conn, "live_check_min_delay_ms"),
+        "live_check_timeout_seconds": _meta_float(conn, "live_check_timeout_seconds"),
+        "live_check_recheck_seconds": _meta_int(conn, "live_check_recheck_seconds"),
+        "live_check_resolver": get_meta(conn, "live_check_resolver", ""),
     }
 
 
@@ -505,5 +513,15 @@ def _meta_int(conn: sqlite3.Connection, key: str) -> int | None:
         return None
     try:
         return int(value)
+    except ValueError:
+        return None
+
+
+def _meta_float(conn: sqlite3.Connection, key: str) -> float | None:
+    value = get_meta(conn, key)
+    if value is None:
+        return None
+    try:
+        return float(value)
     except ValueError:
         return None

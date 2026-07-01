@@ -1,8 +1,16 @@
 import argparse
 import json
+from pathlib import Path
 
 from hns_topology import cli
-from hns_topology.db import connect, init_db, set_meta
+from hns_topology.db import connect, get_meta, init_db, set_meta
+from hns_topology.indexer import bootstrap_from_fixture
+from hns_topology.models import LiveStatus
+from hns_topology.provider_rules import ProviderRules
+from hns_topology.site_generator import generate_site
+from hns_topology.validator import release_is_valid, validate_release
+
+FIXTURE = Path("tests/fixtures/sample_hsd_names.json")
 
 
 class FakeScanClient:
@@ -37,6 +45,20 @@ def incremental_args(db_path, **overrides):
         "allow_unresolved_name_hashes": False,
         "catch_up_max_blocks": None,
         "catch_up_to_height": None,
+    }
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
+def live_check_args(db_path, **overrides):
+    values = {
+        "db": str(db_path),
+        "rules": "configs/provider_rules.json",
+        "limit": 2,
+        "concurrency": 1,
+        "min_delay_ms": 1,
+        "timeout": 0.1,
+        "resolver": "192.0.2.53",
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -194,3 +216,46 @@ def test_incremental_catch_up_refuses_large_ranges(tmp_path, monkeypatch):
     )
 
     assert result == 5
+
+
+def test_live_check_records_rate_limit_metadata(tmp_path, monkeypatch):
+    db_path = tmp_path / "topology.sqlite"
+    public_dir = tmp_path / "public"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+
+    def fake_check_name(row, config, limiter):
+        limiter.wait()
+        return LiveStatus(
+            name=row["name"],
+            dns_reachable="reachable",
+            dnssec_status="not_delegated",
+            tlsa_status="missing",
+            dane_status="unknown",
+            https_status="working",
+            strict_hns_status="working",
+            doh_fallback_status="not_required",
+            failure_reason=None,
+            checked_at="2026-01-01T00:00:00Z",
+            next_check_at="2026-01-08T00:00:00Z",
+        )
+
+    monkeypatch.setattr("hns_topology.livecheck.check_name", fake_check_name)
+
+    result = cli.cmd_live_check(live_check_args(db_path))
+
+    with connect(db_path) as conn:
+        assert result == 0
+        assert get_meta(conn, "live_check_limit") == "2"
+        assert get_meta(conn, "live_check_concurrency") == "1"
+        assert get_meta(conn, "live_check_min_delay_ms") == "1"
+        assert get_meta(conn, "live_check_timeout_seconds") == "0.1"
+        assert get_meta(conn, "live_check_recheck_seconds") == str(7 * 24 * 60 * 60)
+        assert get_meta(conn, "live_check_resolver") == "192.0.2.53"
+        assert int(get_meta(conn, "live_check_candidate_count")) >= 2
+        assert get_meta(conn, "live_check_checked_count") == "2"
+        generate_site(conn, db_path=db_path, out_dir=public_dir)
+
+    checks = validate_release(db_path=db_path, public_dir=public_dir, require_live_checks=True)
+    assert release_is_valid(checks), [check for check in checks if not check.ok]

@@ -20,7 +20,7 @@ from .indexer import (
     index_changed_names,
     rollback_reorg,
 )
-from .livecheck import LiveCheckConfig, run_live_checks
+from .livecheck import LiveCheckConfig, count_live_check_candidates, run_live_checks
 from .provider_rules import ProviderRules
 from .site_generator import generate_site
 from .timeutil import utc_now
@@ -430,10 +430,19 @@ def cmd_live_check(args: argparse.Namespace) -> int:
     rules = ProviderRules.from_file(args.rules)
     with connect(args.db) as conn:
         init_db(conn)
+        candidate_count = count_live_check_candidates(conn)
         started_at = utc_now()
         set_meta(conn, "live_check_started_at", started_at)
+        set_meta(conn, "live_check_limit", str(args.limit) if args.limit is not None else "unlimited")
+        set_meta(conn, "live_check_candidate_count", str(candidate_count))
+        set_meta(conn, "live_check_concurrency", str(config.concurrency))
+        set_meta(conn, "live_check_min_delay_ms", str(config.min_delay_ms))
+        set_meta(conn, "live_check_timeout_seconds", str(config.timeout))
+        set_meta(conn, "live_check_recheck_seconds", str(config.recheck_seconds))
+        set_meta(conn, "live_check_resolver", config.resolver or "system")
         count = run_live_checks(conn, limit=args.limit, config=config)
         finished_at = utc_now()
+        set_meta(conn, "live_check_checked_count", str(count))
         set_meta(conn, "live_check_finished_at", finished_at)
         recompute_provider_summary(conn, rules.provider_types, finished_at, rules.provider_patterns)
         conn.commit()

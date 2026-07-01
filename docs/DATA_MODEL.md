@@ -14,6 +14,14 @@ Key-value snapshot metadata.
 - `crawler_version`
 - `live_check_started_at`
 - `live_check_finished_at`
+- `live_check_limit`
+- `live_check_candidate_count`
+- `live_check_checked_count`
+- `live_check_concurrency`
+- `live_check_min_delay_ms`
+- `live_check_timeout_seconds`
+- `live_check_recheck_seconds`
+- `live_check_resolver`
 - `source_type`
 - `source_file`
 - `source_file_hash`

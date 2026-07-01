@@ -254,6 +254,7 @@ def _validate_database(
                 f"started={live_started} finished={live_finished}",
             )
         )
+        _validate_live_check_metadata(conn, checks)
 
 
 def _validate_metadata(
@@ -299,6 +300,46 @@ def _validate_metadata(
             "provider_rules_version_is_integer",
             _is_nonnegative_int(rules_version),
             str(rules_version),
+        )
+    )
+
+
+def _validate_live_check_metadata(conn: sqlite3.Connection, checks: list[ReleaseCheck]) -> None:
+    concurrency = get_meta(conn, "live_check_concurrency", "")
+    min_delay = get_meta(conn, "live_check_min_delay_ms", "")
+    timeout = get_meta(conn, "live_check_timeout_seconds", "")
+    recheck = get_meta(conn, "live_check_recheck_seconds", "")
+    resolver = get_meta(conn, "live_check_resolver", "")
+    limit = get_meta(conn, "live_check_limit", "")
+    candidate_count = get_meta(conn, "live_check_candidate_count", "")
+    checked_count = get_meta(conn, "live_check_checked_count", "")
+
+    config_ok = (
+        _is_positive_int(concurrency)
+        and _is_positive_int(min_delay)
+        and _is_positive_number(timeout)
+        and _is_positive_int(recheck)
+        and bool(resolver)
+        and (limit == "unlimited" or _is_nonnegative_int(limit))
+    )
+    checks.append(
+        ReleaseCheck(
+            "live_check_config",
+            config_ok,
+            (
+                f"limit={limit or 'missing'} concurrency={concurrency or 'missing'} "
+                f"min_delay_ms={min_delay or 'missing'} timeout={timeout or 'missing'} "
+                f"recheck={recheck or 'missing'} resolver={resolver or 'missing'}"
+            ),
+        )
+    )
+
+    counts_ok = _is_nonnegative_int(candidate_count) and _is_nonnegative_int(checked_count)
+    checks.append(
+        ReleaseCheck(
+            "live_check_counts",
+            counts_ok,
+            f"candidates={candidate_count or 'missing'} checked={checked_count or 'missing'}",
         )
     )
 
@@ -496,5 +537,23 @@ def _is_nonnegative_int(value: str | None) -> bool:
         return False
     try:
         return int(value) >= 0
+    except ValueError:
+        return False
+
+
+def _is_positive_int(value: str | None) -> bool:
+    if value is None:
+        return False
+    try:
+        return int(value) > 0
+    except ValueError:
+        return False
+
+
+def _is_positive_number(value: str | None) -> bool:
+    if value is None:
+        return False
+    try:
+        return float(value) > 0
     except ValueError:
         return False

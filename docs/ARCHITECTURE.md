@@ -80,7 +80,7 @@ Live checks are intentionally limited to promising names:
 - previously working names
 - user-submitted names, once that queue exists
 
-Checks are rate-limited and store only status metadata.
+Checks are rate-limited and store only status metadata. Each live-check run records its candidate count, checked count, concurrency, minimum inter-check delay, timeout, recheck window, resolver setting, and start/finish timestamps in `snapshot_meta`.
 
 ## Provider Rules
 

@@ -43,7 +43,7 @@
 - Timeouts are short.
 - Only promising names are queued.
 - Failure reasons use the stable taxonomy.
-- Live-check start and finish timestamps are present.
+- Live-check start and finish timestamps, rate-limit settings, resolver, candidate count, and checked count are present.
 - Production validation uses `--require-live-checks`.
 
 ## Website Gate
