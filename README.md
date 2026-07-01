@@ -88,6 +88,8 @@ scripts/gcloud-sync-indexer-code.sh
 scripts/setup-hsd-service.sh
 scripts/indexer-status.sh
 scripts/check-hsd-ready.sh
+scripts/gcloud-production-preflight.sh
+scripts/gcloud-production-cycle.sh
 scripts/gcloud-run-indexer-pipeline.sh
 scripts/verify-release.sh
 scripts/publish-indexer-site.sh

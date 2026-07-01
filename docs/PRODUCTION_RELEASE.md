@@ -12,6 +12,7 @@
 ## Indexer VM Gate
 
 - Confirm `gcloud config get-value project` matches `GCP_PROJECT`.
+- `scripts/gcloud-production-preflight.sh` passes.
 - Confirm the large disk is attached and mounted.
 - Confirm HSD datadir is on the large disk.
 - Confirm HSD is fully synced.
@@ -48,6 +49,7 @@
 
 ## Cost Gate
 
+- Run `DRY_RUN=1 scripts/gcloud-production-cycle.sh` before a cost-bearing cycle.
 - Stop or delete the indexer compute VM after publishing.
 - Keep the persistent indexer disk only while recovery speed is worth the storage cost.
 - Do not keep duplicate HSD datadirs.

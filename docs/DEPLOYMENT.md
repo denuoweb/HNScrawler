@@ -55,6 +55,16 @@ Keep the persistent indexer disk until production recovery has been proven. Stop
 
 The indexer disk is for HSD, the compact working database, live-check state, and generated artifacts while building. The production artifact disk on `denuoweb-vm` is for serving the finished static site and downloads. Do not use the production artifact disk as the live HSD datadir.
 
+For the first production cycle, prefer the guarded wrapper:
+
+```bash
+scripts/gcloud-production-preflight.sh
+DRY_RUN=1 scripts/gcloud-production-cycle.sh
+CONFIRM_PRODUCTION_RUN=1 PIPELINE_MODE=bootstrap WAIT_FOR_HSD_READY=1 scripts/gcloud-production-cycle.sh
+```
+
+`scripts/gcloud-production-cycle.sh` runs preflight, provisions or starts the indexer VM, mounts the indexer disk, syncs code, installs dependencies, starts HSD, optionally waits for HSD readiness, runs the pipeline, publishes the generated site, and then applies `INDEXER_FINAL_ACTION`. The default final and failure action is `stop`, not delete. Set `INDEXER_FINAL_ACTION=delete-vm` only when you intentionally want to remove the ephemeral compute VM after the run. The persistent indexer disk is not deleted by this wrapper.
+
 ## Production Website Disk
 
 The existing web VM has a 30 GB boot disk with about 9.7 GB free. Keep generated report bytes off that boot disk.
