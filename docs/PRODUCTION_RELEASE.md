@@ -19,7 +19,8 @@
 - `scripts/check-hsd-ready.sh` passes.
 - Confirm HSD RPC credentials are local-only or firewall-restricted.
 - Run HSD RPC bootstrap with `BOOTSTRAP_LIMIT` first.
-- Run the full bootstrap from JSONL when available, or set `ALLOW_UNPAGINATED_GETNAMES=1` only after accepting HSD `getnames` scale risk and measuring disk/RAM usage.
+- Run the full bootstrap with `PIPELINE_MODE=extract-jsonl` so HSD state streams to JSONL before `bootstrap-jsonl`.
+- Set `ALLOW_UNPAGINATED_GETNAMES=1` only after explicitly accepting HSD `getnames` scale risk and measuring disk/RAM usage.
 
 ## Data Gate
 

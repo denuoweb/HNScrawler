@@ -8,6 +8,7 @@ This project currently depends on these protocol and implementation assumptions.
 - `getnameresource <name>` is documented for viewing resource records for a name.
 - HSD resource record types used by this project are `DS`, `NS`, `GLUE4`, `GLUE6`, `SYNTH4`, `SYNTH6`, and `TXT`.
 - Node `getnames` exists, but the official API docs warn that it has no pagination and is mainly useful for debugging on regtest/testnet. Production mainnet bootstrapping must keep the name-source step replaceable.
+- `scripts/hsd-export-names-jsonl.js` is a production bootstrap extractor that opens HSD's chain/tree state and streams `NameState` rows to JSONL. Run it through `scripts/export-hsd-jsonl.sh`, which stops the local `hsd` service by default before reading the datadir.
 - HSD `prefix` determines the datadir. The indexer service pins it to `/mnt/hnscrawler/hsd` so chain data lands on the attached indexer disk.
 - HSD mainnet RPC defaults to port `12037`; regtest uses `14037`.
 
@@ -33,4 +34,4 @@ Sources:
 
 - DNSSEC validation checks HNS DS records against delegated DNSKEY records and validates the DNSKEY RRset signature when an RRSIG is present. The live checker does not store full delegated chains, denial-of-existence proofs, or arbitrary zone contents.
 - Incremental changed-name extraction from decoded blocks is best effort; production should verify the exact HSD verbosity response on the indexer before relying on block scans.
-- HSD `getnames` may be unsuitable for a 13-million-name mainnet bootstrap. The code path is isolated so a chunked state extractor can replace it.
+- The JSONL exporter depends on HSD internal module paths and serialized `NameState` format. Re-run an `EXPORT_LIMIT` smoke export after HSD upgrades before a full production export.

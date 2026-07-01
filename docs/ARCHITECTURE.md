@@ -14,7 +14,7 @@ The website VM does not need HSD, does not need the HSD datadir, and does not se
 ```text
 HSD node
   -> current name state
-  -> current resource JSON per name
+  -> stopped-node JSONL state export
   -> compact SQLite topology DB
   -> optional live DNS/DNSSEC/TLSA/HTTPS checks for promising names
   -> static JSON/CSV/SQLite.gz exports
@@ -46,9 +46,9 @@ The crawler does not store:
 
 ## HSD RPC Notes
 
-HSD documents `getnameresource <name>` as the way to inspect resource records for a name. HSD also documents node `getnames`, but warns that it has no pagination and is mainly for debugging on regtest or testnet. The current code keeps HSD access behind `HsdRpcClient` and supports streaming JSONL pre-extracted input so the production name-source step can be replaced without changing classification, exports, or site generation.
+HSD documents `getnameresource <name>` as the way to inspect resource records for a name. HSD also documents node `getnames`, but warns that it has no pagination and is mainly for debugging on regtest or testnet. The current code keeps HSD RPC access behind `HsdRpcClient` for smoke runs and incremental checks, and uses a stopped-node JSONL exporter for production-scale bootstrap so classification, exports, and site generation do not depend on unpaginated RPC.
 
-Production-scale bootstrap should prefer `hns-topology bootstrap-jsonl` once a direct or chunked HSD state extractor is available. Each JSONL line contains either `{"snapshot_meta": {...}}` or one name object with `name_info` and `resource`.
+Production-scale bootstrap should use `scripts/export-hsd-jsonl.sh` followed by `hns-topology bootstrap-jsonl`, or the combined remote `PIPELINE_MODE=extract-jsonl` mode. Each JSONL line contains either `{"snapshot_meta": {...}}` or one name object with `name_info` and `resource`.
 
 ## Reorg Handling
 

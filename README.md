@@ -30,12 +30,19 @@ Open `http://127.0.0.1:8080`.
 
 ## HSD Bootstrap
 
-HSD exposes `getnameresource <name>` for resource records, and exposes `getnames`, but the official API docs warn that node `getnames` has no pagination and is primarily useful for debugging/regtest/testnet. For production mainnet runs, keep this interface isolated behind the indexer and be prepared to replace the name-source step with a direct HSD state export or chunked extractor.
+HSD exposes `getnameresource <name>` for resource records, and exposes `getnames`, but the official API docs warn that node `getnames` has no pagination and is primarily useful for debugging/regtest/testnet. For production mainnet runs, use the stopped-node JSONL exporter so names are streamed from HSD state instead of accumulated through JSON-RPC.
 
 ```bash
 export HSD_RPC_URL=http://127.0.0.1:12037
 export HSD_API_KEY=replace-me
 hns-topology bootstrap --db data/topology.sqlite --rules configs/provider_rules.json --limit 100
+```
+
+For a full indexer bootstrap, prefer streaming JSONL from the HSD datadir:
+
+```bash
+JSONL_PATH=/mnt/hnscrawler/data/extracted_names.jsonl scripts/export-hsd-jsonl.sh
+hns-topology bootstrap-jsonl --jsonl /mnt/hnscrawler/data/extracted_names.jsonl --db data/topology.sqlite --rules configs/provider_rules.json
 ```
 
 ## Production Shape
@@ -88,6 +95,7 @@ scripts/gcloud-sync-indexer-code.sh
 scripts/setup-hsd-service.sh
 scripts/indexer-status.sh
 scripts/check-hsd-ready.sh
+scripts/export-hsd-jsonl.sh
 scripts/gcloud-production-preflight.sh
 scripts/gcloud-production-cycle.sh
 scripts/gcloud-run-indexer-pipeline.sh

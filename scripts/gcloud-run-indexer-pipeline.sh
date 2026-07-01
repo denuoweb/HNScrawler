@@ -6,6 +6,7 @@ GCP_ZONE="${GCP_ZONE:-us-west1-b}"
 INDEXER_VM="${INDEXER_VM:-hns-topology-indexer}"
 INDEXER_REPO_DIR="${INDEXER_REPO_DIR:-/mnt/hnscrawler/HNScrawler}"
 INDEXER_MOUNT="${INDEXER_MOUNT:-/mnt/hnscrawler}"
+INDEXER_HSD_PREFIX="${INDEXER_HSD_PREFIX:-/mnt/hnscrawler/hsd}"
 TOPOLOGY_DB="${TOPOLOGY_DB:-/mnt/hnscrawler/data/topology.sqlite}"
 PUBLIC_DIR="${PUBLIC_DIR:-/mnt/hnscrawler/public}"
 PROVIDER_RULES="${PROVIDER_RULES:-/mnt/hnscrawler/HNScrawler/configs/provider_rules.json}"
@@ -20,12 +21,18 @@ HSD_ALLOW_REMOTE_RPC="${HSD_ALLOW_REMOTE_RPC:-0}"
 BOOTSTRAP_LIMIT="${BOOTSTRAP_LIMIT:-}"
 ALLOW_UNPAGINATED_GETNAMES="${ALLOW_UNPAGINATED_GETNAMES:-0}"
 JSONL_PATH="${JSONL_PATH:-}"
+EXPORT_LIMIT="${EXPORT_LIMIT:-}"
+STOP_HSD_FOR_EXPORT="${STOP_HSD_FOR_EXPORT:-1}"
+RESTART_HSD_AFTER_EXPORT="${RESTART_HSD_AFTER_EXPORT:-1}"
+ALLOW_RUNNING_HSD_EXPORT="${ALLOW_RUNNING_HSD_EXPORT:-0}"
+HSD_NETWORK="${HSD_NETWORK:-main}"
+HSD_MODULE_ROOT="${HSD_MODULE_ROOT:-}"
 
 case "$PIPELINE_MODE" in
-  bootstrap|incremental|jsonl)
+  bootstrap|incremental|jsonl|extract-jsonl)
     ;;
   *)
-    echo "PIPELINE_MODE must be bootstrap, incremental, or jsonl" >&2
+    echo "PIPELINE_MODE must be bootstrap, incremental, jsonl, or extract-jsonl" >&2
     exit 2
     ;;
 esac
@@ -42,6 +49,7 @@ git pull --ff-only
 export TOPOLOGY_DB='$TOPOLOGY_DB'
 export PUBLIC_DIR='$PUBLIC_DIR'
 export PROVIDER_RULES='$PROVIDER_RULES'
+export INDEXER_HSD_PREFIX='$INDEXER_HSD_PREFIX'
 export CHECK_HSD_READY='$CHECK_HSD_READY'
 export LIVE_LIMIT='$LIVE_LIMIT'
 export NAMES_LIMIT='$NAMES_LIMIT'
@@ -50,6 +58,13 @@ export HSD_MAX_BLOCK_LAG='$HSD_MAX_BLOCK_LAG'
 export HSD_ALLOW_REMOTE_RPC='$HSD_ALLOW_REMOTE_RPC'
 export BOOTSTRAP_LIMIT='$BOOTSTRAP_LIMIT'
 export ALLOW_UNPAGINATED_GETNAMES='$ALLOW_UNPAGINATED_GETNAMES'
+export JSONL_PATH='$JSONL_PATH'
+export EXPORT_LIMIT='$EXPORT_LIMIT'
+export STOP_HSD_FOR_EXPORT='$STOP_HSD_FOR_EXPORT'
+export RESTART_HSD_AFTER_EXPORT='$RESTART_HSD_AFTER_EXPORT'
+export ALLOW_RUNNING_HSD_EXPORT='$ALLOW_RUNNING_HSD_EXPORT'
+export HSD_NETWORK='$HSD_NETWORK'
+export HSD_MODULE_ROOT='$HSD_MODULE_ROOT'
 if [ -f '$INDEXER_MOUNT/secrets/hsd.env' ]; then
   set -a
   . '$INDEXER_MOUNT/secrets/hsd.env'
@@ -63,8 +78,15 @@ case '$PIPELINE_MODE' in
     scripts/run-incremental.sh
     ;;
   jsonl)
-    [ -n '$JSONL_PATH' ] || { echo 'JSONL_PATH is required for PIPELINE_MODE=jsonl' >&2; exit 2; }
-    hns-topology bootstrap-jsonl --jsonl '$JSONL_PATH' --db '$TOPOLOGY_DB' --rules '$PROVIDER_RULES'
+    [ -n \"\$JSONL_PATH\" ] || { echo 'JSONL_PATH is required for PIPELINE_MODE=jsonl' >&2; exit 2; }
+    hns-topology bootstrap-jsonl --jsonl \"\$JSONL_PATH\" --db '$TOPOLOGY_DB' --rules '$PROVIDER_RULES'
+    ;;
+  extract-jsonl)
+    if [ -z \"\$JSONL_PATH\" ]; then
+      export JSONL_PATH='$INDEXER_MOUNT/data/extracted_names.jsonl'
+    fi
+    scripts/export-hsd-jsonl.sh
+    hns-topology bootstrap-jsonl --jsonl \"\$JSONL_PATH\" --db '$TOPOLOGY_DB' --rules '$PROVIDER_RULES'
     ;;
 esac
 if [ '$RUN_LIVE_CHECKS' = '1' ]; then
