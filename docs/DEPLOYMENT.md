@@ -86,6 +86,15 @@ CONFIRM_HSD_SYNC=1 scripts/gcloud-sync-hsd-until-ready.sh
 
 That wrapper starts or creates the indexer, mounts the indexer disk, syncs code, starts HSD, waits for `scripts/check-hsd-ready.sh`, and then stops the compute VM by default. It never runs the report pipeline or publish step. Increase `HSD_READY_ATTEMPTS` when intentionally allowing a longer sync window.
 
+For a fixed cost-bounded catch-up window, use:
+
+```bash
+DRY_RUN=1 scripts/gcloud-sync-hsd-window.sh
+CONFIRM_HSD_SYNC_WINDOW=1 HSD_SYNC_WINDOW_MINUTES=30 scripts/gcloud-sync-hsd-window.sh
+```
+
+That wrapper starts or creates the indexer, resumes HSD, prints indexer status before and after the window, and stops the compute VM by default. It does not wait for readiness, run the report pipeline, or publish.
+
 Use `BOOTSTRAP_LIMIT` for the first HSD RPC smoke run. Full HSD RPC bootstrap uses HSD `getnames`, which is unpaginated; it is blocked unless `ALLOW_UNPAGINATED_GETNAMES=1` is set. For the first full mainnet bootstrap from the indexer disk, use `PIPELINE_MODE=extract-jsonl`. That mode runs `scripts/export-hsd-jsonl.sh`, which checks HSD readiness, stops the `hsd` systemd service by default, streams current name state to JSONL, restarts `hsd`, and then runs `hns-topology bootstrap-jsonl`.
 
 ## Production Website Disk

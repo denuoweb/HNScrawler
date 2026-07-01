@@ -100,6 +100,7 @@ scripts/setup-hsd-service.sh
 scripts/indexer-status.sh
 scripts/check-hsd-ready.sh
 scripts/gcloud-sync-hsd-until-ready.sh
+scripts/gcloud-sync-hsd-window.sh
 scripts/export-hsd-jsonl.sh
 scripts/gcloud-production-preflight.sh
 scripts/gcloud-production-cycle.sh
