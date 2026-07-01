@@ -170,6 +170,8 @@ async function renderProviders(app) {
     <section class="panel full">${table(rows, [
       {key: "provider_key", label: "Provider"},
       {key: "provider_type", label: "Type"},
+      {key: "ns_pattern", label: "NS Pattern"},
+      {key: "ip_pattern", label: "IP Pattern"},
       {key: "names_count", label: "Names"},
       {key: "likely_website_count", label: "Likely websites"},
       {key: "working_count", label: "Working"},

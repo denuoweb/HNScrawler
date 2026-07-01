@@ -33,6 +33,7 @@ The crawler stores:
 - NS, GLUE4, GLUE6, SYNTH4, SYNTH6 summaries
 - DS/TXT presence
 - provider guesses from versioned rules
+- provider rule patterns used for each materialized provider bucket
 - compact live-check status
 - explicit failure reasons
 - recent reorg metadata
@@ -80,6 +81,17 @@ Live checks are intentionally limited to promising names:
 - user-submitted names, once that queue exists
 
 Checks are rate-limited and store only status metadata.
+
+## Provider Rules
+
+Provider classification is intentionally rule-based for the first production release. The committed JSON rules are sorted by priority and can match:
+
+- nameserver suffixes
+- nameserver regular expressions
+- direct or glue IP CIDR ranges
+- self-hosted delegation, where an NS name is equal to or below the HNS name
+
+Generated `provider_summary` rows expose the matching criteria as stable strings such as `suffix:namebase.io`, `regex:<pattern>`, `cidr:192.168.0.0/16`, and `self_hosted`. The summary is still a best-effort provider guess, not proof of ownership or service relationship.
 
 Strict HNS address discovery uses only addresses that can be bootstrapped from the HNS resource:
 

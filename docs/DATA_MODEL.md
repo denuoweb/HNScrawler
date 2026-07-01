@@ -82,6 +82,8 @@ Materialized provider counts for site generation.
 
 - `provider_key`
 - `provider_type`
+- `ns_pattern`: machine-readable rule criteria such as `suffix:namebase.io`, `regex:<pattern>`, or `self_hosted`
+- `ip_pattern`: machine-readable CIDR criteria such as `cidr:192.168.0.0/16`
 - `names_count`
 - `likely_website_count`
 - `working_count`

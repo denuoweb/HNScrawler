@@ -61,4 +61,8 @@ def test_provider_rules_detect_self_hosted_and_default():
 
     assert rules.match("example", self_hosted) == "self-hosted"
     assert rules.match("parked", parked) == "namebase/default"
-
+    assert rules.provider_patterns["self-hosted"]["ns_pattern"] == "self_hosted"
+    assert (
+        rules.provider_patterns["namebase/default"]["ns_pattern"]
+        == "suffix:namebase.io,suffix:parking.namebase.io"
+    )

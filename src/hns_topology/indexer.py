@@ -80,7 +80,7 @@ def bootstrap_from_hsd(
             resource = client.get_name_resource(str(name))
             index_one_name(conn, item, resource, rules, height=height, updated_at=now)
             indexed += 1
-        recompute_provider_summary(conn, rules.provider_types, now)
+        recompute_provider_summary(conn, rules.provider_types, now, rules.provider_patterns)
     return indexed
 
 
@@ -118,7 +118,7 @@ def bootstrap_from_fixture(
             resource = item.get("resource", {"records": []})
             index_one_name(conn, name_info, resource, rules, height=height, updated_at=now)
             indexed += 1
-        recompute_provider_summary(conn, rules.provider_types, now)
+        recompute_provider_summary(conn, rules.provider_types, now, rules.provider_patterns)
     return indexed
 
 
@@ -176,7 +176,7 @@ def bootstrap_from_jsonl(
         set_meta(conn, "hsd_chain", str(metadata.get("chain", chain)))
         set_meta(conn, "hsd_version", str(metadata.get("hsd_version", hsd_version)))
         set_meta(conn, "source_file_hash", digest.hexdigest())
-        recompute_provider_summary(conn, rules.provider_types, now)
+        recompute_provider_summary(conn, rules.provider_types, now, rules.provider_patterns)
     return indexed
 
 
@@ -219,7 +219,7 @@ def index_changed_names(
         set_meta(conn, "crawler_version", __version__)
         _set_provider_rule_meta(conn, rules)
         prune_reorg_metadata(conn, reorg_keep_blocks, height)
-        recompute_provider_summary(conn, rules.provider_types, now)
+        recompute_provider_summary(conn, rules.provider_types, now, rules.provider_patterns)
     return indexed
 
 
@@ -249,7 +249,7 @@ def rollback_reorg(
     now = utc_now()
     with conn:
         result = rollback_to_height(conn, rollback_height=rollback_height, rolled_back_at=now)
-        recompute_provider_summary(conn, rules.provider_types, now)
+        recompute_provider_summary(conn, rules.provider_types, now, rules.provider_patterns)
     return result
 
 

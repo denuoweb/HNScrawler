@@ -21,6 +21,19 @@ class ProviderRule:
     ip_prefixes: tuple[str, ...] = ()
     self_hosted: bool = False
 
+    @property
+    def ns_pattern(self) -> str:
+        parts: list[str] = []
+        if self.self_hosted:
+            parts.append("self_hosted")
+        parts.extend(f"suffix:{suffix}" for suffix in self.ns_suffixes)
+        parts.extend(f"regex:{pattern}" for pattern in self.ns_regexes)
+        return ",".join(parts)
+
+    @property
+    def ip_pattern(self) -> str:
+        return ",".join(f"cidr:{prefix}" for prefix in self.ip_prefixes)
+
 
 class ProviderRules:
     def __init__(
@@ -40,6 +53,13 @@ class ProviderRules:
         self.provider_types = {
             rule.provider_key: rule.provider_type for rule in self.rules
         } | {default_provider_key: "unknown"}
+        self.provider_patterns = {
+            rule.provider_key: {
+                "ns_pattern": rule.ns_pattern,
+                "ip_pattern": rule.ip_pattern,
+            }
+            for rule in self.rules
+        } | {default_provider_key: {"ns_pattern": "", "ip_pattern": ""}}
 
     @classmethod
     def from_file(cls, path: str | Path) -> ProviderRules:

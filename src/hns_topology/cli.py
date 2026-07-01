@@ -435,7 +435,7 @@ def cmd_live_check(args: argparse.Namespace) -> int:
         count = run_live_checks(conn, limit=args.limit, config=config)
         finished_at = utc_now()
         set_meta(conn, "live_check_finished_at", finished_at)
-        recompute_provider_summary(conn, rules.provider_types, finished_at)
+        recompute_provider_summary(conn, rules.provider_types, finished_at, rules.provider_patterns)
         conn.commit()
     print(f"checked {count} names")
     return 0

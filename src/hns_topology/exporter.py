@@ -283,7 +283,9 @@ def build_providers(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return rows_to_dicts(
         conn.execute(
             """
-            SELECT provider_key, provider_type, names_count, likely_website_count, working_count, dane_count, updated_at
+            SELECT
+              provider_key, provider_type, ns_pattern, ip_pattern,
+              names_count, likely_website_count, working_count, dane_count, updated_at
             FROM provider_summary
             ORDER BY names_count DESC, provider_key
             """

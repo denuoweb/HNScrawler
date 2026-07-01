@@ -408,8 +408,12 @@ def rollback_to_height(
 
 
 def recompute_provider_summary(
-    conn: sqlite3.Connection, provider_types: dict[str, str], updated_at: str
+    conn: sqlite3.Connection,
+    provider_types: dict[str, str],
+    updated_at: str,
+    provider_patterns: dict[str, dict[str, str]] | None = None,
 ) -> None:
+    provider_patterns = provider_patterns or {}
     conn.execute("DELETE FROM provider_summary")
     rows = conn.execute(
         """
@@ -436,6 +440,7 @@ def recompute_provider_summary(
     ).fetchall()
     for row in rows:
         provider_key = row["provider_key"] or "unknown/custom"
+        patterns = provider_patterns.get(provider_key, {})
         conn.execute(
             """
             INSERT INTO provider_summary(
@@ -446,8 +451,8 @@ def recompute_provider_summary(
             (
                 provider_key,
                 provider_types.get(provider_key, "unknown"),
-                "",
-                "",
+                patterns.get("ns_pattern", ""),
+                patterns.get("ip_pattern", ""),
                 int(row["names_count"] or 0),
                 int(row["likely_website_count"] or 0),
                 int(row["working_count"] or 0),

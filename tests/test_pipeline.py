@@ -83,6 +83,10 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
         count = bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
         summary = build_summary(conn)
         answers = build_faq_answers(conn, summary)
+        namebase_provider = conn.execute(
+            "SELECT ns_pattern, ip_pattern FROM provider_summary WHERE provider_key = ?",
+            ("namebase/default",),
+        ).fetchone()
 
     assert count == 9
     assert summary["total_names"] == 9
@@ -98,6 +102,8 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     assert summary["provider_rules_version"] == 1
     assert summary["provider_rules_hash"]
     assert any(item["key"] == "direct_ip_records" for item in answers)
+    assert namebase_provider["ns_pattern"] == "suffix:namebase.io,suffix:parking.namebase.io"
+    assert namebase_provider["ip_pattern"] == ""
 
 
 def test_generate_site_writes_requested_artifacts(tmp_path):
@@ -126,11 +132,14 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
 
     manifest = json.loads((out / "data/manifest.json").read_text(encoding="utf-8"))
     manifest_artifacts = {item["path"]: item for item in manifest["artifacts"]}
+    providers = json.loads((out / "data/providers.json").read_text(encoding="utf-8"))
+    namebase_provider = next(item for item in providers if item["provider_key"] == "namebase/default")
     assert manifest["manifest_version"] == 1
     assert manifest["snapshot"]["height"] == 123456
     assert manifest["summary"]["total_names"] == 9
     assert "summary.json" in manifest_artifacts
     assert "topology.sqlite.gz" in manifest_artifacts
+    assert namebase_provider["ns_pattern"] == "suffix:namebase.io,suffix:parking.namebase.io"
 
     checks = validate_release(db_path=db_path, public_dir=out)
     assert release_is_valid(checks), [check for check in checks if not check.ok]
