@@ -19,6 +19,8 @@ Required for GCP provisioning:
 - `GCP_ZONE`
 - `INDEXER_VM`
 - `INDEXER_DISK`
+- `INDEXER_MOUNT` defaults to `/mnt/hnscrawler`
+- `INDEXER_HSD_PREFIX` defaults to `/mnt/hnscrawler/hsd`
 
 Required for publishing:
 
@@ -31,16 +33,22 @@ Required for publishing:
 
 ```bash
 scripts/gcloud-create-indexer.sh
-gcloud compute ssh "$INDEXER_VM" --zone "$GCP_ZONE" --project "$GCP_PROJECT"
-scripts/setup-indexer.sh
+scripts/setup-indexer-disk.sh
+scripts/gcloud-sync-indexer-code.sh
+gcloud compute ssh "$INDEXER_VM" --zone "$GCP_ZONE" --project "$GCP_PROJECT" --command "cd /mnt/hnscrawler/HNScrawler && scripts/setup-indexer.sh"
+scripts/setup-hsd-service.sh
+gcloud compute ssh "$INDEXER_VM" --zone "$GCP_ZONE" --project "$GCP_PROJECT" --command "sudo systemctl start hsd"
+scripts/indexer-status.sh
 scripts/run-bootstrap.sh
 scripts/run-live-checks.sh
 scripts/generate-site.sh
-scripts/publish-site.sh
+scripts/publish-indexer-site.sh
 scripts/gcloud-stop-indexer.sh
 ```
 
 Keep the persistent indexer disk until production recovery has been proven. Stop or delete the compute VM to avoid ongoing compute cost.
+
+The indexer disk is for HSD, the compact working database, live-check state, and generated artifacts while building. The production artifact disk on `denuoweb-vm` is for serving the finished static site and downloads. Do not use the production artifact disk as the live HSD datadir.
 
 ## Production Website Disk
 
@@ -65,16 +73,30 @@ Current production shape:
 
 Keep full HSD data off the production web VM unless there is a deliberate later decision to colocate a pruned node. The intended production VM payload is the generated static report and downloadable artifacts.
 
+## HSD Service
+
+`scripts/setup-hsd-service.sh` installs HSD as a systemd service on the indexer VM with:
+
+- `--prefix /mnt/hnscrawler/hsd`
+- `--network main`
+- `--http-host 127.0.0.1`
+- `--no-wallet`
+- a generated 32-byte API key in `/mnt/hnscrawler/secrets/hsd.env`
+
+HSD mainnet RPC listens on `127.0.0.1:12037` by default. Bootstrap and incremental scripts source `/mnt/hnscrawler/secrets/hsd.env` when present.
+
 ## Nightly Or Weekly Update
 
 ```bash
 scripts/gcloud-create-indexer.sh
-scripts/run-incremental.sh
-scripts/run-live-checks.sh
-scripts/generate-site.sh
-scripts/publish-site.sh
+scripts/setup-indexer-disk.sh
+scripts/gcloud-sync-indexer-code.sh
+PIPELINE_MODE=incremental scripts/gcloud-run-indexer-pipeline.sh
+scripts/publish-indexer-site.sh
 scripts/gcloud-stop-indexer.sh
 ```
+
+For the initial full report, use `PIPELINE_MODE=bootstrap scripts/gcloud-run-indexer-pipeline.sh` after HSD is fully synced. For a streaming pre-extracted state file, use `PIPELINE_MODE=jsonl JSONL_PATH=/mnt/hnscrawler/data/extracted_names.jsonl scripts/gcloud-run-indexer-pipeline.sh`.
 
 ## Storage Rules
 

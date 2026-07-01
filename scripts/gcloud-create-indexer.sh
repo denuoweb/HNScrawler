@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-GCP_PROJECT="${GCP_PROJECT:?set GCP_PROJECT}"
-GCP_ZONE="${GCP_ZONE:?set GCP_ZONE}"
+GCP_PROJECT="${GCP_PROJECT:-denuo-web-site}"
+GCP_ZONE="${GCP_ZONE:-us-west1-b}"
 INDEXER_VM="${INDEXER_VM:-hns-topology-indexer}"
 INDEXER_DISK="${INDEXER_DISK:-hns-topology-indexer-disk}"
 INDEXER_DISK_SIZE_GB="${INDEXER_DISK_SIZE_GB:-200}"
+INDEXER_DISK_TYPE="${INDEXER_DISK_TYPE:-pd-balanced}"
 INDEXER_MACHINE_TYPE="${INDEXER_MACHINE_TYPE:-e2-standard-2}"
 INDEXER_IMAGE_FAMILY="${INDEXER_IMAGE_FAMILY:-debian-12}"
 INDEXER_IMAGE_PROJECT="${INDEXER_IMAGE_PROJECT:-debian-cloud}"
@@ -15,7 +16,7 @@ if ! gcloud compute disks describe "$INDEXER_DISK" --project "$GCP_PROJECT" --zo
     --project "$GCP_PROJECT" \
     --zone "$GCP_ZONE" \
     --size "${INDEXER_DISK_SIZE_GB}GB" \
-    --type pd-balanced
+    --type "$INDEXER_DISK_TYPE"
 fi
 
 if ! gcloud compute instances describe "$INDEXER_VM" --project "$GCP_PROJECT" --zone "$GCP_ZONE" >/dev/null 2>&1; then
@@ -30,4 +31,3 @@ if ! gcloud compute instances describe "$INDEXER_VM" --project "$GCP_PROJECT" --
 else
   gcloud compute instances start "$INDEXER_VM" --project "$GCP_PROJECT" --zone "$GCP_ZONE"
 fi
-

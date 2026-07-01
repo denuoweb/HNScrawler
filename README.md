@@ -77,6 +77,18 @@ hns-topology export --db data/topology.sqlite --out public/data
 hns-topology generate-site --db data/topology.sqlite --out public
 ```
 
+Indexer VM setup scripts:
+
+```bash
+scripts/gcloud-create-indexer.sh
+scripts/setup-indexer-disk.sh
+scripts/gcloud-sync-indexer-code.sh
+scripts/setup-hsd-service.sh
+scripts/indexer-status.sh
+scripts/gcloud-run-indexer-pipeline.sh
+scripts/publish-indexer-site.sh
+```
+
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)

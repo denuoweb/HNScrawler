@@ -53,3 +53,9 @@ scripts/gcloud-create-indexer.sh
 ```
 
 The script creates or starts the compute VM and keeps the indexer disk persistent with `auto-delete=no`.
+
+As of the latest audit, no indexer VM or indexer disk was present. Only the production web VM and production artifact disk were present:
+
+- `denuoweb-vm`
+- `denuoweb-vm` boot disk
+- `hns-topology-data` production artifact disk
