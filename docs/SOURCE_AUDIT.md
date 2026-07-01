@@ -31,6 +31,6 @@ Sources:
 
 ## Current Implementation Limits
 
-- DNSSEC validation is represented as status fields, but full DS-to-DNSKEY validation is not complete in the first code slice.
+- DNSSEC validation checks HNS DS records against delegated DNSKEY records and validates the DNSKEY RRset signature when an RRSIG is present. The live checker does not store full delegated chains, denial-of-existence proofs, or arbitrary zone contents.
 - Incremental changed-name extraction from decoded blocks is best effort; production should verify the exact HSD verbosity response on the indexer before relying on block scans.
 - HSD `getnames` may be unsuitable for a 13-million-name mainnet bootstrap. The code path is isolated so a chunked state extractor can replace it.

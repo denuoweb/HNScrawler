@@ -87,6 +87,7 @@ scripts/setup-hsd-service.sh
 scripts/indexer-status.sh
 scripts/gcloud-run-indexer-pipeline.sh
 scripts/publish-indexer-site.sh
+scripts/gcloud-print-site-tlsa.sh
 ```
 
 ## Documentation
