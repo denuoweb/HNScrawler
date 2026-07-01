@@ -1,0 +1,202 @@
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+from .db import connect, init_db, recompute_provider_summary, set_meta
+from .exporter import export_all
+from .hsd_rpc import HsdRpcClient
+from .indexer import (
+    bootstrap_from_fixture,
+    bootstrap_from_hsd,
+    extract_changed_names_from_block,
+    index_changed_names,
+)
+from .livecheck import LiveCheckConfig, run_live_checks
+from .provider_rules import ProviderRules
+from .site_generator import generate_site
+from .timeutil import utc_now
+
+DEFAULT_RULES = Path("configs/provider_rules.json")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        return args.func(args)
+    except KeyboardInterrupt:
+        return 130
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="hns-topology")
+    sub = parser.add_subparsers(required=True)
+
+    init = sub.add_parser("init-db", help="Create or migrate the SQLite schema.")
+    init.add_argument("--db", required=True)
+    init.set_defaults(func=cmd_init_db)
+
+    fixture = sub.add_parser("bootstrap-fixture", help="Build an index from fixture JSON.")
+    fixture.add_argument("--fixture", required=True)
+    fixture.add_argument("--db", required=True)
+    fixture.add_argument("--rules", default=str(DEFAULT_RULES))
+    fixture.add_argument("--limit", type=int)
+    fixture.set_defaults(func=cmd_bootstrap_fixture)
+
+    bootstrap = sub.add_parser("bootstrap", help="Build an index from HSD RPC.")
+    bootstrap.add_argument("--db", required=True)
+    bootstrap.add_argument("--rules", default=str(DEFAULT_RULES))
+    bootstrap.add_argument("--hsd-rpc-url")
+    bootstrap.add_argument("--hsd-api-key")
+    bootstrap.add_argument("--limit", type=int)
+    bootstrap.set_defaults(func=cmd_bootstrap)
+
+    incremental = sub.add_parser("incremental", help="Index changed names with reorg metadata.")
+    incremental.add_argument("--db", required=True)
+    incremental.add_argument("--rules", default=str(DEFAULT_RULES))
+    incremental.add_argument("--hsd-rpc-url")
+    incremental.add_argument("--hsd-api-key")
+    incremental.add_argument("--height", type=int)
+    incremental.add_argument("--block-hash")
+    incremental.add_argument("--changed-names-file")
+    incremental.add_argument("--scan-block-height", type=int)
+    incremental.add_argument("--reorg-keep-blocks", type=int, default=300)
+    incremental.set_defaults(func=cmd_incremental)
+
+    live = sub.add_parser("live-check", help="Run rate-limited DNS/DANE/HTTPS checks.")
+    live.add_argument("--db", required=True)
+    live.add_argument("--rules", default=str(DEFAULT_RULES))
+    live.add_argument("--limit", type=int)
+    live.add_argument("--concurrency", type=int, default=4)
+    live.add_argument("--min-delay-ms", type=int, default=250)
+    live.add_argument("--timeout", type=float, default=5.0)
+    live.add_argument("--resolver")
+    live.set_defaults(func=cmd_live_check)
+
+    export = sub.add_parser("export", help="Write JSON/CSV/SQLite.gz artifacts.")
+    export.add_argument("--db", required=True)
+    export.add_argument("--out", required=True)
+    export.add_argument("--names-limit", type=int, default=5000)
+    export.set_defaults(func=cmd_export)
+
+    site = sub.add_parser("generate-site", help="Generate static report site.")
+    site.add_argument("--db", required=True)
+    site.add_argument("--out", required=True)
+    site.add_argument("--names-limit", type=int, default=5000)
+    site.set_defaults(func=cmd_generate_site)
+
+    return parser
+
+
+def cmd_init_db(args: argparse.Namespace) -> int:
+    with connect(args.db) as conn:
+        init_db(conn)
+    print(f"initialized {args.db}")
+    return 0
+
+
+def cmd_bootstrap_fixture(args: argparse.Namespace) -> int:
+    rules = ProviderRules.from_file(args.rules)
+    with connect(args.db) as conn:
+        count = bootstrap_from_fixture(
+            conn,
+            fixture_path=args.fixture,
+            rules=rules,
+            limit=args.limit,
+        )
+    print(f"indexed {count} fixture names into {args.db}")
+    return 0
+
+
+def cmd_bootstrap(args: argparse.Namespace) -> int:
+    rules = ProviderRules.from_file(args.rules)
+    client = _client(args)
+    with connect(args.db) as conn:
+        count = bootstrap_from_hsd(conn, client=client, rules=rules, limit=args.limit)
+    print(f"indexed {count} HSD names into {args.db}")
+    return 0
+
+
+def cmd_incremental(args: argparse.Namespace) -> int:
+    rules = ProviderRules.from_file(args.rules)
+    client = _client(args)
+    changed_names: list[str]
+    height = args.height
+    block_hash = args.block_hash
+
+    if args.changed_names_file:
+        changed_names = [
+            line.strip()
+            for line in Path(args.changed_names_file).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    elif args.scan_block_height is not None:
+        block = client.get_block_by_height(args.scan_block_height)
+        changed_names = extract_changed_names_from_block(block)
+        height = args.scan_block_height
+        block_hash = block.get("hash") or client.get_block_hash(args.scan_block_height)
+    else:
+        print("incremental requires --changed-names-file or --scan-block-height", file=sys.stderr)
+        return 2
+
+    if height is None:
+        info = client.get_blockchain_info()
+        height = int(info.get("blocks") or 0)
+    if block_hash is None:
+        block_hash = client.get_block_hash(height)
+
+    with connect(args.db) as conn:
+        count = index_changed_names(
+            conn,
+            client=client,
+            rules=rules,
+            changed_names=changed_names,
+            height=height,
+            block_hash=block_hash,
+            reorg_keep_blocks=args.reorg_keep_blocks,
+        )
+    print(f"indexed {count} changed names at height {height}")
+    return 0
+
+
+def cmd_live_check(args: argparse.Namespace) -> int:
+    config = LiveCheckConfig(
+        timeout=args.timeout,
+        concurrency=args.concurrency,
+        min_delay_ms=args.min_delay_ms,
+        resolver=args.resolver,
+    )
+    rules = ProviderRules.from_file(args.rules)
+    with connect(args.db) as conn:
+        started_at = utc_now()
+        set_meta(conn, "live_check_started_at", started_at)
+        count = run_live_checks(conn, limit=args.limit, config=config)
+        finished_at = utc_now()
+        set_meta(conn, "live_check_finished_at", finished_at)
+        recompute_provider_summary(conn, rules.provider_types, finished_at)
+        conn.commit()
+    print(f"checked {count} names")
+    return 0
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    with connect(args.db) as conn:
+        export_all(conn, db_path=args.db, out_dir=args.out, names_limit=args.names_limit)
+    print(f"exported data to {args.out}")
+    return 0
+
+
+def cmd_generate_site(args: argparse.Namespace) -> int:
+    with connect(args.db) as conn:
+        generate_site(conn, db_path=args.db, out_dir=args.out, names_limit=args.names_limit)
+    print(f"generated site at {args.out}")
+    return 0
+
+
+def _client(args: argparse.Namespace) -> HsdRpcClient:
+    if args.hsd_rpc_url:
+        return HsdRpcClient(args.hsd_rpc_url, args.hsd_api_key)
+    return HsdRpcClient.from_env()
+

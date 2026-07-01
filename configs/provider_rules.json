@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "default_provider_key": "unknown/custom",
+  "rules": [
+    {
+      "provider_key": "namebase/default",
+      "provider_type": "default_parking",
+      "priority": 10,
+      "ns_suffixes": [
+        "namebase.io",
+        "parking.namebase.io"
+      ]
+    },
+    {
+      "provider_key": "impervious/default",
+      "provider_type": "default_parking",
+      "priority": 20,
+      "ns_suffixes": [
+        "impervious.com"
+      ]
+    },
+    {
+      "provider_key": "self-hosted",
+      "provider_type": "self_hosted",
+      "priority": 30,
+      "self_hosted": true
+    },
+    {
+      "provider_key": "cloudflare",
+      "provider_type": "external_dns",
+      "priority": 40,
+      "ns_suffixes": [
+        "cloudflare.com"
+      ]
+    },
+    {
+      "provider_key": "direct-ip/private",
+      "provider_type": "direct_ip_cluster",
+      "priority": 50,
+      "ip_prefixes": [
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "fc00::/7"
+      ]
+    }
+  ]
+}
+

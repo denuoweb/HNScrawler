@@ -1,0 +1,109 @@
+{
+  "chain": "fixture",
+  "height": 123456,
+  "tip_hash": "000000000000000000000000000000000000000000000000000000000001e240",
+  "hsd_version": "fixture",
+  "names": [
+    {
+      "name": "direct",
+      "nameHash": "hash-direct",
+      "state": "CLOSED",
+      "renewal": 122000,
+      "resource": {
+        "records": [
+          {"type": "SYNTH4", "address": "203.0.113.10"},
+          {"type": "SYNTH6", "address": "2001:db8::10"}
+        ]
+      }
+    },
+    {
+      "name": "delegated",
+      "nameHash": "hash-delegated",
+      "state": "CLOSED",
+      "renewal": 122000,
+      "resource": {
+        "records": [
+          {"type": "GLUE4", "ns": "ns1.delegated.", "address": "198.51.100.2"},
+          {"type": "NS", "ns": "ns1.delegated."}
+        ]
+      }
+    },
+    {
+      "name": "noglue",
+      "nameHash": "hash-noglue",
+      "state": "CLOSED",
+      "renewal": 122000,
+      "resource": {
+        "records": [
+          {"type": "NS", "ns": "ns1.external.example."}
+        ]
+      }
+    },
+    {
+      "name": "secure",
+      "nameHash": "hash-secure",
+      "state": "CLOSED",
+      "renewal": 122000,
+      "resource": {
+        "records": [
+          {"type": "GLUE4", "ns": "ns1.secure.", "address": "198.51.100.3"},
+          {"type": "NS", "ns": "ns1.secure."},
+          {"type": "DS", "keyTag": 12345, "algorithm": 8, "digestType": 2, "digest": "abcdef"}
+        ]
+      }
+    },
+    {
+      "name": "txtonly",
+      "nameHash": "hash-txtonly",
+      "state": "CLOSED",
+      "renewal": 122000,
+      "resource": {
+        "records": [
+          {"type": "TXT", "txt": ["hello"]}
+        ]
+      }
+    },
+    {
+      "name": "empty",
+      "nameHash": "hash-empty",
+      "state": "CLOSED",
+      "renewal": 122000,
+      "resource": {
+        "records": []
+      }
+    },
+    {
+      "name": "parked",
+      "nameHash": "hash-parked",
+      "state": "CLOSED",
+      "renewal": 122000,
+      "resource": {
+        "records": [
+          {"type": "NS", "ns": "ns1.namebase.io."},
+          {"type": "NS", "ns": "ns2.namebase.io."}
+        ]
+      }
+    },
+    {
+      "name": "expired",
+      "nameHash": "hash-expired",
+      "state": "EXPIRED",
+      "renewal": 1,
+      "resource": {
+        "records": [
+          {"type": "SYNTH4", "address": "203.0.113.99"}
+        ]
+      }
+    },
+    {
+      "name": "malformed",
+      "nameHash": "hash-malformed",
+      "state": "CLOSED",
+      "renewal": 122000,
+      "resource": {
+        "records": "not-a-list"
+      }
+    }
+  ]
+}
+
