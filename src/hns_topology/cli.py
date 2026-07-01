@@ -5,7 +5,7 @@ import os
 import sys
 from pathlib import Path
 
-from .db import connect, init_db, recompute_provider_summary, set_meta
+from .db import connect, get_meta, init_db, recompute_provider_summary, set_meta
 from .exporter import export_all
 from .hsd_rpc import HsdRpcClient
 from .hsd_status import evaluate_hsd_readiness, hsd_is_ready
@@ -92,6 +92,8 @@ def build_parser() -> argparse.ArgumentParser:
     incremental.add_argument("--rollback-on-reorg", action="store_true")
     incremental.add_argument("--allow-empty-block-scan", action="store_true")
     incremental.add_argument("--allow-unresolved-name-hashes", action="store_true")
+    incremental.add_argument("--catch-up-max-blocks", type=int)
+    incremental.add_argument("--catch-up-to-height", type=int)
     incremental.set_defaults(func=cmd_incremental)
 
     reorg = sub.add_parser("reorg-check", help="Compare recent indexed block hashes with HSD.")
@@ -252,6 +254,13 @@ def cmd_incremental(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 4
+        if extraction.non_dict_tx_count:
+            print(
+                "block scan did not return detailed transaction objects; refusing to record "
+                "an ambiguous incremental block.",
+                file=sys.stderr,
+            )
+            return 4
         allow_empty = args.allow_empty_block_scan or _env_flag("ALLOW_EMPTY_BLOCK_SCAN")
         if not changed_names and not allow_empty:
             print(
@@ -261,8 +270,7 @@ def cmd_incremental(args: argparse.Namespace) -> int:
             )
             return 4
     else:
-        print("incremental requires --changed-names-file or --scan-block-height", file=sys.stderr)
-        return 2
+        return _cmd_incremental_catch_up(args, client, rules)
 
     if height is None:
         info = client.get_blockchain_info()
@@ -281,6 +289,96 @@ def cmd_incremental(args: argparse.Namespace) -> int:
             reorg_keep_blocks=args.reorg_keep_blocks,
         )
     print(f"indexed {count} changed names at height {height}")
+    return 0
+
+
+def _cmd_incremental_catch_up(
+    args: argparse.Namespace,
+    client: HsdRpcClient,
+    rules: ProviderRules,
+) -> int:
+    with connect(args.db) as conn:
+        init_db(conn)
+        last_height_raw = get_meta(conn, "last_indexed_height")
+
+    if not last_height_raw:
+        print(
+            "incremental catch-up requires an existing bootstrap with last_indexed_height",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        last_height = int(last_height_raw)
+    except ValueError:
+        print(f"invalid last_indexed_height: {last_height_raw}", file=sys.stderr)
+        return 2
+
+    info = client.get_blockchain_info()
+    tip_height = int(info.get("blocks") or info.get("height") or 0)
+    to_height = args.catch_up_to_height or tip_height
+    if to_height > tip_height:
+        print(
+            f"catch-up target {to_height} is above HSD tip height {tip_height}",
+            file=sys.stderr,
+        )
+        return 2
+    if to_height <= last_height:
+        print(f"already indexed through height {last_height}")
+        return 0
+
+    max_blocks = args.catch_up_max_blocks
+    if max_blocks is None:
+        max_blocks = int(os.environ.get("INCREMENTAL_MAX_BLOCKS", "300"))
+    block_count = to_height - last_height
+    if block_count > max_blocks:
+        print(
+            f"catch-up would scan {block_count} blocks, above max {max_blocks}. "
+            "Increase --catch-up-max-blocks or run a fresh extract-jsonl bootstrap.",
+            file=sys.stderr,
+        )
+        return 5
+
+    allow_unresolved = args.allow_unresolved_name_hashes or _env_flag(
+        "ALLOW_UNRESOLVED_NAME_HASHES"
+    )
+    total_changed = 0
+    scanned = 0
+    for height in range(last_height + 1, to_height + 1):
+        block = client.get_block_by_height(height)
+        extraction = extract_changed_name_refs_from_block(block, name_by_hash=client.get_name_by_hash)
+        if extraction.non_dict_tx_count:
+            print(
+                f"block {height} did not return detailed transaction objects; refusing catch-up",
+                file=sys.stderr,
+            )
+            return 4
+        if extraction.unresolved_name_hashes and not allow_unresolved:
+            print(
+                f"block {height} has unresolved name hashes; refusing incomplete catch-up. "
+                f"unresolved={extraction.unresolved_name_hashes[:5]}",
+                file=sys.stderr,
+            )
+            return 4
+        if extraction.name_covenant_count and not extraction.names:
+            print(
+                f"block {height} has name covenants but no resolved names; refusing catch-up",
+                file=sys.stderr,
+            )
+            return 4
+        block_hash = str(block.get("hash") or client.get_block_hash(height))
+        with connect(args.db) as conn:
+            count = index_changed_names(
+                conn,
+                client=client,
+                rules=rules,
+                changed_names=extraction.names,
+                height=height,
+                block_hash=block_hash,
+                reorg_keep_blocks=args.reorg_keep_blocks,
+            )
+        total_changed += count
+        scanned += 1
+    print(f"caught up {scanned} blocks through height {to_height}; indexed {total_changed} names")
     return 0
 
 

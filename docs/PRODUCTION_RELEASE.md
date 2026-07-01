@@ -26,6 +26,7 @@
 
 - Snapshot metadata has height, tip hash, generated time, HSD chain, HSD version, crawler version, source hash, and provider rules hash.
 - `hns-topology reorg-check --db <db>` passes before incremental updates.
+- Incremental catch-up range is within `INCREMENTAL_MAX_BLOCKS`, or a fresh `PIPELINE_MODE=extract-jsonl` bootstrap is used.
 - Incremental block scans do not use `ALLOW_EMPTY_BLOCK_SCAN` or `ALLOW_UNRESOLVED_NAME_HASHES` unless the block/run has been inspected.
 - Provider rules version is committed.
 - Class counts are non-negative and active plus expired equals total.

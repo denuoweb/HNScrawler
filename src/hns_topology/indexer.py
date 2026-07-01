@@ -36,6 +36,7 @@ class ChangedNameExtraction:
     name_hashes: list[str]
     unresolved_name_hashes: list[str]
     name_covenant_count: int
+    non_dict_tx_count: int
 
 
 def bootstrap_from_hsd(
@@ -266,8 +267,10 @@ def extract_changed_name_refs_from_block(
     name_hashes: set[str] = set()
     unresolved_hashes: set[str] = set()
     name_covenant_count = 0
+    non_dict_tx_count = 0
     for tx in block.get("tx", []) or []:
         if not isinstance(tx, dict):
+            non_dict_tx_count += 1
             continue
         outputs = tx.get("outputs") or tx.get("vout") or []
         for output in outputs:
@@ -318,6 +321,7 @@ def extract_changed_name_refs_from_block(
         name_hashes=sorted(name_hashes),
         unresolved_name_hashes=sorted(unresolved_hashes),
         name_covenant_count=name_covenant_count,
+        non_dict_tx_count=non_dict_tx_count,
     )
 
 

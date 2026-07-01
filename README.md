@@ -78,6 +78,8 @@ hns-topology bootstrap-fixture --fixture tests/fixtures/sample_hsd_names.json --
 hns-topology bootstrap-jsonl --jsonl extracted_names.jsonl --db data/topology.sqlite --height 123456 --tip-hash <hash>
 hns-topology hsd-status --max-block-lag 2
 hns-topology bootstrap --db data/topology.sqlite --limit 100
+hns-topology incremental --db data/topology.sqlite
+hns-topology incremental --db data/topology.sqlite --scan-block-height 123457
 hns-topology incremental --db data/topology.sqlite --changed-names-file changed_names.txt
 hns-topology reorg-check --db data/topology.sqlite --rollback
 hns-topology live-check --db data/topology.sqlite --limit 100 --concurrency 4 --min-delay-ms 250

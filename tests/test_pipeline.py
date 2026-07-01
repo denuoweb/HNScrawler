@@ -239,6 +239,7 @@ def test_extract_changed_name_refs_decodes_raw_names_and_resolves_hashes():
     assert extraction.name_hashes == [update_hash, open_hash]
     assert extraction.unresolved_name_hashes == []
     assert extraction.name_covenant_count == 2
+    assert extraction.non_dict_tx_count == 0
 
 
 def test_extract_changed_name_refs_reports_unresolved_hashes():
@@ -264,6 +265,7 @@ def test_extract_changed_name_refs_reports_unresolved_hashes():
     assert extraction.name_hashes == [update_hash]
     assert extraction.unresolved_name_hashes == [update_hash]
     assert extraction.name_covenant_count == 1
+    assert extraction.non_dict_tx_count == 0
 
 
 def test_reorg_rollback_restores_previous_compact_rows(tmp_path):
