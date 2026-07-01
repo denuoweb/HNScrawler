@@ -58,9 +58,11 @@ The compact DB keeps recent rollback metadata:
 - `changed_name_rollbacks.previous_resource_hash`
 - `changed_name_rollbacks.previous_classification`
 - `changed_name_rollbacks.previous_live_status`
+- `changed_name_rollbacks.previous_name_row`
+- `changed_name_rollbacks.previous_resource_summary`
 - `changed_name_rollbacks.block_hash_at_height`
 
-For nightly or weekly reports, keeping the last few hundred blocks is enough practical safety. If a stored height hash no longer matches HSD, roll back changed names from the highest affected height downward, then replay names changed in the new canonical blocks.
+For nightly or weekly reports, keeping the last few hundred blocks is enough practical safety. If a stored height hash no longer matches HSD, `hns-topology reorg-check --rollback` restores changed names from the highest affected height downward, removes affected block metadata, and leaves the index ready to replay names changed in the new canonical blocks.
 
 ## Live Checks
 
@@ -75,4 +77,3 @@ Live checks are intentionally limited to promising names:
 - user-submitted names, once that queue exists
 
 Checks are rate-limited and store only status metadata.
-

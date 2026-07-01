@@ -22,6 +22,7 @@
 ## Data Gate
 
 - Snapshot metadata has height, tip hash, generated time, HSD chain, HSD version, and crawler version.
+- `hns-topology reorg-check --db <db>` passes before incremental updates.
 - Provider rules version is committed.
 - Class counts are non-negative and active plus expired equals total.
 - Public `topology.sqlite.gz` opens after decompression.
@@ -48,4 +49,3 @@
 - Keep the persistent indexer disk only while recovery speed is worth the storage cost.
 - Do not keep duplicate HSD datadirs.
 - Move only compressed exports or tarballs to optional backup storage.
-

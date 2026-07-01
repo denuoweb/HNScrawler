@@ -11,7 +11,9 @@ from .indexer import (
     bootstrap_from_fixture,
     bootstrap_from_hsd,
     extract_changed_names_from_block,
+    find_reorg_mismatch,
     index_changed_names,
+    rollback_reorg,
 )
 from .livecheck import LiveCheckConfig, run_live_checks
 from .provider_rules import ProviderRules
@@ -63,7 +65,16 @@ def build_parser() -> argparse.ArgumentParser:
     incremental.add_argument("--changed-names-file")
     incremental.add_argument("--scan-block-height", type=int)
     incremental.add_argument("--reorg-keep-blocks", type=int, default=300)
+    incremental.add_argument("--rollback-on-reorg", action="store_true")
     incremental.set_defaults(func=cmd_incremental)
+
+    reorg = sub.add_parser("reorg-check", help="Compare recent indexed block hashes with HSD.")
+    reorg.add_argument("--db", required=True)
+    reorg.add_argument("--rules", default=str(DEFAULT_RULES))
+    reorg.add_argument("--hsd-rpc-url")
+    reorg.add_argument("--hsd-api-key")
+    reorg.add_argument("--rollback", action="store_true")
+    reorg.set_defaults(func=cmd_reorg_check)
 
     live = sub.add_parser("live-check", help="Run rate-limited DNS/DANE/HTTPS checks.")
     live.add_argument("--db", required=True)
@@ -126,6 +137,21 @@ def cmd_incremental(args: argparse.Namespace) -> int:
     height = args.height
     block_hash = args.block_hash
 
+    with connect(args.db) as conn:
+        init_db(conn)
+        mismatch = find_reorg_mismatch(conn, client=client)
+        if mismatch is not None:
+            print(
+                "reorg mismatch at height "
+                f"{mismatch['height']}: stored {mismatch['stored_hash']} "
+                f"current {mismatch['current_hash']}",
+                file=sys.stderr,
+            )
+            if args.rollback_on_reorg:
+                result = rollback_reorg(conn, rules=rules, rollback_height=mismatch["height"])
+                print(f"rolled back reorg metadata: {result}")
+            return 3
+
     if args.changed_names_file:
         changed_names = [
             line.strip()
@@ -159,6 +185,27 @@ def cmd_incremental(args: argparse.Namespace) -> int:
         )
     print(f"indexed {count} changed names at height {height}")
     return 0
+
+
+def cmd_reorg_check(args: argparse.Namespace) -> int:
+    rules = ProviderRules.from_file(args.rules)
+    client = _client(args)
+    with connect(args.db) as conn:
+        init_db(conn)
+        mismatch = find_reorg_mismatch(conn, client=client)
+        if mismatch is None:
+            print("no reorg mismatch detected")
+            return 0
+        print(
+            "reorg mismatch at height "
+            f"{mismatch['height']}: stored {mismatch['stored_hash']} "
+            f"current {mismatch['current_hash']}"
+        )
+        if not args.rollback:
+            return 1
+        result = rollback_reorg(conn, rules=rules, rollback_height=mismatch["height"])
+        print(f"rolled back compact index to before height {mismatch['height']}: {result}")
+        return 0
 
 
 def cmd_live_check(args: argparse.Namespace) -> int:
@@ -199,4 +246,3 @@ def _client(args: argparse.Namespace) -> HsdRpcClient:
     if args.hsd_rpc_url:
         return HsdRpcClient(args.hsd_rpc_url, args.hsd_api_key)
     return HsdRpcClient.from_env()
-

@@ -86,6 +86,8 @@ CREATE TABLE IF NOT EXISTS changed_name_rollbacks (
   previous_resource_hash TEXT,
   previous_classification TEXT,
   previous_live_status TEXT,
+  previous_name_row TEXT,
+  previous_resource_summary TEXT,
   block_hash_at_height TEXT NOT NULL,
   captured_at TEXT NOT NULL,
   PRIMARY KEY(height, name)
@@ -97,6 +99,47 @@ CREATE INDEX IF NOT EXISTS idx_names_expired ON names(expired);
 CREATE INDEX IF NOT EXISTS idx_live_failure ON live_status(failure_reason);
 CREATE INDEX IF NOT EXISTS idx_live_next_check ON live_status(next_check_at);
 """
+
+NAMES_COLUMNS = (
+    "name",
+    "name_hash",
+    "state",
+    "renewal_height",
+    "expired",
+    "resource_hash",
+    "record_types",
+    "onchain_class",
+    "provider_guess",
+    "last_seen_height",
+    "updated_at",
+)
+
+RESOURCE_COLUMNS = (
+    "name",
+    "ns_names",
+    "glue4",
+    "glue6",
+    "synth4",
+    "synth6",
+    "has_ds",
+    "has_txt",
+    "raw_size",
+    "resource_hash",
+)
+
+LIVE_COLUMNS = (
+    "name",
+    "dns_reachable",
+    "dnssec_status",
+    "tlsa_status",
+    "dane_status",
+    "https_status",
+    "strict_hns_status",
+    "doh_fallback_status",
+    "failure_reason",
+    "checked_at",
+    "next_check_at",
+)
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:
@@ -111,6 +154,7 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
+    _migrate_schema(conn)
     conn.commit()
 
 
@@ -240,41 +284,26 @@ def capture_rollback(
     block_hash: str,
     captured_at: str,
 ) -> None:
-    row = conn.execute(
-        """
-        SELECT n.resource_hash, n.onchain_class, ls.*
-        FROM names n
-        LEFT JOIN live_status ls ON ls.name = n.name
-        WHERE n.name = ?
-        """,
-        (name,),
-    ).fetchone()
-    if row is None:
+    name_row = _row_dict(conn.execute("SELECT * FROM names WHERE name = ?", (name,)).fetchone())
+    resource_row = _row_dict(
+        conn.execute("SELECT * FROM resource_summary WHERE name = ?", (name,)).fetchone()
+    )
+    live_row = _row_dict(conn.execute("SELECT * FROM live_status WHERE name = ?", (name,)).fetchone())
+    if name_row is None:
         previous_live = None
         previous_resource_hash = None
         previous_classification = None
     else:
-        previous_resource_hash = row["resource_hash"]
-        previous_classification = row["onchain_class"]
-        live_keys = (
-            "dns_reachable",
-            "dnssec_status",
-            "tlsa_status",
-            "dane_status",
-            "https_status",
-            "strict_hns_status",
-            "doh_fallback_status",
-            "failure_reason",
-            "checked_at",
-            "next_check_at",
-        )
-        previous_live = {key: row[key] for key in live_keys if row[key] is not None}
+        previous_resource_hash = name_row["resource_hash"]
+        previous_classification = name_row["onchain_class"]
+        previous_live = live_row
     conn.execute(
         """
         INSERT OR REPLACE INTO changed_name_rollbacks(
           height, name, previous_resource_hash, previous_classification,
-          previous_live_status, block_hash_at_height, captured_at
-        ) VALUES(?, ?, ?, ?, ?, ?, ?)
+          previous_live_status, previous_name_row, previous_resource_summary,
+          block_hash_at_height, captured_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             height,
@@ -282,6 +311,8 @@ def capture_rollback(
             previous_resource_hash,
             previous_classification,
             dumps_json(previous_live) if previous_live is not None else None,
+            dumps_json(name_row) if name_row is not None else None,
+            dumps_json(resource_row) if resource_row is not None else None,
             block_hash,
             captured_at,
         ),
@@ -309,6 +340,67 @@ def prune_reorg_metadata(conn: sqlite3.Connection, keep_blocks: int, latest_heig
     min_height = max(0, latest_height - keep_blocks)
     conn.execute("DELETE FROM block_history WHERE height < ?", (min_height,))
     conn.execute("DELETE FROM changed_name_rollbacks WHERE height < ?", (min_height,))
+
+
+def rollback_to_height(
+    conn: sqlite3.Connection,
+    *,
+    rollback_height: int,
+    rolled_back_at: str,
+) -> dict[str, Any]:
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM changed_name_rollbacks
+        WHERE height >= ?
+        ORDER BY height DESC, name ASC
+        """,
+        (rollback_height,),
+    ).fetchall()
+    heights = sorted({int(row["height"]) for row in rows})
+
+    for row in rows:
+        name = row["name"]
+        previous_name = _loads_optional_dict(row["previous_name_row"])
+        previous_resource = _loads_optional_dict(row["previous_resource_summary"])
+        previous_live = _loads_optional_dict(row["previous_live_status"])
+
+        if previous_name is None:
+            conn.execute("DELETE FROM names WHERE name = ?", (name,))
+            continue
+
+        _upsert_raw_row(conn, "names", NAMES_COLUMNS, previous_name)
+        if previous_resource is None:
+            conn.execute("DELETE FROM resource_summary WHERE name = ?", (name,))
+        else:
+            _upsert_raw_row(conn, "resource_summary", RESOURCE_COLUMNS, previous_resource)
+
+        if previous_live is None:
+            conn.execute("DELETE FROM live_status WHERE name = ?", (name,))
+        else:
+            previous_live.setdefault("name", name)
+            _upsert_raw_row(conn, "live_status", LIVE_COLUMNS, previous_live)
+
+    conn.execute("DELETE FROM block_history WHERE height >= ?", (rollback_height,))
+    conn.execute("DELETE FROM changed_name_rollbacks WHERE height >= ?", (rollback_height,))
+
+    remaining = conn.execute(
+        "SELECT height, block_hash FROM block_history ORDER BY height DESC LIMIT 1"
+    ).fetchone()
+    if remaining is None:
+        set_meta(conn, "last_indexed_height", str(max(0, rollback_height - 1)))
+        set_meta(conn, "last_indexed_tip_hash", "")
+    else:
+        set_meta(conn, "last_indexed_height", str(remaining["height"]))
+        set_meta(conn, "last_indexed_tip_hash", remaining["block_hash"])
+    set_meta(conn, "last_reorg_rollback_at", rolled_back_at)
+    set_meta(conn, "last_reorg_rollback_height", str(rollback_height))
+    return {
+        "rollback_height": rollback_height,
+        "rolled_back_heights": heights,
+        "names_restored": len(rows),
+        "rolled_back_at": rolled_back_at,
+    }
 
 
 def recompute_provider_summary(
@@ -381,3 +473,50 @@ def parse_json_columns(row: dict[str, Any], columns: Iterable[str]) -> dict[str,
                 result[column] = []
     return result
 
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    _ensure_columns(
+        conn,
+        "changed_name_rollbacks",
+        {
+            "previous_name_row": "TEXT",
+            "previous_resource_summary": "TEXT",
+        },
+    )
+
+
+def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    for column, column_type in columns.items():
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+
+
+def _row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    return dict(row) if row is not None else None
+
+
+def _loads_optional_dict(value: str | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    parsed = json.loads(value)
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _upsert_raw_row(
+    conn: sqlite3.Connection,
+    table: str,
+    columns: tuple[str, ...],
+    values: dict[str, Any],
+) -> None:
+    assignments = ", ".join(f"{column}=excluded.{column}" for column in columns if column != "name")
+    placeholders = ", ".join("?" for _ in columns)
+    column_sql = ", ".join(columns)
+    conn.execute(
+        f"""
+        INSERT INTO {table}({column_sql})
+        VALUES({placeholders})
+        ON CONFLICT(name) DO UPDATE SET {assignments}
+        """,
+        tuple(values.get(column) for column in columns),
+    )

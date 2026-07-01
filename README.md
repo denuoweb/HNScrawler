@@ -68,6 +68,7 @@ hns-topology init-db --db data/topology.sqlite
 hns-topology bootstrap-fixture --fixture tests/fixtures/sample_hsd_names.json --db data/topology.sqlite
 hns-topology bootstrap --db data/topology.sqlite
 hns-topology incremental --db data/topology.sqlite --changed-names-file changed_names.txt
+hns-topology reorg-check --db data/topology.sqlite --rollback
 hns-topology live-check --db data/topology.sqlite --limit 100 --concurrency 4 --min-delay-ms 250
 hns-topology export --db data/topology.sqlite --out public/data
 hns-topology generate-site --db data/topology.sqlite --out public
@@ -87,4 +88,3 @@ hns-topology generate-site --db data/topology.sqlite --out public
 pytest
 ruff check .
 ```
-

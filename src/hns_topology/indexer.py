@@ -14,6 +14,7 @@ from .db import (
     prune_reorg_metadata,
     recompute_provider_summary,
     record_block_history,
+    rollback_to_height,
     set_meta,
     upsert_name,
     upsert_resource,
@@ -135,6 +136,36 @@ def index_changed_names(
     return indexed
 
 
+def find_reorg_mismatch(conn, *, client: HsdRpcClient) -> dict[str, Any] | None:
+    rows = conn.execute(
+        "SELECT height, block_hash FROM block_history ORDER BY height ASC"
+    ).fetchall()
+    for row in rows:
+        height = int(row["height"])
+        stored_hash = row["block_hash"]
+        current_hash = client.get_block_hash(height)
+        if current_hash != stored_hash:
+            return {
+                "height": height,
+                "stored_hash": stored_hash,
+                "current_hash": current_hash,
+            }
+    return None
+
+
+def rollback_reorg(
+    conn,
+    *,
+    rules: ProviderRules,
+    rollback_height: int,
+) -> dict[str, Any]:
+    now = utc_now()
+    with conn:
+        result = rollback_to_height(conn, rollback_height=rollback_height, rolled_back_at=now)
+        recompute_provider_summary(conn, rules.provider_types, now)
+    return result
+
+
 def extract_changed_names_from_block(block: dict[str, Any]) -> list[str]:
     """Best-effort extraction from decoded HSD block transaction JSON.
 
@@ -226,4 +257,3 @@ def _maybe_int(value: Any) -> int | None:
 
 def _fixture_tip_hash(data: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode("utf-8")).hexdigest()
-

@@ -78,6 +78,17 @@ Materialized provider counts for site generation.
 
 `changed_name_rollbacks` records enough prior state to undo recent compact-index changes before replaying canonical blocks.
 
+It stores both human-auditable fields and full compact row snapshots:
+
+- `previous_resource_hash`
+- `previous_classification`
+- `previous_live_status`
+- `previous_name_row`
+- `previous_resource_summary`
+- `block_hash_at_height`
+
+The full row snapshots are required because restoring only a resource hash and class is not enough to recover NS, GLUE, SYNTH, DS, provider, and live-check fields after a reorg.
+
 ## Export Files
 
 Public exports are generated from SQLite:
@@ -91,4 +102,3 @@ Public exports are generated from SQLite:
 - `names.json`
 - `names.csv`
 - `topology.sqlite.gz`
-
