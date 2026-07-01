@@ -12,6 +12,7 @@ from hns_topology.indexer import (
 )
 from hns_topology.provider_rules import ProviderRules
 from hns_topology.site_generator import generate_site
+from hns_topology.validator import release_is_valid, validate_release
 
 FIXTURE = Path("tests/fixtures/sample_hsd_names.json")
 JSONL_FIXTURE = Path("tests/fixtures/sample_hsd_names.jsonl")
@@ -86,6 +87,41 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
         "data/topology.sqlite.gz",
     ]:
         assert (out / relative).exists()
+
+    checks = validate_release(db_path=db_path, public_dir=out)
+    assert release_is_valid(checks), [check for check in checks if not check.ok]
+
+
+def test_release_validator_catches_missing_artifacts(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    out = tmp_path / "public"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+        generate_site(conn, db_path=db_path, out_dir=out)
+
+    (out / "data/summary.json").unlink()
+    checks = validate_release(db_path=db_path, public_dir=out)
+
+    assert not release_is_valid(checks)
+    failed = {check.name: check.detail for check in checks if not check.ok}
+    assert "required_public_files" in failed
+
+
+def test_release_validator_enforces_live_check_gate(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    out = tmp_path / "public"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+        generate_site(conn, db_path=db_path, out_dir=out)
+
+    checks = validate_release(db_path=db_path, public_dir=out, require_live_checks=True)
+
+    assert not release_is_valid(checks)
+    failed = {check.name: check.detail for check in checks if not check.ok}
+    assert "live_status_present" in failed
+    assert "live_check_timestamps" in failed
 
 
 def test_jsonl_bootstrap_streams_names_and_records_provenance(tmp_path):

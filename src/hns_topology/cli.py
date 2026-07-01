@@ -20,6 +20,7 @@ from .livecheck import LiveCheckConfig, run_live_checks
 from .provider_rules import ProviderRules
 from .site_generator import generate_site
 from .timeutil import utc_now
+from .validator import release_is_valid, validate_release
 
 DEFAULT_RULES = Path("configs/provider_rules.json")
 
@@ -109,6 +110,12 @@ def build_parser() -> argparse.ArgumentParser:
     site.add_argument("--out", required=True)
     site.add_argument("--names-limit", type=int, default=5000)
     site.set_defaults(func=cmd_generate_site)
+
+    validate = sub.add_parser("validate-release", help="Validate DB and static artifacts before publishing.")
+    validate.add_argument("--db", required=True)
+    validate.add_argument("--public-dir")
+    validate.add_argument("--require-live-checks", action="store_true")
+    validate.set_defaults(func=cmd_validate_release)
 
     return parser
 
@@ -272,6 +279,18 @@ def cmd_generate_site(args: argparse.Namespace) -> int:
         generate_site(conn, db_path=args.db, out_dir=args.out, names_limit=args.names_limit)
     print(f"generated site at {args.out}")
     return 0
+
+
+def cmd_validate_release(args: argparse.Namespace) -> int:
+    checks = validate_release(
+        db_path=args.db,
+        public_dir=args.public_dir,
+        require_live_checks=args.require_live_checks,
+    )
+    for check in checks:
+        marker = "ok" if check.ok else "fail"
+        print(f"[{marker}] {check.name}: {check.detail}")
+    return 0 if release_is_valid(checks) else 1
 
 
 def _client(args: argparse.Namespace) -> HsdRpcClient:

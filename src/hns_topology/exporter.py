@@ -4,6 +4,7 @@ import csv
 import gzip
 import shutil
 import sqlite3
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -424,8 +425,12 @@ def gzip_sqlite(db_path: str | Path, out_path: Path) -> None:
     source = Path(db_path)
     if not source.exists():
         return
-    with source.open("rb") as src, gzip.open(out_path, "wb", compresslevel=9) as dst:
-        shutil.copyfileobj(src, dst)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        snapshot = Path(tmpdir) / "topology.sqlite"
+        with sqlite3.connect(source) as src_conn, sqlite3.connect(snapshot) as dst_conn:
+            src_conn.backup(dst_conn)
+        with snapshot.open("rb") as src, gzip.open(out_path, "wb", compresslevel=9) as dst:
+            shutil.copyfileobj(src, dst)
 
 
 def write_json(path: Path, value: Any) -> None:

@@ -25,6 +25,4 @@ jobs:
         run: |
           hns-topology bootstrap-fixture --fixture tests/fixtures/sample_hsd_names.json --db data/topology.sqlite
           hns-topology generate-site --db data/topology.sqlite --out public
-          test -f public/data/summary.json
-          test -f public/data/topology.sqlite.gz
-
+          hns-topology validate-release --db data/topology.sqlite --public-dir public

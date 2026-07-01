@@ -6,8 +6,8 @@
 - `ruff check .`
 - fixture bootstrap
 - fixture site generation
-- inspect `public/data/summary.json`
-- inspect generated `public/index.html`
+- `hns-topology validate-release --db data/topology.sqlite --public-dir public`
+- inspect `public/data/summary.json` and generated `public/index.html` when definitions or UI behavior changed
 
 ## Indexer VM Gate
 
@@ -26,6 +26,7 @@
 - Provider rules version is committed.
 - Class counts are non-negative and active plus expired equals total.
 - Public `topology.sqlite.gz` opens after decompression.
+- `hns-topology validate-release` passes against the DB and generated public directory.
 - No HTTP bodies or arbitrary subdomain crawl data are exported.
 
 ## Live Check Gate
@@ -35,6 +36,7 @@
 - Only promising names are queued.
 - Failure reasons use the stable taxonomy.
 - Live-check start and finish timestamps are present.
+- Production validation uses `--require-live-checks`.
 
 ## Website Gate
 

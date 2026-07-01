@@ -43,6 +43,7 @@ scripts/indexer-status.sh
 scripts/run-bootstrap.sh
 scripts/run-live-checks.sh
 scripts/generate-site.sh
+scripts/verify-release.sh
 scripts/publish-indexer-site.sh
 scripts/gcloud-stop-indexer.sh
 ```
@@ -100,6 +101,8 @@ scripts/gcloud-stop-indexer.sh
 ```
 
 For the initial full report, use `PIPELINE_MODE=bootstrap scripts/gcloud-run-indexer-pipeline.sh` after HSD is fully synced. For a streaming pre-extracted state file, use `PIPELINE_MODE=jsonl JSONL_PATH=/mnt/hnscrawler/data/extracted_names.jsonl scripts/gcloud-run-indexer-pipeline.sh`.
+
+`scripts/gcloud-run-indexer-pipeline.sh` runs `scripts/verify-release.sh` after static site generation. By default, `REQUIRE_LIVE_CHECKS` follows `RUN_LIVE_CHECKS`, so production runs that request live checks fail before publishing if the database lacks live-check rows or live-check timestamps.
 
 ## Storage Rules
 

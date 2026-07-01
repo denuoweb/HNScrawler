@@ -1,4 +1,4 @@
-.PHONY: install test lint fixture-site clean
+.PHONY: install test lint fixture-site verify-release clean
 
 install:
 	python3 -m venv .venv
@@ -15,6 +15,8 @@ fixture-site:
 	. .venv/bin/activate && hns-topology bootstrap-fixture --fixture tests/fixtures/sample_hsd_names.json --db data/topology.sqlite
 	. .venv/bin/activate && hns-topology generate-site --db data/topology.sqlite --out public
 
+verify-release:
+	. .venv/bin/activate && hns-topology validate-release --db data/topology.sqlite --public-dir public
+
 clean:
 	rm -rf data public .pytest_cache .ruff_cache
-

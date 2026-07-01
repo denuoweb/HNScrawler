@@ -14,4 +14,5 @@ hns-topology reorg-check --db "$TOPOLOGY_DB" --rollback
 scripts/run-incremental.sh
 scripts/run-live-checks.sh
 scripts/generate-site.sh
+scripts/verify-release.sh
 scripts/publish-site.sh
