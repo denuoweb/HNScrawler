@@ -104,6 +104,7 @@ fi
 
 if [ "$PROVISION_INDEXER" = "1" ]; then
   run_cmd scripts/gcloud-create-indexer.sh
+  run_cmd scripts/gcloud-wait-indexer-ssh.sh
   run_cmd scripts/setup-indexer-disk.sh
   run_cmd scripts/gcloud-sync-indexer-code.sh
 fi

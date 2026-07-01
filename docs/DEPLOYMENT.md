@@ -45,6 +45,7 @@ Optional for release archives:
 
 ```bash
 scripts/gcloud-create-indexer.sh
+scripts/gcloud-wait-indexer-ssh.sh
 scripts/setup-indexer-disk.sh
 scripts/gcloud-sync-indexer-code.sh
 gcloud compute ssh "$INDEXER_VM" --zone "$GCP_ZONE" --project "$GCP_PROJECT" --command "cd /mnt/hnscrawler/HNScrawler && scripts/setup-indexer.sh"

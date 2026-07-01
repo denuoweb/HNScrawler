@@ -94,6 +94,7 @@ Indexer VM setup scripts:
 
 ```bash
 scripts/gcloud-create-indexer.sh
+scripts/gcloud-wait-indexer-ssh.sh
 scripts/setup-indexer-disk.sh
 scripts/gcloud-sync-indexer-code.sh
 scripts/setup-hsd-service.sh
