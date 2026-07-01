@@ -6,6 +6,8 @@ The cheapest sustainable deployment is an ephemeral indexer VM plus the existing
 
 Copy `scripts/env.example` to `.env` on the operator machine or export the variables directly.
 
+See `docs/CLOUD_AUDIT.md` for the current local `gcloud` context observed when the repository was bootstrapped.
+
 Required for HSD indexing:
 
 - `HSD_RPC_URL`
@@ -60,4 +62,3 @@ scripts/gcloud-stop-indexer.sh
 ## Public Repository
 
 The intended public repository is `denuoweb/HNScrawler`. Local changes should be committed in small groups and pushed to `main`.
-
