@@ -7,6 +7,8 @@ INDEXER_MOUNT="${INDEXER_MOUNT:-/mnt/hnscrawler}"
 CHECK_HSD_READY="${CHECK_HSD_READY:-1}"
 CHANGED_NAMES_FILE="${CHANGED_NAMES_FILE:-}"
 SCAN_BLOCK_HEIGHT="${SCAN_BLOCK_HEIGHT:-}"
+ALLOW_EMPTY_BLOCK_SCAN="${ALLOW_EMPTY_BLOCK_SCAN:-0}"
+ALLOW_UNRESOLVED_NAME_HASHES="${ALLOW_UNRESOLVED_NAME_HASHES:-0}"
 
 . .venv/bin/activate
 if [ -d "$INDEXER_MOUNT" ] && ! mountpoint -q "$INDEXER_MOUNT"; then
@@ -25,7 +27,14 @@ fi
 if [[ -n "$CHANGED_NAMES_FILE" ]]; then
   hns-topology incremental --db "$TOPOLOGY_DB" --rules "$PROVIDER_RULES" --changed-names-file "$CHANGED_NAMES_FILE"
 elif [[ -n "$SCAN_BLOCK_HEIGHT" ]]; then
-  hns-topology incremental --db "$TOPOLOGY_DB" --rules "$PROVIDER_RULES" --scan-block-height "$SCAN_BLOCK_HEIGHT"
+  args=(incremental --db "$TOPOLOGY_DB" --rules "$PROVIDER_RULES" --scan-block-height "$SCAN_BLOCK_HEIGHT")
+  if [ "$ALLOW_EMPTY_BLOCK_SCAN" = "1" ]; then
+    args+=(--allow-empty-block-scan)
+  fi
+  if [ "$ALLOW_UNRESOLVED_NAME_HASHES" = "1" ]; then
+    args+=(--allow-unresolved-name-hashes)
+  fi
+  hns-topology "${args[@]}"
 else
   echo "Set CHANGED_NAMES_FILE or SCAN_BLOCK_HEIGHT for incremental mode." >&2
   exit 2

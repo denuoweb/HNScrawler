@@ -14,7 +14,7 @@ from .indexer import (
     bootstrap_from_fixture,
     bootstrap_from_hsd,
     bootstrap_from_jsonl,
-    extract_changed_names_from_block,
+    extract_changed_name_refs_from_block,
     find_reorg_mismatch,
     index_changed_names,
     rollback_reorg,
@@ -90,6 +90,8 @@ def build_parser() -> argparse.ArgumentParser:
     incremental.add_argument("--scan-block-height", type=int)
     incremental.add_argument("--reorg-keep-blocks", type=int, default=300)
     incremental.add_argument("--rollback-on-reorg", action="store_true")
+    incremental.add_argument("--allow-empty-block-scan", action="store_true")
+    incremental.add_argument("--allow-unresolved-name-hashes", action="store_true")
     incremental.set_defaults(func=cmd_incremental)
 
     reorg = sub.add_parser("reorg-check", help="Compare recent indexed block hashes with HSD.")
@@ -235,9 +237,29 @@ def cmd_incremental(args: argparse.Namespace) -> int:
         ]
     elif args.scan_block_height is not None:
         block = client.get_block_by_height(args.scan_block_height)
-        changed_names = extract_changed_names_from_block(block)
+        extraction = extract_changed_name_refs_from_block(block, name_by_hash=client.get_name_by_hash)
+        changed_names = extraction.names
         height = args.scan_block_height
         block_hash = block.get("hash") or client.get_block_hash(args.scan_block_height)
+        allow_unresolved = args.allow_unresolved_name_hashes or _env_flag(
+            "ALLOW_UNRESOLVED_NAME_HASHES"
+        )
+        if extraction.unresolved_name_hashes and not allow_unresolved:
+            print(
+                "block scan found unresolved name hashes; refusing to record an incomplete "
+                "incremental block. Set --allow-unresolved-name-hashes only for a deliberate "
+                f"best-effort run. unresolved={extraction.unresolved_name_hashes[:5]}",
+                file=sys.stderr,
+            )
+            return 4
+        allow_empty = args.allow_empty_block_scan or _env_flag("ALLOW_EMPTY_BLOCK_SCAN")
+        if not changed_names and not allow_empty:
+            print(
+                "block scan found no changed names; refusing to record an empty incremental "
+                "block unless --allow-empty-block-scan is set for a known-empty block.",
+                file=sys.stderr,
+            )
+            return 4
     else:
         print("incremental requires --changed-names-file or --scan-block-height", file=sys.stderr)
         return 2

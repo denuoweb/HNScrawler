@@ -26,6 +26,7 @@
 
 - Snapshot metadata has height, tip hash, generated time, HSD chain, HSD version, crawler version, source hash, and provider rules hash.
 - `hns-topology reorg-check --db <db>` passes before incremental updates.
+- Incremental block scans do not use `ALLOW_EMPTY_BLOCK_SCAN` or `ALLOW_UNRESOLVED_NAME_HASHES` unless the block/run has been inspected.
 - Provider rules version is committed.
 - Class counts are non-negative and active plus expired equals total.
 - Public `topology.sqlite.gz` opens after decompression.

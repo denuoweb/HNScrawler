@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,14 @@ from .timeutil import utc_now
 
 class UnpaginatedGetNamesError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class ChangedNameExtraction:
+    names: list[str]
+    name_hashes: list[str]
+    unresolved_name_hashes: list[str]
+    name_covenant_count: int
 
 
 def bootstrap_from_hsd(
@@ -243,13 +252,20 @@ def rollback_reorg(
     return result
 
 
-def extract_changed_names_from_block(block: dict[str, Any]) -> list[str]:
-    """Best-effort extraction from decoded HSD block transaction JSON.
+def extract_changed_name_refs_from_block(
+    block: dict[str, Any],
+    *,
+    name_by_hash: Callable[[str], str | None] | None = None,
+) -> ChangedNameExtraction:
+    """Extract changed names from detailed HSD block JSON.
 
-    HSD response shapes vary by verbosity and version. This parser only returns
-    names that are already decoded as strings in covenant/name fields.
+    HSD covenant JSON stores raw names only for some actions. Other name
+    actions carry the name hash, which must be resolved through getnamebyhash.
     """
     changed: set[str] = set()
+    name_hashes: set[str] = set()
+    unresolved_hashes: set[str] = set()
+    name_covenant_count = 0
     for tx in block.get("tx", []) or []:
         if not isinstance(tx, dict):
             continue
@@ -258,18 +274,124 @@ def extract_changed_names_from_block(block: dict[str, Any]) -> list[str]:
             if not isinstance(output, dict):
                 continue
             covenant = output.get("covenant") or {}
+            if not isinstance(covenant, dict):
+                continue
+            items = covenant.get("items", []) or []
+            is_name_covenant = _is_name_covenant(covenant)
+            if is_name_covenant:
+                name_covenant_count += 1
             candidates = [
                 covenant.get("name"),
                 covenant.get("nameString"),
                 output.get("name"),
             ]
-            for item in covenant.get("items", []) or []:
+            raw_name_index = _raw_name_item_index(covenant)
+            if raw_name_index is not None and raw_name_index < len(items):
+                candidates.append(_decode_covenant_name_item(items[raw_name_index]))
+
+            for item in items:
                 if isinstance(item, dict):
                     candidates.extend([item.get("name"), item.get("nameString")])
+            found_plain_name = False
             for candidate in candidates:
                 if isinstance(candidate, str) and candidate:
                     changed.add(normalize_name(candidate))
-    return sorted(changed)
+                    found_plain_name = True
+
+            if not is_name_covenant:
+                continue
+            name_hash = _covenant_name_hash(items)
+            if name_hash is None:
+                continue
+            name_hashes.add(name_hash)
+            if found_plain_name:
+                continue
+            if name_by_hash is None:
+                continue
+            resolved = name_by_hash(name_hash)
+            if resolved:
+                changed.add(normalize_name(resolved))
+            else:
+                unresolved_hashes.add(name_hash)
+    return ChangedNameExtraction(
+        names=sorted(changed),
+        name_hashes=sorted(name_hashes),
+        unresolved_name_hashes=sorted(unresolved_hashes),
+        name_covenant_count=name_covenant_count,
+    )
+
+
+def extract_changed_names_from_block(block: dict[str, Any]) -> list[str]:
+    return extract_changed_name_refs_from_block(block).names
+
+
+_NAME_COVENANT_ACTIONS = {
+    "CLAIM",
+    "OPEN",
+    "BID",
+    "REVEAL",
+    "REDEEM",
+    "REGISTER",
+    "UPDATE",
+    "RENEW",
+    "TRANSFER",
+    "FINALIZE",
+    "REVOKE",
+}
+_NAME_COVENANT_TYPES = set(range(1, 12))
+_RAW_NAME_ITEM_INDEX_BY_ACTION = {
+    "CLAIM": 2,
+    "OPEN": 2,
+    "BID": 2,
+    "FINALIZE": 2,
+}
+_RAW_NAME_ITEM_INDEX_BY_TYPE = {
+    1: 2,
+    2: 2,
+    3: 2,
+    10: 2,
+}
+
+
+def _is_name_covenant(covenant: dict[str, Any]) -> bool:
+    action = str(covenant.get("action") or "").upper()
+    if action in _NAME_COVENANT_ACTIONS:
+        return True
+    covenant_type = _maybe_int(covenant.get("type"))
+    return covenant_type in _NAME_COVENANT_TYPES
+
+
+def _raw_name_item_index(covenant: dict[str, Any]) -> int | None:
+    action = str(covenant.get("action") or "").upper()
+    if action in _RAW_NAME_ITEM_INDEX_BY_ACTION:
+        return _RAW_NAME_ITEM_INDEX_BY_ACTION[action]
+    covenant_type = _maybe_int(covenant.get("type"))
+    return _RAW_NAME_ITEM_INDEX_BY_TYPE.get(covenant_type)
+
+
+def _decode_covenant_name_item(value: Any) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return bytes.fromhex(value).decode("latin-1")
+    except ValueError:
+        return None
+
+
+def _covenant_name_hash(items: Any) -> str | None:
+    if not isinstance(items, list) or not items:
+        return None
+    value = items[0]
+    if not isinstance(value, str):
+        return None
+    normalized = value.lower()
+    if len(normalized) != 64:
+        return None
+    try:
+        bytes.fromhex(normalized)
+    except ValueError:
+        return None
+    return normalized
 
 
 def index_one_name(

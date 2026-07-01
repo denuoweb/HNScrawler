@@ -77,8 +77,16 @@ class HsdRpcClient:
             raise HsdRpcError(f"getblockhash returned non-string for height {height}")
         return result
 
-    def get_block_by_height(self, height: int, verbosity: int = 2) -> dict[str, Any]:
-        result = self.call("getblockbyheight", [height, verbosity])
+    def get_block_by_height(self, height: int, details: bool = True) -> dict[str, Any]:
+        result = self.call("getblockbyheight", [height, True, details])
         if not isinstance(result, dict):
             raise HsdRpcError(f"getblockbyheight returned non-object for height {height}")
+        return result
+
+    def get_name_by_hash(self, name_hash: str) -> str | None:
+        result = self.call("getnamebyhash", [name_hash])
+        if result is None:
+            return None
+        if not isinstance(result, str):
+            raise HsdRpcError(f"getnamebyhash returned non-string for hash {name_hash}")
         return result

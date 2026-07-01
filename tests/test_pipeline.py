@@ -8,6 +8,7 @@ from hns_topology.indexer import (
     bootstrap_from_fixture,
     bootstrap_from_hsd,
     bootstrap_from_jsonl,
+    extract_changed_name_refs_from_block,
     find_reorg_mismatch,
     index_changed_names,
     rollback_reorg,
@@ -38,6 +39,9 @@ class FakeHsdClient:
 
     def get_name_resource(self, name: str):
         return self.resources[name]
+
+    def get_name_by_hash(self, name_hash: str):
+        return None
 
     def get_block_hash(self, height: int) -> str:
         return self.block_hashes[height]
@@ -200,6 +204,66 @@ def test_hsd_bootstrap_smoke_limit_records_provenance(tmp_path):
     assert client.get_names_calls == 1
     assert summary["source_type"] == "hsd_rpc"
     assert summary["source_rpc_url"] == "http://127.0.0.1:12037"
+
+
+def test_extract_changed_name_refs_decodes_raw_names_and_resolves_hashes():
+    update_hash = "11" * 32
+    open_hash = "22" * 32
+    block = {
+        "tx": [
+            {
+                "vout": [
+                    {
+                        "covenant": {
+                            "action": "OPEN",
+                            "items": [open_hash, "00000000", "646972656374"],
+                        }
+                    },
+                    {
+                        "covenant": {
+                            "action": "UPDATE",
+                            "items": [update_hash, "01000000", "00"],
+                        }
+                    },
+                ]
+            }
+        ]
+    }
+
+    extraction = extract_changed_name_refs_from_block(
+        block,
+        name_by_hash=lambda name_hash: "resolved" if name_hash == update_hash else None,
+    )
+
+    assert extraction.names == ["direct", "resolved"]
+    assert extraction.name_hashes == [update_hash, open_hash]
+    assert extraction.unresolved_name_hashes == []
+    assert extraction.name_covenant_count == 2
+
+
+def test_extract_changed_name_refs_reports_unresolved_hashes():
+    update_hash = "11" * 32
+    block = {
+        "tx": [
+            {
+                "vout": [
+                    {
+                        "covenant": {
+                            "action": "UPDATE",
+                            "items": [update_hash, "01000000", "00"],
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+
+    extraction = extract_changed_name_refs_from_block(block, name_by_hash=lambda _: None)
+
+    assert extraction.names == []
+    assert extraction.name_hashes == [update_hash]
+    assert extraction.unresolved_name_hashes == [update_hash]
+    assert extraction.name_covenant_count == 1
 
 
 def test_reorg_rollback_restores_previous_compact_rows(tmp_path):
