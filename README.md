@@ -76,7 +76,7 @@ Generated site files:
 hns-topology init-db --db data/topology.sqlite
 hns-topology bootstrap-fixture --fixture tests/fixtures/sample_hsd_names.json --db data/topology.sqlite
 hns-topology bootstrap-jsonl --jsonl extracted_names.jsonl --db data/topology.sqlite --height 123456 --tip-hash <hash>
-hns-topology hsd-status --max-block-lag 2
+hns-topology hsd-status --max-block-lag 2 --min-block-height 300000
 hns-topology bootstrap --db data/topology.sqlite --limit 100
 hns-topology incremental --db data/topology.sqlite
 hns-topology incremental --db data/topology.sqlite --scan-block-height 123457

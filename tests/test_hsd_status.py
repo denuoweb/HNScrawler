@@ -60,3 +60,20 @@ def test_hsd_readiness_can_allow_remote_rpc_explicitly():
     )
 
     assert hsd_is_ready(checks)
+
+
+def test_hsd_readiness_rejects_shallow_mainnet_height():
+    checks = evaluate_hsd_readiness(
+        {
+            "chain": "main",
+            "blocks": 4578,
+            "headers": 4578,
+            "bestblockhash": "00ab",
+        },
+        rpc_url="http://127.0.0.1:12037",
+        min_block_height=300000,
+    )
+
+    failed = {check.name for check in checks if not check.ok}
+    assert not hsd_is_ready(checks)
+    assert "minimum_block_height" in failed

@@ -12,6 +12,10 @@ gcloud compute ssh "$INDEXER_VM" \
   --zone "$GCP_ZONE" \
   --quiet \
   --command "set -euo pipefail
+if ! command -v git >/dev/null 2>&1; then
+  sudo apt-get update
+  sudo apt-get install -y git
+fi
 if [ ! -d '$INDEXER_REPO_DIR/.git' ]; then
   rm -rf '$INDEXER_REPO_DIR'
   git clone '$REPO_URL' '$INDEXER_REPO_DIR'
@@ -21,4 +25,3 @@ else
   git -C '$INDEXER_REPO_DIR' pull --ff-only
 fi
 git -C '$INDEXER_REPO_DIR' status --short --branch"
-

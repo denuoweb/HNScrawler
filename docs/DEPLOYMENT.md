@@ -13,6 +13,7 @@ Required for HSD indexing:
 - `HSD_RPC_URL`
 - `HSD_API_KEY`
 - `HSD_MAX_BLOCK_LAG` defaults to `2`
+- `HSD_MIN_BLOCK_HEIGHT` defaults to `300000` for production mainnet readiness checks
 - `CHECK_HSD_READY` defaults to `1`
 
 Required for GCP provisioning:
@@ -118,7 +119,7 @@ Keep full HSD data off the production web VM unless there is a deliberate later 
 
 HSD mainnet RPC listens on `127.0.0.1:12037` by default. Bootstrap and incremental scripts source `/mnt/hnscrawler/secrets/hsd.env` when present.
 
-`scripts/check-hsd-ready.sh` runs `hns-topology hsd-status` before HSD-backed bootstrap and incremental indexing. It requires a local RPC URL, reported chain and tip hash, a non-negative block height, `initialblockdownload = false` when HSD reports that field, and `headers - blocks <= HSD_MAX_BLOCK_LAG` when headers are reported. Use `CHECK_HSD_READY=0` only for deliberate debugging. Use `HSD_ALLOW_REMOTE_RPC=1` only when intentionally checking a remote RPC endpoint.
+`scripts/check-hsd-ready.sh` runs `hns-topology hsd-status` before HSD-backed bootstrap and incremental indexing. It requires a local RPC URL, reported chain and tip hash, a non-negative block height, `blocks >= HSD_MIN_BLOCK_HEIGHT`, `initialblockdownload = false` when HSD reports that field, and `headers - blocks <= HSD_MAX_BLOCK_LAG` when headers are reported. Use `CHECK_HSD_READY=0` only for deliberate debugging. Use `HSD_ALLOW_REMOTE_RPC=1` only when intentionally checking a remote RPC endpoint.
 
 ## Nightly Or Weekly Update
 

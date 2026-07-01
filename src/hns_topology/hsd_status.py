@@ -19,6 +19,7 @@ def evaluate_hsd_readiness(
     *,
     rpc_url: str,
     max_block_lag: int = 2,
+    min_block_height: int = 0,
     require_local_rpc: bool = True,
 ) -> list[HsdCheck]:
     blocks = _maybe_int(info.get("blocks") or info.get("height"))
@@ -37,6 +38,15 @@ def evaluate_hsd_readiness(
             "missing" if blocks is None else str(blocks),
         ),
     ]
+
+    if min_block_height > 0:
+        checks.append(
+            HsdCheck(
+                "minimum_block_height",
+                blocks is not None and blocks >= min_block_height,
+                f"blocks={blocks if blocks is not None else 'missing'} min={min_block_height}",
+            )
+        )
 
     if headers is None:
         checks.append(HsdCheck("headers_reported", True, "not reported by HSD"))
