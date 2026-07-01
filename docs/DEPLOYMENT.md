@@ -137,6 +137,8 @@ When `RUN_ARCHIVE=1`, the pipeline runs `scripts/archive-release.sh` after valid
 
 Single-block `SCAN_BLOCK_HEIGHT` mode requests detailed HSD block JSON and resolves covenant name hashes with `getnamebyhash`. It refuses empty scans and unresolved name hashes by default. Set `ALLOW_EMPTY_BLOCK_SCAN=1` only for a known-empty block, and set `ALLOW_UNRESOLVED_NAME_HASHES=1` only for a deliberate best-effort run.
 
+`scripts/full-nightly-job.sh` is the local wrapper for the same sequence on an already-prepared indexer host: HSD readiness, reorg check, bounded incremental catch-up, optional live checks, site generation, release validation, archive creation, and optional publishing. The GCE wrapper remains preferred because it also handles VM lifecycle and attached-disk setup.
+
 ## Storage Rules
 
 - HSD datadir lives on the large indexer disk.

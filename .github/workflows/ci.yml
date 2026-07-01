@@ -30,3 +30,7 @@ jobs:
           hns-topology bootstrap-fixture --fixture tests/fixtures/sample_hsd_names.json --db data/topology.sqlite
           hns-topology generate-site --db data/topology.sqlite --out public
           hns-topology validate-release --db data/topology.sqlite --public-dir public
+          hns-topology archive-release --db data/topology.sqlite --public-dir public --out-dir archives --keep 2
+          test "$(find archives -name '*-manifest.json' | wc -l)" -eq 1
+          test "$(find archives -name '*-site.tar.gz' | wc -l)" -eq 1
+          test "$(find archives -name '*-topology.sqlite.gz' | wc -l)" -eq 1
