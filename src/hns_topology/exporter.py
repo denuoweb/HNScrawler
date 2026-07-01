@@ -471,6 +471,9 @@ def build_manifest(out_dir: str | Path, *, summary: dict[str, Any], names_limit:
         "export": {
             "format": "hns-topology-static-report",
             "names_limit": names_limit,
+            "names_total_count": summary["total_names"],
+            "names_exported_count": min(int(summary["total_names"]), names_limit),
+            "names_truncated": int(summary["total_names"]) > names_limit,
         },
         "snapshot": {
             "height": summary["last_indexed_height"],

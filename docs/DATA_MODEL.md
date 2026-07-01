@@ -136,4 +136,5 @@ Public exports are generated from SQLite:
 - crawler version
 - snapshot height, tip hash, source provenance, and provider-rule provenance
 - summary counts copied from `summary.json`
+- browser table export limits, total name count, exported name row count, and truncation status
 - byte size and SHA-256 for each generated data artifact except the manifest itself

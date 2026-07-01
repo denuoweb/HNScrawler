@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import gzip
 import json
 import shutil
@@ -525,6 +526,81 @@ def _validate_export_manifest(
                 "matched" if not mismatches else ", ".join(mismatches),
             )
         )
+        _validate_export_counts(manifest_path, manifest, summary, checks)
+
+
+def _validate_export_counts(
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    summary: dict[str, Any],
+    checks: list[ReleaseCheck],
+) -> None:
+    export_meta = manifest.get("export") if isinstance(manifest.get("export"), dict) else {}
+    names_limit = export_meta.get("names_limit")
+    names_total = export_meta.get("names_total_count")
+    names_exported = export_meta.get("names_exported_count")
+    names_truncated = export_meta.get("names_truncated")
+    expected_total = int(summary["total_names"])
+    expected_exported = (
+        min(expected_total, names_limit)
+        if isinstance(names_limit, int) and names_limit >= 0
+        else None
+    )
+    expected_truncated = (
+        expected_total > names_limit
+        if isinstance(names_limit, int) and names_limit >= 0
+        else None
+    )
+
+    mismatches: list[str] = []
+    if names_total != expected_total:
+        mismatches.append(f"names_total_count={names_total}!={expected_total}")
+    if expected_exported is None:
+        mismatches.append(f"names_limit={names_limit!r} is invalid")
+    elif names_exported != expected_exported:
+        mismatches.append(f"names_exported_count={names_exported}!={expected_exported}")
+    if expected_truncated is not None and names_truncated != expected_truncated:
+        mismatches.append(f"names_truncated={names_truncated}!={expected_truncated}")
+
+    checks.append(
+        ReleaseCheck(
+            "manifest_export_counts",
+            not mismatches,
+            "matched" if not mismatches else "; ".join(mismatches),
+        )
+    )
+
+    if expected_exported is None:
+        return
+
+    names_json_path = manifest_path.parent / "names.json"
+    names_csv_path = manifest_path.parent / "names.csv"
+    row_mismatches: list[str] = []
+    try:
+        names_json = json.loads(names_json_path.read_text(encoding="utf-8"))
+        json_rows = len(names_json) if isinstance(names_json, list) else None
+    except Exception as exc:
+        row_mismatches.append(f"names.json: {type(exc).__name__}")
+    else:
+        if json_rows != expected_exported:
+            row_mismatches.append(f"names.json rows={json_rows}!={expected_exported}")
+
+    try:
+        with names_csv_path.open(newline="", encoding="utf-8") as handle:
+            csv_rows = sum(1 for _ in csv.DictReader(handle))
+    except Exception as exc:
+        row_mismatches.append(f"names.csv: {type(exc).__name__}")
+    else:
+        if csv_rows != expected_exported:
+            row_mismatches.append(f"names.csv rows={csv_rows}!={expected_exported}")
+
+    checks.append(
+        ReleaseCheck(
+            "names_export_rows",
+            not row_mismatches,
+            "matched" if not row_mismatches else "; ".join(row_mismatches),
+        )
+    )
 
 
 def _is_unsafe_manifest_path(relative: str) -> bool:

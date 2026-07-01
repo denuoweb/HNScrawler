@@ -138,6 +138,10 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert manifest["manifest_version"] == 1
     assert manifest["snapshot"]["height"] == 123456
     assert manifest["summary"]["total_names"] == 9
+    assert manifest["export"]["names_limit"] == 5000
+    assert manifest["export"]["names_total_count"] == 9
+    assert manifest["export"]["names_exported_count"] == 9
+    assert manifest["export"]["names_truncated"] is False
     assert "summary.json" in manifest_artifacts
     assert "topology.sqlite.gz" in manifest_artifacts
     assert namebase_provider["ns_pattern"] == "suffix:namebase.io,suffix:parking.namebase.io"
@@ -147,6 +151,29 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
 
     public_checks = validate_public_release(public_dir=out)
     assert release_is_valid(public_checks), [check for check in public_checks if not check.ok]
+
+
+def test_generate_site_records_limited_names_export_counts(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    out = tmp_path / "public"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+        generate_site(conn, db_path=db_path, out_dir=out, names_limit=3)
+
+    manifest = json.loads((out / "data/manifest.json").read_text(encoding="utf-8"))
+    names_json = json.loads((out / "data/names.json").read_text(encoding="utf-8"))
+    csv_rows = (out / "data/names.csv").read_text(encoding="utf-8").splitlines()
+
+    assert manifest["export"]["names_limit"] == 3
+    assert manifest["export"]["names_total_count"] == 9
+    assert manifest["export"]["names_exported_count"] == 3
+    assert manifest["export"]["names_truncated"] is True
+    assert len(names_json) == 3
+    assert len(csv_rows) == 4
+
+    checks = validate_release(db_path=db_path, public_dir=out)
+    assert release_is_valid(checks), [check for check in checks if not check.ok]
 
 
 def test_release_validator_catches_missing_artifacts(tmp_path):
@@ -180,6 +207,27 @@ def test_release_validator_catches_manifest_checksum_mismatch(tmp_path):
     failed = {check.name: check.detail for check in checks if not check.ok}
     assert "manifest_artifacts" in failed
     assert "providers.json" in failed["manifest_artifacts"]
+
+
+def test_release_validator_catches_manifest_export_count_mismatch(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    out = tmp_path / "public"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+        generate_site(conn, db_path=db_path, out_dir=out, names_limit=3)
+
+    manifest_path = out / "data/manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["export"]["names_exported_count"] = 2
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    checks = validate_release(db_path=db_path, public_dir=out)
+
+    assert not release_is_valid(checks)
+    failed = {check.name: check.detail for check in checks if not check.ok}
+    assert "manifest_export_counts" in failed
+    assert "names_exported_count=2!=3" in failed["manifest_export_counts"]
 
 
 def test_public_validator_requires_embedded_sqlite(tmp_path):

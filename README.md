@@ -51,6 +51,8 @@ Use a temporary or dedicated indexer VM with a large persistent disk for HSD and
 
 Every generated snapshot includes source provenance, provider-rule provenance, and live-check run settings in `data/summary.json`, including source type/hash, crawler version, provider rule version, provider rule hash, live-check rate limits, candidate counts, and checked counts. `data/manifest.json` records the export format version plus SHA-256 and byte-size entries for the public data files.
 
+`data/names.json` and `data/names.csv` are browser-sized table exports capped by `--names-limit`; the complete compact database is always available as `data/topology.sqlite.gz`. The manifest records the total name count, exported row count, and whether the table exports are truncated.
+
 Generated site files:
 
 - `index.html`
