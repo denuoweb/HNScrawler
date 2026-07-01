@@ -246,7 +246,7 @@ def index_compact_name_batch(
         has_ds = bool(row.get("has_ds")) or bool(ds_records)
         has_txt = bool(row.get("has_txt"))
         malformed = bool(row.get("malformed"))
-        provider_guess = rules.match_fields(
+        provider_guess = rules.match_normalized_fields(
             name,
             ns_names=ns_names,
             glue4=glue4,

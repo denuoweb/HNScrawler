@@ -34,6 +34,6 @@ Tuning knobs:
 - `JSONL_BOOTSTRAP_BATCH_SIZE=5000` by default. Increase on a larger indexer VM if memory is comfortable.
 - `EXPORT_LIMIT=<n>` for smoke runs.
 
-Synthetic compact import profiling on 100,000 rows dropped from 11.80 seconds to 6.97 seconds after direct tuple batching, sparse JSON array handling, and cached provider IP parsing. Real mainnet speedup depends on HSD tree I/O and the share of names with non-empty resources, but the compact path keeps the Python side close to SQLite write cost.
+Synthetic compact import profiling on 100,000 rows dropped from 11.80 seconds to 6.53 seconds after direct tuple batching, sparse JSON array handling, cached provider IP parsing, and provider-rule short-circuiting. Real mainnet speedup depends on HSD tree I/O and the share of names with non-empty resources, but the compact path keeps the Python side close to SQLite write cost.
 
 Headers are not enough for this report. Block headers prove chain order and work, but HNS name resources are current state in the name tree. The report needs the current resource bytes to classify NS, GLUE, DS, SYNTH, TXT, DANE candidacy, and provider patterns.

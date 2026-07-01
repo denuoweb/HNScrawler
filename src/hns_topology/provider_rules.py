@@ -79,6 +79,7 @@ class ProviderRules:
             }
             for rule in self.rules
         } | {default_provider_key: {"ns_pattern": "", "ip_pattern": ""}}
+        self.ip_rules = tuple(rule for rule in self.rules if rule.ip_networks)
 
     @classmethod
     def from_file(cls, path: str | Path) -> ProviderRules:
@@ -136,16 +137,38 @@ class ProviderRules:
         synth4: list[str],
         synth6: list[str],
     ) -> str:
-        normalized_name = normalize_name(name)
+        return self.match_normalized_fields(
+            normalize_name(name),
+            ns_names=ns_names,
+            glue4=glue4,
+            glue6=glue6,
+            synth4=synth4,
+            synth6=synth6,
+        )
+
+    def match_normalized_fields(
+        self,
+        normalized_name: str,
+        *,
+        ns_names: list[str],
+        glue4: list[str],
+        glue6: list[str],
+        synth4: list[str],
+        synth6: list[str],
+    ) -> str:
         ip_values: list[str] | None = None
+        if not ns_names:
+            ip_values = [*glue4, *glue6, *synth4, *synth6]
+            if not ip_values:
+                return self.default_provider_key
+            return self._match_ip_only(ip_values)
+
         for rule in self.rules:
             if rule.self_hosted and _is_self_hosted(normalized_name, ns_names):
                 return rule.provider_key
             if rule.ns_suffixes and _matches_ns_suffix(ns_names, rule.ns_suffixes):
                 return rule.provider_key
-            if rule.compiled_ns_regexes and _matches_ns_regex(
-                ns_names, rule.compiled_ns_regexes
-            ):
+            if rule.compiled_ns_regexes and _matches_ns_regex(ns_names, rule.compiled_ns_regexes):
                 return rule.provider_key
             if rule.ip_networks:
                 if ip_values is None:
@@ -154,22 +177,9 @@ class ProviderRules:
                     return rule.provider_key
         return self.default_provider_key
 
-    def match_preclassified(
-        self,
-        name: str,
-        *,
-        ns_names: list[str],
-        ip_addresses: list[str],
-    ) -> str:
-        normalized_name = normalize_name(name)
-        for rule in self.rules:
-            if rule.self_hosted and _is_self_hosted(normalized_name, ns_names):
-                return rule.provider_key
-            if rule.ns_suffixes and _matches_ns_suffix(ns_names, rule.ns_suffixes):
-                return rule.provider_key
-            if rule.compiled_ns_regexes and _matches_ns_regex(ns_names, rule.compiled_ns_regexes):
-                return rule.provider_key
-            if rule.ip_networks and _matches_ip_values(ip_addresses, rule.ip_networks):
+    def _match_ip_only(self, ip_values: list[str]) -> str:
+        for rule in self.ip_rules:
+            if _matches_ip_values(ip_values, rule.ip_networks):
                 return rule.provider_key
         return self.default_provider_key
 
