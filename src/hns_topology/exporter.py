@@ -214,7 +214,7 @@ def build_faq_answers(conn: sqlite3.Connection, summary: dict[str, Any]) -> list
             "likely_websites",
             "How many are likely websites?",
             "likely_websites",
-            "Active names with direct IP, glue IP, or DS-backed delegation.",
+            "Active names with direct IP, GLUE-backed delegation, or DS-backed delegation.",
             "names.html?filter=likely_websites",
         ),
         answer(
@@ -228,7 +228,7 @@ def build_faq_answers(conn: sqlite3.Connection, summary: dict[str, Any]) -> list
             "doh_fallback_required",
             "How many require DoH fallback?",
             "doh_fallback_required",
-            "Latest live check marked DoH fallback as required.",
+            "Latest live check could only find a website address through the configured fallback resolver, not through strict HNS bootstrap.",
             "broken.html?filter=doh_fallback_required",
         ),
         answer(
@@ -350,11 +350,11 @@ def examples_for_filter(conn: sqlite3.Connection, key: str) -> list[str]:
         "default_provider_names": "ps.provider_type = 'default_parking'",
         "ds_records": "rs.has_ds = 1",
         "dnssec_candidates": "rs.has_ds = 1 AND json_array_length(rs.ns_names) > 0",
-        "likely_websites": "json_array_length(rs.synth4) > 0 OR json_array_length(rs.synth6) > 0 OR json_array_length(rs.glue4) > 0 OR json_array_length(rs.glue6) > 0 OR rs.has_ds = 1",
+        "likely_websites": "json_array_length(rs.synth4) > 0 OR json_array_length(rs.synth6) > 0 OR json_array_length(rs.glue4) > 0 OR json_array_length(rs.glue6) > 0 OR (rs.has_ds = 1 AND json_array_length(rs.ns_names) > 0)",
         "strict_hns_working": "ls.strict_hns_status = 'working'",
         "doh_fallback_required": "ls.doh_fallback_status IN ('required', 'doh_fallback_only')",
         "dane_working": "ls.dane_status = 'valid'",
-        "missing_glue_only": "json_array_length(rs.ns_names) > 0 AND json_array_length(rs.glue4) = 0 AND json_array_length(rs.glue6) = 0",
+        "missing_glue_only": "json_array_length(rs.ns_names) > 0 AND json_array_length(rs.glue4) = 0 AND json_array_length(rs.glue6) = 0 AND COALESCE(ls.failure_reason, 'missing_glue') = 'missing_glue'",
         "stale_tlsa_only": "ls.failure_reason = 'stale_tlsa_spki_mismatch'",
     }
     where = filters.get(key, "1=1")

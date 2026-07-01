@@ -72,6 +72,10 @@ Latest live-check result per name.
 
 `dnssec_status = valid` means the live checker found delegated DNSKEY data matching the on-chain DS record and, when present, a valid DNSKEY RRSIG. DNSSEC failure statuses map to the stable failure taxonomy.
 
+`strict_hns_status = working` means address discovery and HTTPS loading succeeded without using the fallback resolver. Direct `SYNTH4`/`SYNTH6` records count as strict website addresses. `GLUE4`/`GLUE6` records are used only as nameserver bootstrap addresses for delegated resolution.
+
+`doh_fallback_status = required` means strict HNS address discovery failed and the checker found an address only through the configured fallback resolver path. The field name is retained for export stability; the value records fallback dependency, not a guaranteed DoH transport.
+
 ## `provider_summary`
 
 Materialized provider counts for site generation.

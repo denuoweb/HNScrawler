@@ -80,6 +80,14 @@ Live checks are intentionally limited to promising names:
 
 Checks are rate-limited and store only status metadata.
 
+Strict HNS address discovery uses only addresses that can be bootstrapped from the HNS resource:
+
+- `SYNTH4` / `SYNTH6` are treated as website addresses.
+- `GLUE4` / `GLUE6` are treated as authoritative nameserver bootstrap addresses, not website addresses.
+- Delegated names without GLUE cannot pass strict HNS address discovery unless a future resolver path can prove in-bailiwick glue another way.
+
+The `doh_fallback_status` field records whether the checker had to use the configured fallback resolver path after strict HNS discovery failed. In production that resolver can be DoH-backed, but the status means fallback resolution was required; it is not proof of a specific transport by itself.
+
 HTTPS certificate capture is independent from WebPKI validation. The checker first tries a normal verified TLS connection. If WebPKI validation fails, it retries with certificate verification disabled only to capture the peer certificate/SPKI for TLSA matching. A matching TLSA record can therefore produce `dane_status = valid` even when `https_status = tls_unverified`.
 
 For names with on-chain DS records, live checks compare the HNS resource DS data to delegated DNSKEY records and validate the DNSKEY RRset signature when an RRSIG is present. DANE is only marked valid when DNSSEC status is valid and the TLSA association matches the HTTPS certificate/SPKI.

@@ -97,31 +97,47 @@ def check_name(row: dict, config: LiveCheckConfig, limiter: RateLimiter) -> Live
     doh_fallback_status = "not_checked"
     failure_reason = None
 
-    resolver = dns.resolver.Resolver(configure=True)
-    resolver.lifetime = config.timeout
-    resolver.timeout = config.timeout
-    resolver.use_edns(edns=True, ednsflags=dns.flags.DO, payload=1232)
-    if config.resolver:
-        resolver.nameservers = [config.resolver]
+    fallback_resolver = _make_resolver(config)
+    strict_resolver = _make_strict_resolver(row, config)
 
     try:
         limiter.wait()
-        dnssec_result = _validate_dnssec_delegation(resolver, name, row.get("ds_records", []))
+        dnssec_result = _validate_dnssec_for_row(strict_resolver, row, name)
         dnssec_status = dnssec_result.status
-        addresses = sorted(set(_configured_addresses(row) + _resolve_addresses(resolver, name)))
-        if not addresses:
-            failure_reason = "no_a_or_aaaa"
-            dns_reachable = "no_address"
+        strict_addresses = _strict_addresses(row, strict_resolver, name)
+        fallback_addresses: list[str] = []
+        addresses = strict_addresses
+        if strict_addresses:
+            doh_fallback_status = "not_required"
         else:
-            dns_reachable = "reachable"
-            strict_hns_status = "candidate"
+            if row.get("ns_names") and not _glue_addresses(row):
+                dns_reachable = "missing_glue"
+                failure_reason = "missing_glue"
+            fallback_addresses = _resolve_addresses(fallback_resolver, name)
+            if fallback_addresses:
+                doh_fallback_status = "required"
+                strict_hns_status = "fallback_only"
+                addresses = fallback_addresses
+        if not addresses:
+            failure_reason = _choose_failure(failure_reason, "no_a_or_aaaa")
+            dns_reachable = dns_reachable if dns_reachable != "unknown" else "no_address"
+        else:
+            dns_reachable = "reachable" if strict_addresses else "fallback_reachable"
+            if strict_addresses:
+                strict_hns_status = "candidate"
             https_result = _https_connect(name, addresses[0], config.timeout)
             https_status = https_result.status
-            failure_reason = https_result.failure_reason
-            tlsa_records = _resolve_tlsa(resolver, name)
+            if fallback_addresses and https_result.failure_reason:
+                failure_reason = https_result.failure_reason
+            else:
+                failure_reason = _choose_failure(failure_reason, https_result.failure_reason)
+            tlsa_resolver = strict_resolver
+            tlsa_records = _resolve_tlsa(tlsa_resolver, name) if tlsa_resolver else []
             if tlsa_records:
                 tlsa_status = "present"
                 if (
+                    bool(strict_addresses)
+                    and
                     dnssec_result.status == "valid"
                     and https_result.cert_der
                     and _match_any_tlsa(https_result.cert_der, tlsa_records)
@@ -137,8 +153,10 @@ def check_name(row: dict, config: LiveCheckConfig, limiter: RateLimiter) -> Live
                     )
             else:
                 tlsa_status = "missing"
-                if failure_reason is None:
+                if failure_reason is None and row.get("has_ds"):
                     failure_reason = "tlsa_missing"
+            if strict_addresses and https_result.status == "working" and strict_hns_status != "working":
+                strict_hns_status = "working"
             failure_reason = _choose_failure(failure_reason, dnssec_result.failure_reason)
     except dns.resolver.NXDOMAIN:
         dns_reachable = "nxdomain"
@@ -167,14 +185,68 @@ def check_name(row: dict, config: LiveCheckConfig, limiter: RateLimiter) -> Live
     )
 
 
-def _configured_addresses(row: dict) -> list[str]:
-    return [*row.get("synth4", []), *row.get("synth6", []), *row.get("glue4", []), *row.get("glue6", [])]
+def _synth_addresses(row: dict) -> list[str]:
+    return [*row.get("synth4", []), *row.get("synth6", [])]
+
+
+def _glue_addresses(row: dict) -> list[str]:
+    return [*row.get("glue4", []), *row.get("glue6", [])]
+
+
+def _strict_addresses(
+    row: dict,
+    strict_resolver: dns.resolver.Resolver | None,
+    name: str,
+) -> list[str]:
+    synth = _synth_addresses(row)
+    if synth:
+        return sorted(set(synth))
+    if strict_resolver is None:
+        return []
+    return _resolve_addresses(strict_resolver, name)
+
+
+def _make_resolver(
+    config: LiveCheckConfig,
+    nameservers: list[str] | None = None,
+) -> dns.resolver.Resolver:
+    resolver = dns.resolver.Resolver(configure=nameservers is None)
+    resolver.lifetime = config.timeout
+    resolver.timeout = config.timeout
+    resolver.use_edns(edns=True, ednsflags=dns.flags.DO, payload=1232)
+    if nameservers is not None:
+        resolver.nameservers = nameservers
+    elif config.resolver:
+        resolver.nameservers = [config.resolver]
+    return resolver
+
+
+def _make_strict_resolver(row: dict, config: LiveCheckConfig) -> dns.resolver.Resolver | None:
+    glue = _glue_addresses(row)
+    if not glue:
+        return None
+    return _make_resolver(config, glue)
 
 
 @dataclass(frozen=True)
 class DnssecResult:
     status: str
     failure_reason: str | None = None
+
+
+def _validate_dnssec_for_row(
+    strict_resolver: dns.resolver.Resolver | None,
+    row: dict,
+    name: str,
+) -> DnssecResult:
+    ds_records = row.get("ds_records", [])
+    if not ds_records:
+        return DnssecResult("not_delegated")
+    if strict_resolver is None:
+        if row.get("ns_names") and not _glue_addresses(row):
+            return DnssecResult("missing_glue", "missing_glue")
+        return DnssecResult("dnssec_missing", "dnssec_missing")
+    return _validate_dnssec_delegation(strict_resolver, name, ds_records)
 
 
 def _validate_dnssec_delegation(
@@ -254,6 +326,7 @@ def _choose_failure(current: str | None, candidate: str | None) -> str | None:
     priorities = {
         "tlsa_missing": 10,
         "certificate_mismatch": 20,
+        "missing_glue": 45,
         "dnssec_missing": 60,
         "dnssec_bogus": 60,
         "ds_dnskey_mismatch": 60,
