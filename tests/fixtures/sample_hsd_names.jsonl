@@ -1,0 +1,3 @@
+{"snapshot_meta":{"height":123456,"tip_hash":"000000000000000000000000000000000000000000000000000000000001e240","chain":"fixture","hsd_version":"fixture-jsonl"}}
+{"name_info":{"name":"direct","nameHash":"hash-direct","state":"CLOSED","renewal":122000},"resource":{"records":[{"type":"SYNTH4","address":"203.0.113.10"},{"type":"SYNTH6","address":"2001:db8::10"}]}}
+{"name":"noglue","nameHash":"hash-noglue","state":"CLOSED","renewal":122000,"resource":{"records":[{"type":"NS","ns":"ns1.external.example."}]}}

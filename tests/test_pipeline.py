@@ -5,6 +5,7 @@ from hns_topology.db import connect
 from hns_topology.exporter import build_faq_answers, build_summary
 from hns_topology.indexer import (
     bootstrap_from_fixture,
+    bootstrap_from_jsonl,
     find_reorg_mismatch,
     index_changed_names,
     rollback_reorg,
@@ -13,6 +14,7 @@ from hns_topology.provider_rules import ProviderRules
 from hns_topology.site_generator import generate_site
 
 FIXTURE = Path("tests/fixtures/sample_hsd_names.json")
+JSONL_FIXTURE = Path("tests/fixtures/sample_hsd_names.jsonl")
 
 
 class FakeHsdClient:
@@ -84,6 +86,22 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
         "data/topology.sqlite.gz",
     ]:
         assert (out / relative).exists()
+
+
+def test_jsonl_bootstrap_streams_names_and_records_provenance(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        count = bootstrap_from_jsonl(conn, jsonl_path=JSONL_FIXTURE, rules=rules)
+        summary = build_summary(conn)
+
+    assert count == 2
+    assert summary["active_names"] == 2
+    assert summary["direct_ip_records"] == 1
+    assert summary["delegated_no_glue"] == 1
+    assert summary["source_type"] == "jsonl"
+    assert summary["source_file_hash"]
+    assert summary["hsd_version"] == "fixture-jsonl"
 
 
 def test_reorg_rollback_restores_previous_compact_rows(tmp_path):

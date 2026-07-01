@@ -10,6 +10,7 @@ from .hsd_rpc import HsdRpcClient
 from .indexer import (
     bootstrap_from_fixture,
     bootstrap_from_hsd,
+    bootstrap_from_jsonl,
     extract_changed_names_from_block,
     find_reorg_mismatch,
     index_changed_names,
@@ -46,6 +47,17 @@ def build_parser() -> argparse.ArgumentParser:
     fixture.add_argument("--rules", default=str(DEFAULT_RULES))
     fixture.add_argument("--limit", type=int)
     fixture.set_defaults(func=cmd_bootstrap_fixture)
+
+    jsonl = sub.add_parser("bootstrap-jsonl", help="Build an index from streaming JSONL.")
+    jsonl.add_argument("--jsonl", required=True)
+    jsonl.add_argument("--db", required=True)
+    jsonl.add_argument("--rules", default=str(DEFAULT_RULES))
+    jsonl.add_argument("--height", type=int, default=0)
+    jsonl.add_argument("--tip-hash", default="")
+    jsonl.add_argument("--chain", default="main")
+    jsonl.add_argument("--hsd-version", default="unknown")
+    jsonl.add_argument("--limit", type=int)
+    jsonl.set_defaults(func=cmd_bootstrap_jsonl)
 
     bootstrap = sub.add_parser("bootstrap", help="Build an index from HSD RPC.")
     bootstrap.add_argument("--db", required=True)
@@ -118,6 +130,23 @@ def cmd_bootstrap_fixture(args: argparse.Namespace) -> int:
             limit=args.limit,
         )
     print(f"indexed {count} fixture names into {args.db}")
+    return 0
+
+
+def cmd_bootstrap_jsonl(args: argparse.Namespace) -> int:
+    rules = ProviderRules.from_file(args.rules)
+    with connect(args.db) as conn:
+        count = bootstrap_from_jsonl(
+            conn,
+            jsonl_path=args.jsonl,
+            rules=rules,
+            height=args.height,
+            tip_hash=args.tip_hash,
+            chain=args.chain,
+            hsd_version=args.hsd_version,
+            limit=args.limit,
+        )
+    print(f"indexed {count} JSONL names into {args.db}")
     return 0
 
 

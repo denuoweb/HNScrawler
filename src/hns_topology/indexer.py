@@ -101,6 +101,64 @@ def bootstrap_from_fixture(
     return indexed
 
 
+def bootstrap_from_jsonl(
+    conn,
+    *,
+    jsonl_path: str | Path,
+    rules: ProviderRules,
+    height: int = 0,
+    tip_hash: str = "",
+    chain: str = "main",
+    hsd_version: str = "unknown",
+    limit: int | None = None,
+) -> int:
+    init_db(conn)
+    now = utc_now()
+    indexed = 0
+    digest = hashlib.sha256()
+    metadata: dict[str, Any] = {}
+
+    with conn:
+        set_meta(conn, "generated_at", now)
+        set_meta(conn, "last_indexed_height", str(height))
+        set_meta(conn, "last_indexed_tip_hash", tip_hash)
+        set_meta(conn, "hsd_chain", chain)
+        set_meta(conn, "hsd_version", hsd_version)
+        set_meta(conn, "crawler_version", __version__)
+        set_meta(conn, "source_type", "jsonl")
+        set_meta(conn, "source_file", str(jsonl_path))
+        _set_provider_rule_meta(conn, rules)
+
+        with Path(jsonl_path).open("rb") as handle:
+            for raw_line in handle:
+                digest.update(raw_line)
+                if limit is not None and indexed >= limit:
+                    continue
+                line = raw_line.strip()
+                if not line:
+                    continue
+                item = json.loads(line.decode("utf-8"))
+                if "snapshot_meta" in item:
+                    metadata.update(item["snapshot_meta"])
+                    continue
+                name_info = item.get("name_info") or {
+                    key: value for key, value in item.items() if key != "resource"
+                }
+                resource = item.get("resource", {"records": []})
+                row_height = int(metadata.get("height", height) or 0)
+                index_one_name(conn, name_info, resource, rules, height=row_height, updated_at=now)
+                indexed += 1
+
+        final_height = int(metadata.get("height", height) or 0)
+        set_meta(conn, "last_indexed_height", str(final_height))
+        set_meta(conn, "last_indexed_tip_hash", str(metadata.get("tip_hash", tip_hash)))
+        set_meta(conn, "hsd_chain", str(metadata.get("chain", chain)))
+        set_meta(conn, "hsd_version", str(metadata.get("hsd_version", hsd_version)))
+        set_meta(conn, "source_file_hash", digest.hexdigest())
+        recompute_provider_summary(conn, rules.provider_types, now)
+    return indexed
+
+
 def index_changed_names(
     conn,
     *,
