@@ -15,6 +15,69 @@ function metric(label, value, sub = "") {
   return `<article class="metric"><span class="label">${label}</span><span class="value">${fmt.format(value ?? 0)}</span><span class="sub">${sub}</span></article>`;
 }
 
+function activeFilter() {
+  return new URLSearchParams(window.location.search).get("filter") || "";
+}
+
+function hasItems(value) {
+  return Array.isArray(value) && value.length > 0;
+}
+
+function hasDs(row) {
+  return row.has_ds === true || Number(row.has_ds || 0) === 1;
+}
+
+function filterName(filter) {
+  return ({
+    direct_ip_records: "direct IP records",
+    delegated_names: "delegated names",
+    default_provider_names: "default providers",
+    ds_records: "DS records",
+    dnssec_candidates: "DNSSEC candidates",
+    likely_websites: "likely websites",
+    strict_hns_working: "strict HNS working",
+    doh_fallback_required: "fallback required",
+    dane_working: "working DANE",
+    missing_glue: "missing GLUE",
+    missing_glue_only: "missing GLUE only",
+    stale_tlsa: "stale TLSA",
+    stale_tlsa_only: "stale TLSA only"
+  })[filter] || filter;
+}
+
+function rowMatchesFilter(row, filter) {
+  const predicates = {
+    direct_ip_records: (item) => hasItems(item.synth4) || hasItems(item.synth6),
+    delegated_names: (item) => hasItems(item.ns_names),
+    ds_records: (item) => hasDs(item),
+    dnssec_candidates: (item) => hasDs(item) && hasItems(item.ns_names),
+    likely_websites: (item) => hasItems(item.synth4) || hasItems(item.synth6) || hasItems(item.glue4) || hasItems(item.glue6) || (hasDs(item) && hasItems(item.ns_names)),
+    strict_hns_working: (item) => item.strict_hns_status === "working",
+    doh_fallback_required: (item) => ["required", "doh_fallback_only"].includes(item.doh_fallback_status),
+    dane_working: (item) => item.dane_status === "valid",
+    missing_glue: (item) => item.failure_reason === "missing_glue",
+    missing_glue_only: (item) => item.failure_reason === "missing_glue" || (hasItems(item.ns_names) && !hasItems(item.glue4) && !hasItems(item.glue6) && !item.failure_reason),
+    stale_tlsa: (item) => item.failure_reason === "stale_tlsa_spki_mismatch",
+    stale_tlsa_only: (item) => item.failure_reason === "stale_tlsa_spki_mismatch"
+  };
+  return predicates[filter] ? predicates[filter](row) : true;
+}
+
+function providerMatchesFilter(row, filter) {
+  if (filter === "default_provider_names") return row.provider_type === "default_parking";
+  return true;
+}
+
+function applyFilter(rows, filter, predicate = rowMatchesFilter) {
+  if (!filter) return rows;
+  return rows.filter((row) => predicate(row, filter));
+}
+
+function filterNotice(filter, before, after) {
+  if (!filter) return "";
+  return `<p class="meta">Filter: ${escapeHtml(filterName(filter))}. Showing ${fmt.format(after)} of ${fmt.format(before)} exported rows.</p>`;
+}
+
 function bars(rows, labelKey, valueKey, limit = 12) {
   const max = Math.max(1, ...rows.map((row) => Number(row[valueKey] || 0)));
   return `<div class="bar-list">${rows.slice(0, limit).map((row) => {
@@ -100,8 +163,10 @@ async function renderFaq(app) {
 
 async function renderProviders(app) {
   const [summary, providers] = await Promise.all([loadJson("data/summary.json"), loadJson("data/providers.json")]);
-  app.innerHTML = `${snapshot(summary)}<section class="panel full"><h2>Providers</h2>${bars(providers, "provider_key", "names_count", 20)}</section>
-    <section class="panel full">${table(providers, [
+  const filter = activeFilter();
+  const rows = applyFilter(providers, filter, providerMatchesFilter);
+  app.innerHTML = `${snapshot(summary)}${filterNotice(filter, providers.length, rows.length)}<section class="panel full"><h2>Providers</h2>${bars(rows, "provider_key", "names_count", 20)}</section>
+    <section class="panel full">${table(rows, [
       {key: "provider_key", label: "Provider"},
       {key: "provider_type", label: "Type"},
       {key: "names_count", label: "Names"},
@@ -118,7 +183,9 @@ async function renderClasses(app) {
 
 async function renderNames(app) {
   const [summary, names] = await Promise.all([loadJson("data/summary.json"), loadJson("data/names.json")]);
-  app.innerHTML = `${snapshot(summary)}<section class="panel full"><h2>Names</h2>${table(names, [
+  const filter = activeFilter();
+  const rows = applyFilter(names, filter);
+  app.innerHTML = `${snapshot(summary)}${filterNotice(filter, names.length, rows.length)}<section class="panel full"><h2>Names</h2>${table(rows, [
     {key: "name", label: "Name"},
     {key: "onchain_class", label: "Class"},
     {key: "provider_guess", label: "Provider"},
@@ -134,12 +201,16 @@ async function renderNames(app) {
 
 async function renderBroken(app) {
   const [summary, broken] = await Promise.all([loadJson("data/summary.json"), loadJson("data/broken.json")]);
+  const filter = activeFilter();
+  const examples = applyFilter(broken.examples, filter);
   app.innerHTML = `${snapshot(summary)}<section class="grid">
     <article class="panel"><h2>Failure Reasons</h2>${bars(broken.reasons, "failure_reason", "count", 20)}</article>
-    <article class="panel"><h2>Examples</h2>${table(broken.examples, [
+    <article class="panel"><h2>Examples</h2>${filterNotice(filter, broken.examples.length, examples.length)}${table(examples, [
       {key: "name", label: "Name"},
       {key: "onchain_class", label: "Class"},
       {key: "provider_guess", label: "Provider"},
+      {key: "strict_hns_status", label: "Strict HNS"},
+      {key: "doh_fallback_status", label: "Fallback"},
       {key: "failure_reason", label: "Reason"},
       {key: "checked_at", label: "Checked"}
     ])}</article>
@@ -148,6 +219,8 @@ async function renderBroken(app) {
 
 async function renderDane(app) {
   const [summary, dane] = await Promise.all([loadJson("data/summary.json"), loadJson("data/dane.json")]);
+  const filter = activeFilter();
+  const rows = applyFilter(dane.rows, filter);
   app.innerHTML = `${snapshot(summary)}<section class="grid">
     <article class="panel"><h2>DANE Summary</h2>
       <div class="stat-list">
@@ -155,9 +228,10 @@ async function renderDane(app) {
         <div class="stat-line"><span>Valid DANE</span><strong>${fmt.format(dane.valid_dane_count)}</strong></div>
       </div>
     </article>
-    <article class="panel"><h2>DANE Rows</h2>${table(dane.rows, [
+    <article class="panel"><h2>DANE Rows</h2>${filterNotice(filter, dane.rows.length, rows.length)}${table(rows, [
       {key: "name", label: "Name"},
       {key: "has_ds", label: "DS"},
+      {key: "ns_names", label: "NS"},
       {key: "dnssec_status", label: "DNSSEC"},
       {key: "tlsa_status", label: "TLSA"},
       {key: "dane_status", label: "DANE"},

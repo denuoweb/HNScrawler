@@ -194,7 +194,7 @@ def build_faq_answers(conn: sqlite3.Connection, summary: dict[str, Any]) -> list
             "How many use Namebase-style/default nameservers?",
             "default_provider_names",
             "Provider rules classify the resource as default parking or default hosted infrastructure.",
-            "providers.html",
+            "providers.html?filter=default_provider_names",
         ),
         answer(
             "ds_records",
@@ -243,14 +243,14 @@ def build_faq_answers(conn: sqlite3.Connection, summary: dict[str, Any]) -> list
             "Which names are broken only because of missing GLUE?",
             "missing_glue_only",
             "Delegated names with no GLUE4/GLUE6 and no stronger live-check failure.",
-            "broken.html?filter=missing_glue",
+            "broken.html?filter=missing_glue_only",
         ),
         answer(
             "stale_tlsa_only",
             "Which names are broken only because of stale TLSA?",
             "stale_tlsa_only",
             "Latest live check found TLSA data that does not match the current HTTPS certificate/SPKI.",
-            "broken.html?filter=stale_tlsa",
+            "broken.html?filter=stale_tlsa_only",
         ),
     ]
 
@@ -283,25 +283,40 @@ def build_broken(conn: sqlite3.Connection) -> dict[str, Any]:
         }
         for reason in FAILURE_REASONS
     ]
-    examples = rows_to_dicts(
-        conn.execute(
-            """
-            SELECT n.name, n.onchain_class, n.provider_guess, ls.failure_reason, ls.checked_at
-            FROM live_status ls JOIN names n ON n.name = ls.name
-            WHERE ls.failure_reason IS NOT NULL
-            ORDER BY ls.checked_at DESC, n.name
-            LIMIT 200
-            """
+    example_rows = conn.execute(
+        """
+        SELECT
+          n.name, n.onchain_class, n.provider_guess,
+          rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.has_ds,
+          ls.dns_reachable, ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.https_status,
+          ls.strict_hns_status, ls.doh_fallback_status, ls.failure_reason, ls.checked_at
+        FROM live_status ls
+        JOIN names n ON n.name = ls.name
+        JOIN resource_summary rs ON rs.name = n.name
+        WHERE ls.failure_reason IS NOT NULL
+        ORDER BY ls.checked_at DESC, n.name
+        LIMIT 200
+        """
+    ).fetchall()
+    examples = [
+        parse_json_columns(
+            dict(row),
+            ["ns_names", "glue4", "glue6", "synth4", "synth6"],
         )
-    )
+        for row in example_rows
+    ]
     return {"reasons": reasons, "examples": examples}
 
 
 def build_dane(conn: sqlite3.Connection) -> dict[str, Any]:
-    rows = rows_to_dicts(
-        conn.execute(
+    rows = [
+        parse_json_columns(
+            dict(row),
+            ["ns_names"],
+        )
+        for row in conn.execute(
             """
-            SELECT n.name, rs.has_ds, ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.failure_reason, ls.checked_at
+            SELECT n.name, rs.has_ds, rs.ns_names, ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.failure_reason, ls.checked_at
             FROM names n
             JOIN resource_summary rs ON rs.name = n.name
             LEFT JOIN live_status ls ON ls.name = n.name
@@ -310,7 +325,7 @@ def build_dane(conn: sqlite3.Connection) -> dict[str, Any]:
             LIMIT 500
             """
         )
-    )
+    ]
     return {
         "ds_count": table_count(conn, "SELECT COUNT(*) FROM resource_summary WHERE has_ds = 1"),
         "valid_dane_count": table_count(conn, "SELECT COUNT(*) FROM live_status WHERE dane_status = 'valid'"),
