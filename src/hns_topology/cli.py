@@ -132,11 +132,13 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--db", required=True)
     validate.add_argument("--public-dir")
     validate.add_argument("--require-live-checks", action="store_true")
+    validate.add_argument("--min-indexed-height", type=int, default=0)
     validate.set_defaults(func=cmd_validate_release)
 
     validate_public = sub.add_parser("validate-public", help="Validate static public artifacts.")
     validate_public.add_argument("--public-dir", required=True)
     validate_public.add_argument("--require-live-checks", action="store_true")
+    validate_public.add_argument("--min-indexed-height", type=int, default=0)
     validate_public.set_defaults(func=cmd_validate_public)
 
     archive = sub.add_parser("archive-release", help="Archive validated site and DB backup.")
@@ -460,6 +462,7 @@ def cmd_validate_release(args: argparse.Namespace) -> int:
         db_path=args.db,
         public_dir=args.public_dir,
         require_live_checks=args.require_live_checks,
+        min_indexed_height=args.min_indexed_height,
     )
     for check in checks:
         marker = "ok" if check.ok else "fail"
@@ -471,6 +474,7 @@ def cmd_validate_public(args: argparse.Namespace) -> int:
     checks = validate_public_release(
         public_dir=args.public_dir,
         require_live_checks=args.require_live_checks,
+        min_indexed_height=args.min_indexed_height,
     )
     for check in checks:
         marker = "ok" if check.ok else "fail"

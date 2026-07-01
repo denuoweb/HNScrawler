@@ -179,6 +179,30 @@ def test_release_validator_enforces_live_check_gate(tmp_path):
     assert "live_check_timestamps" in failed
 
 
+def test_release_validators_enforce_min_indexed_height(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    out = tmp_path / "public"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+        generate_site(conn, db_path=db_path, out_dir=out)
+
+    db_checks = validate_release(
+        db_path=db_path,
+        public_dir=out,
+        min_indexed_height=300000,
+    )
+    public_checks = validate_public_release(
+        public_dir=out,
+        min_indexed_height=300000,
+    )
+
+    assert not release_is_valid(db_checks)
+    assert not release_is_valid(public_checks)
+    assert "minimum_indexed_height" in {check.name for check in db_checks if not check.ok}
+    assert "minimum_indexed_height" in {check.name for check in public_checks if not check.ok}
+
+
 def test_jsonl_bootstrap_streams_names_and_records_provenance(tmp_path):
     db_path = tmp_path / "topology.sqlite"
     rules = ProviderRules.from_file("configs/provider_rules.json")

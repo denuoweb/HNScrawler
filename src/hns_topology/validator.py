@@ -73,6 +73,7 @@ def validate_release(
     db_path: str | Path,
     public_dir: str | Path | None = None,
     require_live_checks: bool = False,
+    min_indexed_height: int = 0,
 ) -> list[ReleaseCheck]:
     checks: list[ReleaseCheck] = []
     db = Path(db_path)
@@ -81,7 +82,12 @@ def validate_release(
 
     try:
         with connect(db) as conn:
-            _validate_database(conn, checks, require_live_checks=require_live_checks)
+            _validate_database(
+                conn,
+                checks,
+                require_live_checks=require_live_checks,
+                min_indexed_height=min_indexed_height,
+            )
             summary = build_summary(conn)
     except Exception as exc:
         return [ReleaseCheck("database_open", False, f"{type(exc).__name__}: {exc}")]
@@ -95,6 +101,7 @@ def validate_public_release(
     *,
     public_dir: str | Path,
     require_live_checks: bool = False,
+    min_indexed_height: int = 0,
 ) -> list[ReleaseCheck]:
     checks: list[ReleaseCheck] = []
     public = Path(public_dir)
@@ -120,7 +127,12 @@ def validate_public_release(
                 shutil.copyfileobj(src, handle)
             handle.flush()
             with connect(handle.name) as conn:
-                _validate_database(conn, checks, require_live_checks=require_live_checks)
+                _validate_database(
+                    conn,
+                    checks,
+                    require_live_checks=require_live_checks,
+                    min_indexed_height=min_indexed_height,
+                )
                 summary = build_summary(conn)
         except Exception as exc:
             checks.append(
@@ -145,6 +157,7 @@ def _validate_database(
     checks: list[ReleaseCheck],
     *,
     require_live_checks: bool,
+    min_indexed_height: int,
 ) -> None:
     integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
     checks.append(ReleaseCheck("sqlite_integrity", integrity == "ok", str(integrity)))
@@ -214,7 +227,7 @@ def _validate_database(
         )
     )
 
-    _validate_metadata(conn, checks)
+    _validate_metadata(conn, checks, min_indexed_height=min_indexed_height)
 
     if require_live_checks:
         live_rows = table_count(conn, "SELECT COUNT(*) FROM live_status")
@@ -230,7 +243,12 @@ def _validate_database(
         )
 
 
-def _validate_metadata(conn: sqlite3.Connection, checks: list[ReleaseCheck]) -> None:
+def _validate_metadata(
+    conn: sqlite3.Connection,
+    checks: list[ReleaseCheck],
+    *,
+    min_indexed_height: int,
+) -> None:
     missing = [key for key in REQUIRED_META_KEYS if not get_meta(conn, key, "")]
     checks.append(
         ReleaseCheck(
@@ -255,6 +273,14 @@ def _validate_metadata(conn: sqlite3.Connection, checks: list[ReleaseCheck]) -> 
     height = get_meta(conn, "last_indexed_height", "")
     rules_version = get_meta(conn, "provider_rules_version", "")
     checks.append(ReleaseCheck("height_is_integer", _is_nonnegative_int(height), str(height)))
+    if min_indexed_height > 0:
+        checks.append(
+            ReleaseCheck(
+                "minimum_indexed_height",
+                _is_nonnegative_int(height) and int(height) >= min_indexed_height,
+                f"height={height or 'missing'} min={min_indexed_height}",
+            )
+        )
     checks.append(
         ReleaseCheck(
             "provider_rules_version_is_integer",

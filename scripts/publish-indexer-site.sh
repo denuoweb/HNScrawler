@@ -7,6 +7,7 @@ INDEXER_VM="${INDEXER_VM:-hns-topology-indexer}"
 INDEXER_MOUNT="${INDEXER_MOUNT:-/mnt/hnscrawler}"
 INDEXER_PUBLIC_DIR="${INDEXER_PUBLIC_DIR:-/mnt/hnscrawler/public}"
 INDEXER_ARCHIVE="${INDEXER_ARCHIVE:-/mnt/hnscrawler/hns-topology-public.tar.gz}"
+MIN_INDEXED_HEIGHT="${MIN_INDEXED_HEIGHT:-${HSD_MIN_BLOCK_HEIGHT:-300000}}"
 LOCAL_TMP="${LOCAL_TMP:-}"
 
 cleanup() {
@@ -50,4 +51,4 @@ gcloud compute ssh "$INDEXER_VM" \
   --command "rm -f '$INDEXER_ARCHIVE'"
 
 tar -C "$LOCAL_TMP/public" -xzf "$LOCAL_TMP/hns-topology-public.tar.gz"
-PUBLIC_DIR="$LOCAL_TMP/public" scripts/publish-site.sh
+MIN_INDEXED_HEIGHT="$MIN_INDEXED_HEIGHT" PUBLIC_DIR="$LOCAL_TMP/public" scripts/publish-site.sh

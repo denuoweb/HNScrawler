@@ -7,14 +7,19 @@ PUBLISH_VIA_GCLOUD="${PUBLISH_VIA_GCLOUD:-1}"
 PROD_ARTIFACT_MOUNT="${PROD_ARTIFACT_MOUNT:-/mnt/hns-topology}"
 ALLOW_BOOT_DISK_PUBLISH="${ALLOW_BOOT_DISK_PUBLISH:-0}"
 VALIDATE_BEFORE_PUBLISH="${VALIDATE_BEFORE_PUBLISH:-1}"
+MIN_INDEXED_HEIGHT="${MIN_INDEXED_HEIGHT:-0}"
 
 test -f "$PUBLIC_DIR/index.html"
 
 if [ "$VALIDATE_BEFORE_PUBLISH" = "1" ]; then
+  validate_args=(validate-public --public-dir "$PUBLIC_DIR")
+  if [ "$MIN_INDEXED_HEIGHT" != "0" ]; then
+    validate_args+=(--min-indexed-height "$MIN_INDEXED_HEIGHT")
+  fi
   if [ -x .venv/bin/hns-topology ]; then
-    .venv/bin/hns-topology validate-public --public-dir "$PUBLIC_DIR"
+    .venv/bin/hns-topology "${validate_args[@]}"
   else
-    hns-topology validate-public --public-dir "$PUBLIC_DIR"
+    hns-topology "${validate_args[@]}"
   fi
 fi
 

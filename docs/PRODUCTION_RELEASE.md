@@ -17,6 +17,7 @@
 - Confirm HSD datadir is on the large disk.
 - Confirm HSD is fully synced.
 - `scripts/check-hsd-ready.sh` passes.
+- `scripts/verify-release.sh` passes with `MIN_INDEXED_HEIGHT` set for production mainnet.
 - Confirm HSD RPC credentials are local-only or firewall-restricted.
 - Run HSD RPC bootstrap with `BOOTSTRAP_LIMIT` first.
 - Run the full bootstrap with `PIPELINE_MODE=extract-jsonl` so HSD state streams to JSONL before `bootstrap-jsonl`.
