@@ -5,6 +5,7 @@ import ipaddress
 import json
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 from .classifier import normalize_name, normalize_ns
@@ -116,17 +117,59 @@ class ProviderRules:
         }
 
     def match(self, name: str, summary: ResourceSummary) -> str:
+        return self.match_fields(
+            name,
+            ns_names=summary.ns_names,
+            glue4=summary.glue4,
+            glue6=summary.glue6,
+            synth4=summary.synth4,
+            synth6=summary.synth6,
+        )
+
+    def match_fields(
+        self,
+        name: str,
+        *,
+        ns_names: list[str],
+        glue4: list[str],
+        glue6: list[str],
+        synth4: list[str],
+        synth6: list[str],
+    ) -> str:
         normalized_name = normalize_name(name)
+        ip_values: list[str] | None = None
         for rule in self.rules:
-            if rule.self_hosted and _is_self_hosted(normalized_name, summary.ns_names):
+            if rule.self_hosted and _is_self_hosted(normalized_name, ns_names):
                 return rule.provider_key
-            if rule.ns_suffixes and _matches_ns_suffix(summary.ns_names, rule.ns_suffixes):
+            if rule.ns_suffixes and _matches_ns_suffix(ns_names, rule.ns_suffixes):
                 return rule.provider_key
             if rule.compiled_ns_regexes and _matches_ns_regex(
-                summary.ns_names, rule.compiled_ns_regexes
+                ns_names, rule.compiled_ns_regexes
             ):
                 return rule.provider_key
-            if rule.ip_networks and _matches_ip(summary, rule.ip_networks):
+            if rule.ip_networks:
+                if ip_values is None:
+                    ip_values = [*glue4, *glue6, *synth4, *synth6]
+                if _matches_ip_values(ip_values, rule.ip_networks):
+                    return rule.provider_key
+        return self.default_provider_key
+
+    def match_preclassified(
+        self,
+        name: str,
+        *,
+        ns_names: list[str],
+        ip_addresses: list[str],
+    ) -> str:
+        normalized_name = normalize_name(name)
+        for rule in self.rules:
+            if rule.self_hosted and _is_self_hosted(normalized_name, ns_names):
+                return rule.provider_key
+            if rule.ns_suffixes and _matches_ns_suffix(ns_names, rule.ns_suffixes):
+                return rule.provider_key
+            if rule.compiled_ns_regexes and _matches_ns_regex(ns_names, rule.compiled_ns_regexes):
+                return rule.provider_key
+            if rule.ip_networks and _matches_ip_values(ip_addresses, rule.ip_networks):
                 return rule.provider_key
         return self.default_provider_key
 
@@ -152,11 +195,23 @@ def _matches_ip(
     summary: ResourceSummary,
     networks: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...],
 ) -> bool:
-    for value in [*summary.glue4, *summary.glue6, *summary.synth4, *summary.synth6]:
+    return _matches_ip_values([*summary.glue4, *summary.glue6, *summary.synth4, *summary.synth6], networks)
+
+
+def _matches_ip_values(
+    values: list[str],
+    networks: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...],
+) -> bool:
+    for value in values:
         try:
-            address = ipaddress.ip_address(value)
+            address = _cached_ip_address(value)
         except ValueError:
             continue
         if any(address in network for network in networks):
             return True
     return False
+
+
+@lru_cache(maxsize=65536)
+def _cached_ip_address(value: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    return ipaddress.ip_address(value)

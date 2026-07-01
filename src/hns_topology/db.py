@@ -219,12 +219,20 @@ def upsert_names(conn: sqlite3.Connection, records: Iterable[NameRecord]) -> Non
     conn.executemany(UPSERT_NAME_SQL, (_name_params(record) for record in records))
 
 
+def upsert_name_rows(conn: sqlite3.Connection, rows: Iterable[tuple[Any, ...]]) -> None:
+    conn.executemany(UPSERT_NAME_SQL, rows)
+
+
 def upsert_resource(conn: sqlite3.Connection, summary: ResourceSummary) -> None:
     conn.execute(UPSERT_RESOURCE_SQL, _resource_params(summary))
 
 
 def upsert_resources(conn: sqlite3.Connection, summaries: Iterable[ResourceSummary]) -> None:
     conn.executemany(UPSERT_RESOURCE_SQL, (_resource_params(summary) for summary in summaries))
+
+
+def upsert_resource_rows(conn: sqlite3.Connection, rows: Iterable[tuple[Any, ...]]) -> None:
+    conn.executemany(UPSERT_RESOURCE_SQL, rows)
 
 
 def upsert_live_status(conn: sqlite3.Connection, status: LiveStatus) -> None:

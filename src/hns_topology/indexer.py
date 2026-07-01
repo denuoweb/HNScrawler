@@ -8,7 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .classifier import classify_onchain, normalize_name, normalize_ns, summarize_resource
+from .classifier import (
+    classify_onchain,
+    classify_onchain_fields,
+    normalize_name,
+    normalize_ns,
+    summarize_resource,
+)
 from .db import (
     capture_rollback,
     init_db,
@@ -18,9 +24,9 @@ from .db import (
     rollback_to_height,
     set_meta,
     upsert_name,
-    upsert_names,
+    upsert_name_rows,
     upsert_resource,
-    upsert_resources,
+    upsert_resource_rows,
 )
 from .hsd_rpc import HsdRpcClient
 from .models import NameRecord, ResourceSummary
@@ -39,6 +45,9 @@ class ChangedNameExtraction:
     unresolved_name_hashes: list[str]
     name_covenant_count: int
     non_dict_tx_count: int
+
+
+EMPTY_JSON_ARRAY = "[]"
 
 
 def bootstrap_from_hsd(
@@ -221,37 +230,77 @@ def index_compact_name_batch(
     height: int | None,
     updated_at: str,
 ) -> int:
-    records: list[NameRecord] = []
-    summaries: list[ResourceSummary] = []
+    name_rows: list[tuple[Any, ...]] = []
+    resource_rows: list[tuple[Any, ...]] = []
     for row in rows:
         name = normalize_name(str(row.get("name") or ""))
         if not name:
             continue
-        summary = _summary_from_compact_row(name, row)
-        provider_guess = rules.match(name, summary)
+        ns_names = _normalized_string_list(row.get("ns_names"))
+        glue4 = _string_list(row.get("glue4"))
+        glue6 = _string_list(row.get("glue6"))
+        synth4 = _string_list(row.get("synth4"))
+        synth6 = _string_list(row.get("synth6"))
+        ds_records = _dict_list(row.get("ds_records"))
+        record_types = _record_type_list(row.get("record_types"))
+        has_ds = bool(row.get("has_ds")) or bool(ds_records)
+        has_txt = bool(row.get("has_txt"))
+        malformed = bool(row.get("malformed"))
+        provider_guess = rules.match_fields(
+            name,
+            ns_names=ns_names,
+            glue4=glue4,
+            glue6=glue6,
+            synth4=synth4,
+            synth6=synth6,
+        )
         expired = bool(row.get("expired"))
-        onchain_class = classify_onchain(summary, expired=expired, provider_guess=provider_guess)
-        records.append(
-            NameRecord(
-                name=name,
-                name_hash=str(row.get("name_hash") or row.get("nameHash") or _fallback_name_hash(name)),
-                state=row.get("state"),
-                renewal_height=_maybe_int(row.get("renewal_height") or row.get("renewal")),
-                expired=expired,
-                resource_hash=summary.resource_hash,
-                record_types=summary.record_types,
-                onchain_class=onchain_class,
-                provider_guess=provider_guess,
-                last_seen_height=height,
-                updated_at=updated_at,
+        onchain_class = classify_onchain_fields(
+            record_types=record_types,
+            expired=expired,
+            provider_guess=provider_guess,
+            has_ds=has_ds,
+            has_ns=bool(ns_names),
+            has_glue=bool(glue4 or glue6),
+            has_synth=bool(synth4 or synth6),
+            malformed=malformed,
+        )
+        resource_hash = str(row.get("resource_hash") or _compact_row_hash(row))
+        name_rows.append(
+            (
+                name,
+                str(row.get("name_hash") or row.get("nameHash") or _fallback_name_hash(name)),
+                row.get("state"),
+                _maybe_int(row.get("renewal_height") or row.get("renewal")),
+                int(expired),
+                resource_hash,
+                _json_string_list(record_types),
+                onchain_class,
+                provider_guess,
+                height,
+                updated_at,
             )
         )
-        summaries.append(summary)
+        resource_rows.append(
+            (
+                name,
+                _json_string_list(ns_names),
+                _json_string_list(glue4),
+                _json_string_list(glue6),
+                _json_string_list(synth4),
+                _json_string_list(synth6),
+                _json_list(ds_records, sort_keys=True),
+                int(has_ds),
+                int(has_txt),
+                int(row.get("raw_size") or 0),
+                resource_hash,
+            )
+        )
 
-    if records:
-        upsert_names(conn, records)
-        upsert_resources(conn, summaries)
-    return len(records)
+    if name_rows:
+        upsert_name_rows(conn, name_rows)
+        upsert_resource_rows(conn, resource_rows)
+    return len(name_rows)
 
 
 def index_changed_names(
@@ -474,7 +523,7 @@ def _covenant_name_hash(items: Any) -> str | None:
 
 def _summary_from_compact_row(name: str, row: dict[str, Any]) -> ResourceSummary:
     ds_records = _dict_list(row.get("ds_records"))
-    record_types = sorted({str(value).upper() for value in _string_list(row.get("record_types"))})
+    record_types = _record_type_list(row.get("record_types"))
     return ResourceSummary(
         name=name,
         ns_names=[normalize_ns(value) for value in _string_list(row.get("ns_names"))],
@@ -565,16 +614,48 @@ def _file_sha256(path: str | Path) -> str:
 
 
 def _string_list(value: Any) -> list[str]:
-    if not isinstance(value, list):
+    if not value or not isinstance(value, list):
         return []
+    if len(value) == 1:
+        item = value[0]
+        if item is None:
+            return []
+        text = str(item).strip()
+        return [text] if text else []
     result = {str(item).strip() for item in value if item is not None and str(item).strip()}
     return sorted(result)
+
+
+def _normalized_string_list(value: Any) -> list[str]:
+    return [normalize_ns(item) for item in _string_list(value)]
+
+
+def _record_type_list(value: Any) -> list[str]:
+    return sorted({str(item).upper() for item in _string_list(value)})
 
 
 def _dict_list(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     return [dict(item) for item in value if isinstance(item, dict)]
+
+
+def _json_list(value: list[Any], *, sort_keys: bool = False) -> str:
+    if not value:
+        return EMPTY_JSON_ARRAY
+    return json.dumps(value, sort_keys=sort_keys, separators=(",", ":"), ensure_ascii=True)
+
+
+def _json_string_list(value: list[str]) -> str:
+    if not value:
+        return EMPTY_JSON_ARRAY
+    if len(value) == 1 and _plain_json_string(value[0]):
+        return f'["{value[0]}"]'
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=True)
+
+
+def _plain_json_string(value: str) -> bool:
+    return value.isascii() and value.isprintable() and '"' not in value and "\\" not in value
 
 
 def _compact_row_hash(row: dict[str, Any]) -> str:

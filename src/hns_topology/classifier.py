@@ -119,26 +119,49 @@ def summarize_resource(name: str, resource: Any) -> ResourceSummary:
 
 
 def classify_onchain(summary: ResourceSummary, *, expired: bool, provider_guess: str) -> str:
+    return classify_onchain_fields(
+        record_types=summary.record_types,
+        expired=expired,
+        provider_guess=provider_guess,
+        has_ds=summary.has_ds,
+        has_ns=summary.has_ns,
+        has_glue=summary.has_glue,
+        has_synth=summary.has_synth,
+        malformed=summary.malformed,
+    )
+
+
+def classify_onchain_fields(
+    *,
+    record_types: list[str],
+    expired: bool,
+    provider_guess: str,
+    has_ds: bool,
+    has_ns: bool,
+    has_glue: bool,
+    has_synth: bool,
+    malformed: bool = False,
+) -> str:
     if expired:
         return "EXPIRED"
-    if summary.malformed:
+    if malformed:
         return "MALFORMED_RESOURCE"
-    if not summary.record_types:
+    if not record_types:
         return "EMPTY"
-    if set(summary.record_types) == {"TXT"}:
+    if set(record_types) == {"TXT"}:
         return "TXT_ONLY"
     if provider_guess.endswith("/default") or provider_guess in {
         "namebase/default",
         "impervious/default",
     }:
         return "PARKED_OR_DEFAULT"
-    if summary.has_ds and (summary.has_ns or summary.has_glue):
+    if has_ds and (has_ns or has_glue):
         return "DNSSEC_CANDIDATE"
-    if summary.has_synth:
+    if has_synth:
         return "DIRECT_SYNTH"
-    if summary.has_ns and summary.has_glue:
+    if has_ns and has_glue:
         return "DELEGATED_WITH_GLUE"
-    if summary.has_ns:
+    if has_ns:
         return "DELEGATED_NO_GLUE"
     return "UNKNOWN_OTHER"
 
