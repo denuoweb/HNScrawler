@@ -35,6 +35,7 @@
 - Public `topology.sqlite.gz` opens after decompression.
 - `hns-topology validate-release` passes against the DB and generated public directory.
 - `hns-topology archive-release` or `scripts/archive-release.sh` writes a manifest, site tarball, and SQLite gzip backup.
+- `hns-topology validate-archive --manifest <manifest>` passes before moving archive artifacts to backup storage.
 - No HTTP bodies or arbitrary subdomain crawl data are exported.
 
 ## Live Check Gate

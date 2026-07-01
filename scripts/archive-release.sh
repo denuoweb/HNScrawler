@@ -24,7 +24,11 @@ if [ -n "$ARCHIVE_KEEP" ]; then
   args+=(--keep "$ARCHIVE_KEEP")
 fi
 
-hns-topology "${args[@]}"
+archive_output="$(hns-topology "${args[@]}")"
+printf '%s\n' "$archive_output"
+manifest_path="$(printf '%s\n' "$archive_output" | awk -F': ' '/^manifest: / {print $2; exit}')"
+[ -n "$manifest_path" ] || { echo "archive manifest path was not reported" >&2; exit 2; }
+hns-topology validate-archive --manifest "$manifest_path"
 
 if [ -n "$BACKUP_BUCKET_URI" ]; then
   case "$BACKUP_BUCKET_URI" in

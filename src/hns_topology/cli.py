@@ -5,7 +5,7 @@ import os
 import sys
 from pathlib import Path
 
-from .archiver import archive_release
+from .archiver import archive_is_valid, archive_release, validate_archive_manifest
 from .dane import (
     build_tlsa_records,
     load_certificate,
@@ -153,6 +153,10 @@ def build_parser() -> argparse.ArgumentParser:
     archive.add_argument("--out-dir", required=True)
     archive.add_argument("--keep", type=int)
     archive.set_defaults(func=cmd_archive_release)
+
+    validate_archive = sub.add_parser("validate-archive", help="Validate release archive artifacts.")
+    validate_archive.add_argument("--manifest", required=True)
+    validate_archive.set_defaults(func=cmd_validate_archive)
 
     tlsa = sub.add_parser("tlsa-from-cert", help="Generate TLSA 3 1 1 records from a certificate.")
     tlsa.add_argument("--cert", required=True)
@@ -523,6 +527,14 @@ def cmd_archive_release(args: argparse.Namespace) -> int:
     print(f"site: {result.site_tarball_path}")
     print(f"sqlite: {result.sqlite_backup_path}")
     return 0
+
+
+def cmd_validate_archive(args: argparse.Namespace) -> int:
+    checks = validate_archive_manifest(args.manifest)
+    for check in checks:
+        marker = "ok" if check.ok else "fail"
+        print(f"[{marker}] {check.name}: {check.detail}")
+    return 0 if archive_is_valid(checks) else 1
 
 
 def cmd_tlsa_from_cert(args: argparse.Namespace) -> int:
