@@ -15,7 +15,7 @@ Required for HSD indexing:
 
 Required for GCP provisioning:
 
-- `GCP_PROJECT`
+- `GCP_PROJECT` should be `denuowebsite`
 - `GCP_ZONE`
 - `INDEXER_VM`
 - `INDEXER_DISK`
