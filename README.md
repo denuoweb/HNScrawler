@@ -33,7 +33,7 @@ Open `http://127.0.0.1:8080`.
 HSD exposes `getnameresource <name>` for resource records, and exposes `getnames`, but the official API docs warn that node `getnames` has no pagination and is primarily useful for debugging/regtest/testnet. For production mainnet runs, keep this interface isolated behind the indexer and be prepared to replace the name-source step with a direct HSD state export or chunked extractor.
 
 ```bash
-export HSD_RPC_URL=http://127.0.0.1:14037
+export HSD_RPC_URL=http://127.0.0.1:12037
 export HSD_API_KEY=replace-me
 hns-topology bootstrap --db data/topology.sqlite --rules configs/provider_rules.json
 ```
@@ -69,6 +69,7 @@ Generated site files:
 hns-topology init-db --db data/topology.sqlite
 hns-topology bootstrap-fixture --fixture tests/fixtures/sample_hsd_names.json --db data/topology.sqlite
 hns-topology bootstrap-jsonl --jsonl extracted_names.jsonl --db data/topology.sqlite --height 123456 --tip-hash <hash>
+hns-topology hsd-status --max-block-lag 2
 hns-topology bootstrap --db data/topology.sqlite
 hns-topology incremental --db data/topology.sqlite --changed-names-file changed_names.txt
 hns-topology reorg-check --db data/topology.sqlite --rollback
@@ -86,6 +87,7 @@ scripts/setup-indexer-disk.sh
 scripts/gcloud-sync-indexer-code.sh
 scripts/setup-hsd-service.sh
 scripts/indexer-status.sh
+scripts/check-hsd-ready.sh
 scripts/gcloud-run-indexer-pipeline.sh
 scripts/verify-release.sh
 scripts/publish-indexer-site.sh

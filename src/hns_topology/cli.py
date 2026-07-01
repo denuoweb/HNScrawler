@@ -7,6 +7,7 @@ from pathlib import Path
 from .db import connect, init_db, recompute_provider_summary, set_meta
 from .exporter import export_all
 from .hsd_rpc import HsdRpcClient
+from .hsd_status import evaluate_hsd_readiness, hsd_is_ready
 from .indexer import (
     bootstrap_from_fixture,
     bootstrap_from_hsd,
@@ -67,6 +68,13 @@ def build_parser() -> argparse.ArgumentParser:
     bootstrap.add_argument("--hsd-api-key")
     bootstrap.add_argument("--limit", type=int)
     bootstrap.set_defaults(func=cmd_bootstrap)
+
+    hsd_status = sub.add_parser("hsd-status", help="Check HSD RPC and sync readiness.")
+    hsd_status.add_argument("--hsd-rpc-url")
+    hsd_status.add_argument("--hsd-api-key")
+    hsd_status.add_argument("--max-block-lag", type=int, default=2)
+    hsd_status.add_argument("--allow-remote-rpc", action="store_true")
+    hsd_status.set_defaults(func=cmd_hsd_status)
 
     incremental = sub.add_parser("incremental", help="Index changed names with reorg metadata.")
     incremental.add_argument("--db", required=True)
@@ -164,6 +172,21 @@ def cmd_bootstrap(args: argparse.Namespace) -> int:
         count = bootstrap_from_hsd(conn, client=client, rules=rules, limit=args.limit)
     print(f"indexed {count} HSD names into {args.db}")
     return 0
+
+
+def cmd_hsd_status(args: argparse.Namespace) -> int:
+    client = _client(args)
+    info = client.get_blockchain_info()
+    checks = evaluate_hsd_readiness(
+        info,
+        rpc_url=client.url,
+        max_block_lag=args.max_block_lag,
+        require_local_rpc=not args.allow_remote_rpc,
+    )
+    for check in checks:
+        marker = "ok" if check.ok else "fail"
+        print(f"[{marker}] {check.name}: {check.detail}")
+    return 0 if hsd_is_ready(checks) else 1
 
 
 def cmd_incremental(args: argparse.Namespace) -> int:

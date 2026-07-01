@@ -4,6 +4,7 @@ set -euo pipefail
 TOPOLOGY_DB="${TOPOLOGY_DB:-data/topology.sqlite}"
 PROVIDER_RULES="${PROVIDER_RULES:-configs/provider_rules.json}"
 INDEXER_MOUNT="${INDEXER_MOUNT:-/mnt/hnscrawler}"
+CHECK_HSD_READY="${CHECK_HSD_READY:-1}"
 CHANGED_NAMES_FILE="${CHANGED_NAMES_FILE:-}"
 SCAN_BLOCK_HEIGHT="${SCAN_BLOCK_HEIGHT:-}"
 
@@ -16,6 +17,9 @@ if [ -f "$INDEXER_MOUNT/secrets/hsd.env" ]; then
   set -a
   . "$INDEXER_MOUNT/secrets/hsd.env"
   set +a
+fi
+if [ "$CHECK_HSD_READY" = "1" ]; then
+  scripts/check-hsd-ready.sh
 fi
 
 if [[ -n "$CHANGED_NAMES_FILE" ]]; then

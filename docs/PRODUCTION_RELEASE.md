@@ -15,6 +15,7 @@
 - Confirm the large disk is attached and mounted.
 - Confirm HSD datadir is on the large disk.
 - Confirm HSD is fully synced.
+- `scripts/check-hsd-ready.sh` passes.
 - Confirm HSD RPC credentials are local-only or firewall-restricted.
 - Run bootstrap with a small `--limit` first.
 - Run the full bootstrap only after disk usage is measured.

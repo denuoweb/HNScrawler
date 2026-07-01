@@ -23,7 +23,7 @@ class HsdRpcClient:
     @classmethod
     def from_env(cls) -> HsdRpcClient:
         return cls(
-            os.environ.get("HSD_RPC_URL", "http://127.0.0.1:14037"),
+            os.environ.get("HSD_RPC_URL", "http://127.0.0.1:12037"),
             os.environ.get("HSD_API_KEY"),
             int(os.environ.get("HSD_RPC_TIMEOUT", "60")),
         )
@@ -82,4 +82,3 @@ class HsdRpcClient:
         if not isinstance(result, dict):
             raise HsdRpcError(f"getblockbyheight returned non-object for height {height}")
         return result
-
