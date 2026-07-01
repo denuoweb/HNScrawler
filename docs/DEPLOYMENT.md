@@ -32,6 +32,13 @@ Required for publishing:
 - `PROD_ARTIFACT_MOUNT` defaults to `/mnt/hns-topology`
 - `REMOTE_TMP` defaults to `/mnt/hns-topology/.incoming/hns-topology-public`
 
+Optional for release archives:
+
+- `RUN_ARCHIVE` defaults to `1`
+- `ARCHIVE_DIR` defaults to `/mnt/hnscrawler/archives`
+- `ARCHIVE_KEEP` defaults to `10`
+- `BACKUP_BUCKET_URI` may be set to a `gs://...` bucket prefix for compressed release artifacts
+
 ## Bootstrap
 
 ```bash
@@ -47,6 +54,7 @@ BOOTSTRAP_LIMIT=100 scripts/run-bootstrap.sh
 scripts/run-live-checks.sh
 scripts/generate-site.sh
 scripts/verify-release.sh
+scripts/archive-release.sh
 scripts/publish-indexer-site.sh
 scripts/gcloud-stop-indexer.sh
 ```
@@ -124,6 +132,8 @@ Incremental mode reads `last_indexed_height` from the compact DB, scans detailed
 For a limited HSD RPC smoke report, use `PIPELINE_MODE=bootstrap BOOTSTRAP_LIMIT=100 scripts/gcloud-run-indexer-pipeline.sh` after HSD is synced. For the initial full report, use `PIPELINE_MODE=extract-jsonl JSONL_PATH=/mnt/hnscrawler/data/extracted_names.jsonl scripts/gcloud-run-indexer-pipeline.sh`. If a JSONL file has already been produced, use `PIPELINE_MODE=jsonl JSONL_PATH=/mnt/hnscrawler/data/extracted_names.jsonl scripts/gcloud-run-indexer-pipeline.sh`. If you intentionally accept the risk of HSD's unpaginated `getnames` for a full RPC bootstrap, set `ALLOW_UNPAGINATED_GETNAMES=1 PIPELINE_MODE=bootstrap`.
 
 `scripts/gcloud-run-indexer-pipeline.sh` runs `scripts/verify-release.sh` after static site generation. By default, `REQUIRE_LIVE_CHECKS` follows `RUN_LIVE_CHECKS`, so production runs that request live checks fail before publishing if the database lacks live-check rows or live-check timestamps.
+
+When `RUN_ARCHIVE=1`, the pipeline runs `scripts/archive-release.sh` after validation and before publishing. It writes a generated-site tarball, a consistent `topology.sqlite.gz` database backup, and a JSON manifest with SHA-256 hashes under `ARCHIVE_DIR`, pruning to `ARCHIVE_KEEP` manifests. Set `BACKUP_BUCKET_URI=gs://bucket/prefix` to copy those compressed release artifacts to bucket storage. Do not point archive tooling at the live HSD datadir.
 
 Single-block `SCAN_BLOCK_HEIGHT` mode requests detailed HSD block JSON and resolves covenant name hashes with `getnamebyhash`. It refuses empty scans and unresolved name hashes by default. Set `ALLOW_EMPTY_BLOCK_SCAN=1` only for a known-empty block, and set `ALLOW_UNRESOLVED_NAME_HASHES=1` only for a deliberate best-effort run.
 

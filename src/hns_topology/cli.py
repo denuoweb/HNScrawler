@@ -5,6 +5,7 @@ import os
 import sys
 from pathlib import Path
 
+from .archiver import archive_release
 from .db import connect, get_meta, init_db, recompute_provider_summary, set_meta
 from .exporter import export_all
 from .hsd_rpc import HsdRpcClient
@@ -131,6 +132,13 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--public-dir")
     validate.add_argument("--require-live-checks", action="store_true")
     validate.set_defaults(func=cmd_validate_release)
+
+    archive = sub.add_parser("archive-release", help="Archive validated site and DB backup.")
+    archive.add_argument("--db", required=True)
+    archive.add_argument("--public-dir", required=True)
+    archive.add_argument("--out-dir", required=True)
+    archive.add_argument("--keep", type=int)
+    archive.set_defaults(func=cmd_archive_release)
 
     return parser
 
@@ -450,6 +458,22 @@ def cmd_validate_release(args: argparse.Namespace) -> int:
         marker = "ok" if check.ok else "fail"
         print(f"[{marker}] {check.name}: {check.detail}")
     return 0 if release_is_valid(checks) else 1
+
+
+def cmd_archive_release(args: argparse.Namespace) -> int:
+    with connect(args.db) as conn:
+        init_db(conn)
+        result = archive_release(
+            conn,
+            db_path=args.db,
+            public_dir=args.public_dir,
+            out_dir=args.out_dir,
+            keep=args.keep,
+        )
+    print(f"manifest: {result.manifest_path}")
+    print(f"site: {result.site_tarball_path}")
+    print(f"sqlite: {result.sqlite_backup_path}")
+    return 0
 
 
 def _client(args: argparse.Namespace) -> HsdRpcClient:

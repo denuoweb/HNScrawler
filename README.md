@@ -86,6 +86,7 @@ hns-topology live-check --db data/topology.sqlite --limit 100 --concurrency 4 --
 hns-topology export --db data/topology.sqlite --out public/data
 hns-topology generate-site --db data/topology.sqlite --out public
 hns-topology validate-release --db data/topology.sqlite --public-dir public
+hns-topology archive-release --db data/topology.sqlite --public-dir public --out-dir archives
 ```
 
 Indexer VM setup scripts:
@@ -102,6 +103,7 @@ scripts/gcloud-production-preflight.sh
 scripts/gcloud-production-cycle.sh
 scripts/gcloud-run-indexer-pipeline.sh
 scripts/verify-release.sh
+scripts/archive-release.sh
 scripts/publish-indexer-site.sh
 scripts/gcloud-print-site-tlsa.sh
 ```

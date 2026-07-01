@@ -19,6 +19,7 @@ HSD node
   -> optional live DNS/DNSSEC/TLSA/HTTPS checks for promising names
   -> static JSON/CSV/SQLite.gz exports
   -> static report site
+  -> release archive manifest, site tarball, and SQLite backup
   -> rsync to denuowebsite-vm
 ```
 

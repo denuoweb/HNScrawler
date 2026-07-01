@@ -32,6 +32,7 @@
 - Class counts are non-negative and active plus expired equals total.
 - Public `topology.sqlite.gz` opens after decompression.
 - `hns-topology validate-release` passes against the DB and generated public directory.
+- `hns-topology archive-release` or `scripts/archive-release.sh` writes a manifest, site tarball, and SQLite gzip backup.
 - No HTTP bodies or arbitrary subdomain crawl data are exported.
 
 ## Live Check Gate
