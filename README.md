@@ -89,6 +89,8 @@ hns-topology generate-site --db data/topology.sqlite --out public
 hns-topology validate-release --db data/topology.sqlite --public-dir public --min-indexed-height 300000
 hns-topology validate-public --public-dir public --min-indexed-height 300000
 hns-topology archive-release --db data/topology.sqlite --public-dir public --out-dir archives
+hns-topology tlsa-from-cert --cert /etc/ssl/denuoweb/denuoweb.crt --site denuoweb
+hns-topology verify-tlsa --cert /etc/ssl/denuoweb/denuoweb.crt --record '_443._tcp.denuoweb. 300 IN TLSA 3 1 1 <hex>'
 ```
 
 Indexer VM setup scripts:

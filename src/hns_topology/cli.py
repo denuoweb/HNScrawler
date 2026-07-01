@@ -6,6 +6,12 @@ import sys
 from pathlib import Path
 
 from .archiver import archive_release
+from .dane import (
+    build_tlsa_records,
+    load_certificate,
+    parse_tlsa_zone_line,
+    tlsa_record_matches_certificate,
+)
 from .db import connect, get_meta, init_db, recompute_provider_summary, set_meta
 from .exporter import export_all
 from .hsd_rpc import HsdRpcClient
@@ -147,6 +153,18 @@ def build_parser() -> argparse.ArgumentParser:
     archive.add_argument("--out-dir", required=True)
     archive.add_argument("--keep", type=int)
     archive.set_defaults(func=cmd_archive_release)
+
+    tlsa = sub.add_parser("tlsa-from-cert", help="Generate TLSA 3 1 1 records from a certificate.")
+    tlsa.add_argument("--cert", required=True)
+    tlsa.add_argument("--site", required=True)
+    tlsa.add_argument("--ttl", type=int, default=300)
+    tlsa.add_argument("--include-www", action=argparse.BooleanOptionalAction, default=True)
+    tlsa.set_defaults(func=cmd_tlsa_from_cert)
+
+    verify_tlsa = sub.add_parser("verify-tlsa", help="Verify TLSA record text against a certificate.")
+    verify_tlsa.add_argument("--cert", required=True)
+    verify_tlsa.add_argument("--record", action="append", required=True)
+    verify_tlsa.set_defaults(func=cmd_verify_tlsa)
 
     return parser
 
@@ -505,6 +523,38 @@ def cmd_archive_release(args: argparse.Namespace) -> int:
     print(f"site: {result.site_tarball_path}")
     print(f"sqlite: {result.sqlite_backup_path}")
     return 0
+
+
+def cmd_tlsa_from_cert(args: argparse.Namespace) -> int:
+    cert = load_certificate(args.cert)
+    for record in build_tlsa_records(
+        cert,
+        site_name=args.site,
+        ttl=args.ttl,
+        include_www=args.include_www,
+    ):
+        print(record.to_zone_line())
+    return 0
+
+
+def cmd_verify_tlsa(args: argparse.Namespace) -> int:
+    cert = load_certificate(args.cert)
+    ok = True
+    for line in args.record:
+        try:
+            record = parse_tlsa_zone_line(line)
+        except ValueError as exc:
+            print(f"[fail] {line}: {exc}")
+            ok = False
+            continue
+        matched = tlsa_record_matches_certificate(cert, record)
+        marker = "ok" if matched else "fail"
+        print(
+            f"[{marker}] {record.owner}: TLSA "
+            f"{record.usage} {record.selector} {record.matching_type}"
+        )
+        ok = ok and matched
+    return 0 if ok else 1
 
 
 def _client(args: argparse.Namespace) -> HsdRpcClient:

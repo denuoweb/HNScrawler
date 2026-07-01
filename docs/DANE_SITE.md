@@ -50,6 +50,13 @@ Generate candidate TLSA records from the live VM certificate:
 scripts/gcloud-print-site-tlsa.sh
 ```
 
+You can also generate or verify records from any local certificate file:
+
+```bash
+hns-topology tlsa-from-cert --cert /etc/ssl/denuoweb/denuoweb.crt --site denuoweb
+hns-topology verify-tlsa --cert /etc/ssl/denuoweb/denuoweb.crt --record '_443._tcp.denuoweb. 300 IN TLSA 3 1 1 <hex>'
+```
+
 The script prints fully qualified records for `_443._tcp.<site>.` and `_443._tcp.www.<site>.` by default. Override these when needed:
 
 ```bash

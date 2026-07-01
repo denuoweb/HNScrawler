@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import concurrent.futures
-import hashlib
 import socket
 import ssl
 import threading
@@ -16,8 +15,8 @@ import dns.name
 import dns.rdatatype
 import dns.resolver
 from cryptography import x509
-from cryptography.hazmat.primitives import serialization
 
+from .dane import match_association_bytes, selected_certificate_bytes
 from .db import parse_json_columns, upsert_live_status
 from .models import FAILURE_REASONS, PROMISING_CLASSES, LiveStatus
 from .timeutil import utc_after, utc_now
@@ -432,16 +431,12 @@ def _tls_connect(
 
 def _match_any_tlsa(cert_der: bytes, records: Iterable[tuple[int, int, int, bytes]]) -> bool:
     cert = x509.load_der_x509_certificate(cert_der)
-    spki_der = cert.public_key().public_bytes(
-        serialization.Encoding.DER,
-        serialization.PublicFormat.SubjectPublicKeyInfo,
-    )
-    chain_items = {0: cert_der, 1: spki_der}
     for usage, selector, matching_type, association in records:
         if usage not in {0, 1, 2, 3}:
             continue
-        selected = chain_items.get(selector)
-        if selected is None:
+        try:
+            selected = selected_certificate_bytes(cert, selector=selector)
+        except ValueError:
             continue
         if _match_association(selected, matching_type, association):
             return True
@@ -449,10 +444,7 @@ def _match_any_tlsa(cert_der: bytes, records: Iterable[tuple[int, int, int, byte
 
 
 def _match_association(selected: bytes, matching_type: int, association: bytes) -> bool:
-    if matching_type == 0:
-        return selected == association
-    if matching_type == 1:
-        return hashlib.sha256(selected).digest() == association
-    if matching_type == 2:
-        return hashlib.sha512(selected).digest() == association
-    return False
+    try:
+        return match_association_bytes(selected, matching_type=matching_type) == association
+    except ValueError:
+        return False
