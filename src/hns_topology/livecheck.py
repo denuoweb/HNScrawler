@@ -9,7 +9,11 @@ import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+import dns.dnssec
 import dns.exception
+import dns.flags
+import dns.name
+import dns.rdatatype
 import dns.resolver
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
@@ -60,7 +64,7 @@ def run_live_checks(conn, *, limit: int | None, config: LiveCheckConfig) -> int:
 def select_live_check_candidates(conn, *, limit: int | None) -> list[dict]:
     class_placeholders = ",".join("?" for _ in PROMISING_CLASSES)
     sql = f"""
-      SELECT n.name, n.onchain_class, rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.has_ds
+      SELECT n.name, n.onchain_class, rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.ds_records, rs.has_ds
       FROM names n
       JOIN resource_summary rs ON rs.name = n.name
       LEFT JOIN live_status ls ON ls.name = n.name
@@ -75,7 +79,7 @@ def select_live_check_candidates(conn, *, limit: int | None) -> list[dict]:
         params.append(limit)
     rows = conn.execute(sql, params).fetchall()
     return [
-        parse_json_columns(dict(row), ["ns_names", "glue4", "glue6", "synth4", "synth6"])
+        parse_json_columns(dict(row), ["ns_names", "glue4", "glue6", "synth4", "synth6", "ds_records"])
         for row in rows
     ]
 
@@ -96,11 +100,14 @@ def check_name(row: dict, config: LiveCheckConfig, limiter: RateLimiter) -> Live
     resolver = dns.resolver.Resolver(configure=True)
     resolver.lifetime = config.timeout
     resolver.timeout = config.timeout
+    resolver.use_edns(edns=True, ednsflags=dns.flags.DO, payload=1232)
     if config.resolver:
         resolver.nameservers = [config.resolver]
 
     try:
         limiter.wait()
+        dnssec_result = _validate_dnssec_delegation(resolver, name, row.get("ds_records", []))
+        dnssec_status = dnssec_result.status
         addresses = sorted(set(_configured_addresses(row) + _resolve_addresses(resolver, name)))
         if not addresses:
             failure_reason = "no_a_or_aaaa"
@@ -114,22 +121,25 @@ def check_name(row: dict, config: LiveCheckConfig, limiter: RateLimiter) -> Live
             tlsa_records = _resolve_tlsa(resolver, name)
             if tlsa_records:
                 tlsa_status = "present"
-                if https_result.cert_der and _match_any_tlsa(https_result.cert_der, tlsa_records):
+                if (
+                    dnssec_result.status == "valid"
+                    and https_result.cert_der
+                    and _match_any_tlsa(https_result.cert_der, tlsa_records)
+                ):
                     dane_status = "valid"
                     strict_hns_status = "working"
                     failure_reason = None
                 else:
                     dane_status = "invalid"
-                    failure_reason = (
-                        "stale_tlsa_spki_mismatch"
-                        if https_result.cert_der
-                        else "https_connect_failed"
+                    failure_reason = _choose_failure(
+                        dnssec_result.failure_reason,
+                        "stale_tlsa_spki_mismatch" if https_result.cert_der else "https_connect_failed",
                     )
             else:
                 tlsa_status = "missing"
                 if failure_reason is None:
                     failure_reason = "tlsa_missing"
-            dnssec_status = "candidate" if row.get("has_ds") else "not_delegated"
+            failure_reason = _choose_failure(failure_reason, dnssec_result.failure_reason)
     except dns.resolver.NXDOMAIN:
         dns_reachable = "nxdomain"
         failure_reason = "no_a_or_aaaa"
@@ -159,6 +169,100 @@ def check_name(row: dict, config: LiveCheckConfig, limiter: RateLimiter) -> Live
 
 def _configured_addresses(row: dict) -> list[str]:
     return [*row.get("synth4", []), *row.get("synth6", []), *row.get("glue4", []), *row.get("glue6", [])]
+
+
+@dataclass(frozen=True)
+class DnssecResult:
+    status: str
+    failure_reason: str | None = None
+
+
+def _validate_dnssec_delegation(
+    resolver: dns.resolver.Resolver,
+    name: str,
+    ds_records: list[dict],
+) -> DnssecResult:
+    if not ds_records:
+        return DnssecResult("not_delegated")
+    owner = dns.name.from_text(name.rstrip(".") + ".")
+    try:
+        answer = resolver.resolve(owner, "DNSKEY", raise_on_no_answer=False)
+    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+        return DnssecResult("missing_dnskey", "dnssec_missing")
+    except dns.exception.Timeout:
+        return DnssecResult("timeout", "nameserver_unreachable_udp")
+    except Exception:
+        return DnssecResult("unknown_error", "unknown_error")
+
+    dnskey_rrset = answer.rrset
+    if dnskey_rrset is None:
+        return DnssecResult("missing_dnskey", "dnssec_missing")
+
+    if not _ds_matches_dnskey(owner, ds_records, dnskey_rrset):
+        return DnssecResult("ds_dnskey_mismatch", "ds_dnskey_mismatch")
+
+    rrsig_rrset = _find_rrsig(answer.response, owner, dns.rdatatype.DNSKEY)
+    if rrsig_rrset is None:
+        return DnssecResult("valid")
+    try:
+        dns.dnssec.validate(dnskey_rrset, rrsig_rrset, {owner: dnskey_rrset})
+    except dns.dnssec.ValidationFailure as exc:
+        if "expired" in str(exc).lower():
+            return DnssecResult("rrsig_expired", "rrsig_expired")
+        return DnssecResult("bogus", "dnssec_bogus")
+    except Exception:
+        return DnssecResult("bogus", "dnssec_bogus")
+    return DnssecResult("valid")
+
+
+def _ds_matches_dnskey(
+    owner: dns.name.Name,
+    ds_records: list[dict],
+    dnskey_rrset,
+) -> bool:
+    for dnskey in dnskey_rrset:
+        for ds_record in ds_records:
+            digest_type = ds_record.get("digestType")
+            expected_digest = str(ds_record.get("digest") or "").lower()
+            if not digest_type or not expected_digest:
+                continue
+            if ds_record.get("algorithm") is not None and int(ds_record["algorithm"]) != int(dnskey.algorithm):
+                continue
+            if ds_record.get("keyTag") is not None and int(ds_record["keyTag"]) != dns.dnssec.key_id(dnskey):
+                continue
+            try:
+                computed = dns.dnssec.make_ds(owner, dnskey, int(digest_type), validating=True)
+            except Exception:
+                continue
+            if computed.digest.hex().lower() == expected_digest:
+                return True
+    return False
+
+
+def _find_rrsig(response, owner: dns.name.Name, covered_type: dns.rdatatype.RdataType):
+    for rrset in response.answer:
+        if rrset.name == owner and rrset.rdtype == dns.rdatatype.RRSIG and rrset.covers() == covered_type:
+            return rrset
+    return None
+
+
+def _choose_failure(current: str | None, candidate: str | None) -> str | None:
+    if current is None:
+        return candidate
+    if candidate is None:
+        return current
+    priorities = {
+        "tlsa_missing": 10,
+        "certificate_mismatch": 20,
+        "dnssec_missing": 60,
+        "dnssec_bogus": 60,
+        "ds_dnskey_mismatch": 60,
+        "rrsig_expired": 60,
+        "https_connect_failed": 35,
+        "no_a_or_aaaa": 40,
+        "stale_tlsa_spki_mismatch": 50,
+    }
+    return candidate if priorities.get(candidate, 0) > priorities.get(current, 0) else current
 
 
 def _resolve_addresses(resolver: dns.resolver.Resolver, name: str) -> list[str]:

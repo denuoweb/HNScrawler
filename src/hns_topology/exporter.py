@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import get_meta, parse_json_columns, rows_to_dicts, table_count
-from .jsonutil import dumps_pretty
+from .jsonutil import dumps_json, dumps_pretty
 from .models import FAILURE_REASONS, ONCHAIN_CLASSES
 from .timeutil import utc_now
 
@@ -72,6 +72,10 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
         SELECT COUNT(*) FROM names n JOIN resource_summary rs ON rs.name = n.name
         WHERE n.expired = 0 AND rs.has_ds = 1 AND json_array_length(rs.ns_names) > 0
         """,
+    )
+    dnssec_valid = table_count(
+        conn,
+        "SELECT COUNT(*) FROM live_status WHERE dnssec_status = 'valid'",
     )
     likely_websites = table_count(
         conn,
@@ -141,6 +145,7 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
         "default_provider_names": default_provider,
         "ds_records": ds_records,
         "dnssec_candidates": dnssec_candidates,
+        "dnssec_valid": dnssec_valid,
         "likely_websites": likely_websites,
         "strict_hns_working": strict_hns_working,
         "doh_fallback_required": doh_fallback_required,
@@ -296,7 +301,7 @@ def build_dane(conn: sqlite3.Connection) -> dict[str, Any]:
     rows = rows_to_dicts(
         conn.execute(
             """
-            SELECT n.name, rs.has_ds, ls.tlsa_status, ls.dane_status, ls.failure_reason, ls.checked_at
+            SELECT n.name, rs.has_ds, ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.failure_reason, ls.checked_at
             FROM names n
             JOIN resource_summary rs ON rs.name = n.name
             LEFT JOIN live_status ls ON ls.name = n.name
@@ -318,8 +323,8 @@ def build_names(conn: sqlite3.Connection, *, limit: int) -> list[dict[str, Any]]
         """
         SELECT
           n.name, n.state, n.expired, n.onchain_class, n.provider_guess, n.record_types,
-          rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.has_ds,
-          ls.dns_reachable, ls.dane_status, ls.https_status, ls.strict_hns_status,
+          rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.ds_records, rs.has_ds,
+          ls.dns_reachable, ls.dnssec_status, ls.dane_status, ls.https_status, ls.strict_hns_status,
           ls.doh_fallback_status, ls.failure_reason, ls.checked_at
         FROM names n
         JOIN resource_summary rs ON rs.name = n.name
@@ -332,7 +337,7 @@ def build_names(conn: sqlite3.Connection, *, limit: int) -> list[dict[str, Any]]
     return [
         parse_json_columns(
             dict(row),
-            ["record_types", "ns_names", "glue4", "glue6", "synth4", "synth6"],
+            ["record_types", "ns_names", "glue4", "glue6", "synth4", "synth6", "ds_records"],
         )
         for row in rows
     ]
@@ -382,8 +387,10 @@ def write_names_csv(conn: sqlite3.Connection, path: Path, *, limit: int) -> None
         "glue6",
         "synth4",
         "synth6",
+        "ds_records",
         "has_ds",
         "dns_reachable",
+        "dnssec_status",
         "dane_status",
         "https_status",
         "strict_hns_status",
@@ -395,12 +402,7 @@ def write_names_csv(conn: sqlite3.Connection, path: Path, *, limit: int) -> None
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
-            writer.writerow(
-                {
-                    key: ",".join(value) if isinstance(value, list) else value
-                    for key, value in row.items()
-                }
-            )
+            writer.writerow({key: _csv_value(value) for key, value in row.items()})
 
 
 def gzip_sqlite(db_path: str | Path, out_path: Path) -> None:
@@ -413,6 +415,14 @@ def gzip_sqlite(db_path: str | Path, out_path: Path) -> None:
 
 def write_json(path: Path, value: Any) -> None:
     path.write_text(dumps_pretty(value), encoding="utf-8")
+
+
+def _csv_value(value: Any) -> Any:
+    if isinstance(value, list):
+        if all(isinstance(item, str) for item in value):
+            return ",".join(value)
+        return dumps_json(value)
+    return value
 
 
 def _meta_int(conn: sqlite3.Connection, key: str) -> int | None:

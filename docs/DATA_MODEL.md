@@ -47,6 +47,7 @@ Compact decoded resource summary.
 - `glue6`: JSON array
 - `synth4`: JSON array
 - `synth6`: JSON array
+- `ds_records`: JSON array containing compact `keyTag`, `algorithm`, `digestType`, and normalized digest values
 - `has_ds`: boolean integer
 - `has_txt`: boolean integer
 - `raw_size`: canonical resource byte size
@@ -68,6 +69,8 @@ Latest live-check result per name.
 - `next_check_at`
 
 `https_status = tls_unverified` means the TLS connection completed only when WebPKI verification was disabled for certificate capture. It is not automatically a failure if `dane_status = valid`.
+
+`dnssec_status = valid` means the live checker found delegated DNSKEY data matching the on-chain DS record and, when present, a valid DNSKEY RRSIG. DNSSEC failure statuses map to the stable failure taxonomy.
 
 ## `provider_summary`
 

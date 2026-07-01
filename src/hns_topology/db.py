@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS resource_summary (
   glue6 TEXT,
   synth4 TEXT,
   synth6 TEXT,
+  ds_records TEXT,
   has_ds INTEGER DEFAULT 0,
   has_txt INTEGER DEFAULT 0,
   raw_size INTEGER,
@@ -121,6 +122,7 @@ RESOURCE_COLUMNS = (
     "glue6",
     "synth4",
     "synth6",
+    "ds_records",
     "has_ds",
     "has_txt",
     "raw_size",
@@ -212,15 +214,16 @@ def upsert_resource(conn: sqlite3.Connection, summary: ResourceSummary) -> None:
     conn.execute(
         """
         INSERT INTO resource_summary(
-          name, ns_names, glue4, glue6, synth4, synth6, has_ds, has_txt,
+          name, ns_names, glue4, glue6, synth4, synth6, ds_records, has_ds, has_txt,
           raw_size, resource_hash
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(name) DO UPDATE SET
           ns_names=excluded.ns_names,
           glue4=excluded.glue4,
           glue6=excluded.glue6,
           synth4=excluded.synth4,
           synth6=excluded.synth6,
+          ds_records=excluded.ds_records,
           has_ds=excluded.has_ds,
           has_txt=excluded.has_txt,
           raw_size=excluded.raw_size,
@@ -233,6 +236,7 @@ def upsert_resource(conn: sqlite3.Connection, summary: ResourceSummary) -> None:
             dumps_json(summary.glue6),
             dumps_json(summary.synth4),
             dumps_json(summary.synth6),
+            dumps_json(summary.ds_records),
             int(summary.has_ds),
             int(summary.has_txt),
             summary.raw_size,
@@ -475,6 +479,8 @@ def parse_json_columns(row: dict[str, Any], columns: Iterable[str]) -> dict[str,
 
 
 def _migrate_schema(conn: sqlite3.Connection) -> None:
+    _ensure_columns(conn, "resource_summary", {"ds_records": "TEXT"})
+    conn.execute("UPDATE resource_summary SET ds_records = '[]' WHERE ds_records IS NULL")
     _ensure_columns(
         conn,
         "changed_name_rollbacks",

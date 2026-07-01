@@ -246,6 +246,7 @@ def cmd_live_check(args: argparse.Namespace) -> int:
     )
     rules = ProviderRules.from_file(args.rules)
     with connect(args.db) as conn:
+        init_db(conn)
         started_at = utc_now()
         set_meta(conn, "live_check_started_at", started_at)
         count = run_live_checks(conn, limit=args.limit, config=config)
@@ -259,6 +260,7 @@ def cmd_live_check(args: argparse.Namespace) -> int:
 
 def cmd_export(args: argparse.Namespace) -> int:
     with connect(args.db) as conn:
+        init_db(conn)
         export_all(conn, db_path=args.db, out_dir=args.out, names_limit=args.names_limit)
     print(f"exported data to {args.out}")
     return 0
@@ -266,6 +268,7 @@ def cmd_export(args: argparse.Namespace) -> int:
 
 def cmd_generate_site(args: argparse.Namespace) -> int:
     with connect(args.db) as conn:
+        init_db(conn)
         generate_site(conn, db_path=args.db, out_dir=args.out, names_limit=args.names_limit)
     print(f"generated site at {args.out}")
     return 0

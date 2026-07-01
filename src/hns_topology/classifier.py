@@ -63,6 +63,7 @@ def summarize_resource(name: str, resource: Any) -> ResourceSummary:
     glue6: set[str] = set()
     synth4: set[str] = set()
     synth6: set[str] = set()
+    ds_records: list[dict[str, Any]] = []
     record_types: set[str] = set()
     has_ds = False
     has_txt = False
@@ -96,6 +97,7 @@ def summarize_resource(name: str, resource: Any) -> ResourceSummary:
                 synth6.add(str(address).strip())
         elif record_type == "DS":
             has_ds = True
+            ds_records.append(_normalize_ds_record(record))
         elif record_type == "TXT":
             has_txt = True
 
@@ -106,6 +108,7 @@ def summarize_resource(name: str, resource: Any) -> ResourceSummary:
         glue6=sorted(glue6),
         synth4=sorted(synth4),
         synth6=sorted(synth6),
+        ds_records=sorted(ds_records, key=lambda item: dumps_json(item)),
         has_ds=has_ds,
         has_txt=has_txt,
         raw_size=len(raw),
@@ -143,3 +146,20 @@ def classify_onchain(summary: ResourceSummary, *, expired: bool, provider_guess:
 def record_types_json(summary: ResourceSummary) -> str:
     return json.dumps(summary.record_types, separators=(",", ":"), sort_keys=True)
 
+
+def _normalize_ds_record(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "keyTag": _safe_int(record.get("keyTag")),
+        "algorithm": _safe_int(record.get("algorithm")),
+        "digestType": _safe_int(record.get("digestType")),
+        "digest": str(record.get("digest") or "").replace(" ", "").lower(),
+    }
+
+
+def _safe_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None

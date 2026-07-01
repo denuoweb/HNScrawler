@@ -126,6 +126,7 @@ async function renderNames(app) {
     {key: "ns_names", label: "NS"},
     {key: "synth4", label: "SYNTH4"},
     {key: "synth6", label: "SYNTH6"},
+    {key: "dnssec_status", label: "DNSSEC"},
     {key: "dane_status", label: "DANE"},
     {key: "failure_reason", label: "Failure"}
   ])}</section>`;
@@ -157,6 +158,7 @@ async function renderDane(app) {
     <article class="panel"><h2>DANE Rows</h2>${table(dane.rows, [
       {key: "name", label: "Name"},
       {key: "has_ds", label: "DS"},
+      {key: "dnssec_status", label: "DNSSEC"},
       {key: "tlsa_status", label: "TLSA"},
       {key: "dane_status", label: "DANE"},
       {key: "failure_reason", label: "Failure"},
