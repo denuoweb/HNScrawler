@@ -77,6 +77,15 @@ CONFIRM_PRODUCTION_RUN=1 PIPELINE_MODE=bootstrap BOOTSTRAP_LIMIT=100 RUN_PUBLISH
 
 `scripts/gcloud-production-cycle.sh` runs preflight, provisions or starts the indexer VM, mounts the indexer disk, syncs code, installs dependencies, starts HSD, optionally waits for HSD readiness, runs the pipeline, publishes the generated site, and then applies `INDEXER_FINAL_ACTION`. The default final and failure action is `stop`, not delete. Set `INDEXER_FINAL_ACTION=delete-vm` only when you intentionally want to remove the ephemeral compute VM after the run. The persistent indexer disk is not deleted by this wrapper.
 
+To resume HSD sync without running or publishing a report, use:
+
+```bash
+DRY_RUN=1 scripts/gcloud-sync-hsd-until-ready.sh
+CONFIRM_HSD_SYNC=1 scripts/gcloud-sync-hsd-until-ready.sh
+```
+
+That wrapper starts or creates the indexer, mounts the indexer disk, syncs code, starts HSD, waits for `scripts/check-hsd-ready.sh`, and then stops the compute VM by default. It never runs the report pipeline or publish step. Increase `HSD_READY_ATTEMPTS` when intentionally allowing a longer sync window.
+
 Use `BOOTSTRAP_LIMIT` for the first HSD RPC smoke run. Full HSD RPC bootstrap uses HSD `getnames`, which is unpaginated; it is blocked unless `ALLOW_UNPAGINATED_GETNAMES=1` is set. For the first full mainnet bootstrap from the indexer disk, use `PIPELINE_MODE=extract-jsonl`. That mode runs `scripts/export-hsd-jsonl.sh`, which checks HSD readiness, stops the `hsd` systemd service by default, streams current name state to JSONL, restarts `hsd`, and then runs `hns-topology bootstrap-jsonl`.
 
 ## Production Website Disk
