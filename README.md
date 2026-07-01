@@ -35,12 +35,12 @@ HSD exposes `getnameresource <name>` for resource records, and exposes `getnames
 ```bash
 export HSD_RPC_URL=http://127.0.0.1:12037
 export HSD_API_KEY=replace-me
-hns-topology bootstrap --db data/topology.sqlite --rules configs/provider_rules.json
+hns-topology bootstrap --db data/topology.sqlite --rules configs/provider_rules.json --limit 100
 ```
 
 ## Production Shape
 
-Use a temporary or dedicated indexer VM with a large persistent disk for HSD and the working database. Publish only generated static files to the small `denuowebsite-vm`.
+Use a temporary or dedicated indexer VM with a large persistent disk for HSD and the working database. Publish only generated `public/` artifacts to the existing production web VM, backed by its attached artifact disk rather than its boot disk.
 
 Every generated snapshot includes source provenance and provider-rule provenance in `data/summary.json`, including source type/hash, crawler version, provider rule version, and provider rule hash.
 
@@ -70,7 +70,7 @@ hns-topology init-db --db data/topology.sqlite
 hns-topology bootstrap-fixture --fixture tests/fixtures/sample_hsd_names.json --db data/topology.sqlite
 hns-topology bootstrap-jsonl --jsonl extracted_names.jsonl --db data/topology.sqlite --height 123456 --tip-hash <hash>
 hns-topology hsd-status --max-block-lag 2
-hns-topology bootstrap --db data/topology.sqlite
+hns-topology bootstrap --db data/topology.sqlite --limit 100
 hns-topology incremental --db data/topology.sqlite --changed-names-file changed_names.txt
 hns-topology reorg-check --db data/topology.sqlite --rollback
 hns-topology live-check --db data/topology.sqlite --limit 100 --concurrency 4 --min-delay-ms 250

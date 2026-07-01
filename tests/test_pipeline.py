@@ -4,7 +4,9 @@ from pathlib import Path
 from hns_topology.db import connect
 from hns_topology.exporter import build_faq_answers, build_summary
 from hns_topology.indexer import (
+    UnpaginatedGetNamesError,
     bootstrap_from_fixture,
+    bootstrap_from_hsd,
     bootstrap_from_jsonl,
     find_reorg_mismatch,
     index_changed_names,
@@ -39,6 +41,35 @@ class FakeHsdClient:
 
     def get_block_hash(self, height: int) -> str:
         return self.block_hashes[height]
+
+
+class FakeBootstrapHsdClient:
+    url = "http://127.0.0.1:12037"
+
+    def __init__(self):
+        self.get_names_calls = 0
+
+    def get_blockchain_info(self):
+        return {
+            "blocks": 123456,
+            "bestblockhash": "hash-tip",
+            "chain": "main",
+            "version": "fake-hsd",
+        }
+
+    def get_names(self):
+        self.get_names_calls += 1
+        return [
+            {
+                "name": "direct",
+                "nameHash": "hash-direct",
+                "state": "CLOSED",
+                "renewal": 123000,
+            }
+        ]
+
+    def get_name_resource(self, name: str):
+        return {"records": [{"type": "SYNTH4", "address": "203.0.113.10"}]}
 
 
 def test_fixture_bootstrap_builds_expected_counts(tmp_path):
@@ -138,6 +169,37 @@ def test_jsonl_bootstrap_streams_names_and_records_provenance(tmp_path):
     assert summary["source_type"] == "jsonl"
     assert summary["source_file_hash"]
     assert summary["hsd_version"] == "fixture-jsonl"
+
+
+def test_hsd_bootstrap_requires_limit_or_explicit_unpaginated_opt_in(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    client = FakeBootstrapHsdClient()
+
+    with connect(db_path) as conn:
+        try:
+            bootstrap_from_hsd(conn, client=client, rules=rules)
+        except UnpaginatedGetNamesError:
+            pass
+        else:
+            raise AssertionError("expected unpaginated getnames guard")
+
+    assert client.get_names_calls == 0
+
+
+def test_hsd_bootstrap_smoke_limit_records_provenance(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    client = FakeBootstrapHsdClient()
+
+    with connect(db_path) as conn:
+        count = bootstrap_from_hsd(conn, client=client, rules=rules, limit=1)
+        summary = build_summary(conn)
+
+    assert count == 1
+    assert client.get_names_calls == 1
+    assert summary["source_type"] == "hsd_rpc"
+    assert summary["source_rpc_url"] == "http://127.0.0.1:12037"
 
 
 def test_reorg_rollback_restores_previous_compact_rows(tmp_path):

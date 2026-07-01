@@ -43,7 +43,7 @@ scripts/setup-hsd-service.sh
 gcloud compute ssh "$INDEXER_VM" --zone "$GCP_ZONE" --project "$GCP_PROJECT" --command "sudo systemctl start hsd"
 scripts/indexer-status.sh
 scripts/check-hsd-ready.sh
-scripts/run-bootstrap.sh
+BOOTSTRAP_LIMIT=100 scripts/run-bootstrap.sh
 scripts/run-live-checks.sh
 scripts/generate-site.sh
 scripts/verify-release.sh
@@ -62,10 +62,12 @@ For the first production cycle, prefer the guarded wrapper:
 ```bash
 scripts/gcloud-production-preflight.sh
 DRY_RUN=1 scripts/gcloud-production-cycle.sh
-CONFIRM_PRODUCTION_RUN=1 PIPELINE_MODE=bootstrap WAIT_FOR_HSD_READY=1 scripts/gcloud-production-cycle.sh
+CONFIRM_PRODUCTION_RUN=1 PIPELINE_MODE=bootstrap BOOTSTRAP_LIMIT=100 RUN_PUBLISH=0 WAIT_FOR_HSD_READY=1 scripts/gcloud-production-cycle.sh
 ```
 
 `scripts/gcloud-production-cycle.sh` runs preflight, provisions or starts the indexer VM, mounts the indexer disk, syncs code, installs dependencies, starts HSD, optionally waits for HSD readiness, runs the pipeline, publishes the generated site, and then applies `INDEXER_FINAL_ACTION`. The default final and failure action is `stop`, not delete. Set `INDEXER_FINAL_ACTION=delete-vm` only when you intentionally want to remove the ephemeral compute VM after the run. The persistent indexer disk is not deleted by this wrapper.
+
+Use `BOOTSTRAP_LIMIT` for the first HSD RPC smoke run. Full HSD RPC bootstrap uses HSD `getnames`, which is unpaginated; it is blocked unless `ALLOW_UNPAGINATED_GETNAMES=1` is set. Production-scale full bootstrap should prefer `PIPELINE_MODE=jsonl JSONL_PATH=/mnt/hnscrawler/data/extracted_names.jsonl` once a direct or chunked HSD state extractor has produced that file.
 
 ## Production Website Disk
 
@@ -117,7 +119,7 @@ scripts/publish-indexer-site.sh
 scripts/gcloud-stop-indexer.sh
 ```
 
-For the initial full report, use `PIPELINE_MODE=bootstrap scripts/gcloud-run-indexer-pipeline.sh` after HSD is fully synced. For a streaming pre-extracted state file, use `PIPELINE_MODE=jsonl JSONL_PATH=/mnt/hnscrawler/data/extracted_names.jsonl scripts/gcloud-run-indexer-pipeline.sh`.
+For a limited HSD RPC smoke report, use `PIPELINE_MODE=bootstrap BOOTSTRAP_LIMIT=100 scripts/gcloud-run-indexer-pipeline.sh` after HSD is synced. For the initial full report, prefer a streaming pre-extracted state file with `PIPELINE_MODE=jsonl JSONL_PATH=/mnt/hnscrawler/data/extracted_names.jsonl scripts/gcloud-run-indexer-pipeline.sh`. If you intentionally accept the risk of HSD's unpaginated `getnames` for a full RPC bootstrap, set `ALLOW_UNPAGINATED_GETNAMES=1 PIPELINE_MODE=bootstrap`.
 
 `scripts/gcloud-run-indexer-pipeline.sh` runs `scripts/verify-release.sh` after static site generation. By default, `REQUIRE_LIVE_CHECKS` follows `RUN_LIVE_CHECKS`, so production runs that request live checks fail before publishing if the database lacks live-check rows or live-check timestamps.
 

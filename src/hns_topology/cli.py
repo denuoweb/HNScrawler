@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from .exporter import export_all
 from .hsd_rpc import HsdRpcClient
 from .hsd_status import evaluate_hsd_readiness, hsd_is_ready
 from .indexer import (
+    UnpaginatedGetNamesError,
     bootstrap_from_fixture,
     bootstrap_from_hsd,
     bootstrap_from_jsonl,
@@ -67,6 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     bootstrap.add_argument("--hsd-rpc-url")
     bootstrap.add_argument("--hsd-api-key")
     bootstrap.add_argument("--limit", type=int)
+    bootstrap.add_argument("--allow-unpaginated-getnames", action="store_true")
     bootstrap.set_defaults(func=cmd_bootstrap)
 
     hsd_status = sub.add_parser("hsd-status", help="Check HSD RPC and sync readiness.")
@@ -168,8 +171,21 @@ def cmd_bootstrap_jsonl(args: argparse.Namespace) -> int:
 def cmd_bootstrap(args: argparse.Namespace) -> int:
     rules = ProviderRules.from_file(args.rules)
     client = _client(args)
+    allow_unpaginated_getnames = args.allow_unpaginated_getnames or _env_flag(
+        "ALLOW_UNPAGINATED_GETNAMES"
+    )
     with connect(args.db) as conn:
-        count = bootstrap_from_hsd(conn, client=client, rules=rules, limit=args.limit)
+        try:
+            count = bootstrap_from_hsd(
+                conn,
+                client=client,
+                rules=rules,
+                limit=args.limit,
+                allow_unpaginated_getnames=allow_unpaginated_getnames,
+            )
+        except UnpaginatedGetNamesError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
     print(f"indexed {count} HSD names into {args.db}")
     return 0
 
@@ -320,3 +336,7 @@ def _client(args: argparse.Namespace) -> HsdRpcClient:
     if args.hsd_rpc_url:
         return HsdRpcClient(args.hsd_rpc_url, args.hsd_api_key)
     return HsdRpcClient.from_env()
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}

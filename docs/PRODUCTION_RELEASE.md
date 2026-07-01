@@ -18,8 +18,8 @@
 - Confirm HSD is fully synced.
 - `scripts/check-hsd-ready.sh` passes.
 - Confirm HSD RPC credentials are local-only or firewall-restricted.
-- Run bootstrap with a small `--limit` first.
-- Run the full bootstrap only after disk usage is measured.
+- Run HSD RPC bootstrap with `BOOTSTRAP_LIMIT` first.
+- Run the full bootstrap from JSONL when available, or set `ALLOW_UNPAGINATED_GETNAMES=1` only after accepting HSD `getnames` scale risk and measuring disk/RAM usage.
 
 ## Data Gate
 

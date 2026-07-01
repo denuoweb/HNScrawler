@@ -25,13 +25,24 @@ from .provider_rules import ProviderRules
 from .timeutil import utc_now
 
 
+class UnpaginatedGetNamesError(RuntimeError):
+    pass
+
+
 def bootstrap_from_hsd(
     conn,
     *,
     client: HsdRpcClient,
     rules: ProviderRules,
     limit: int | None = None,
+    allow_unpaginated_getnames: bool = False,
 ) -> int:
+    if limit is None and not allow_unpaginated_getnames:
+        raise UnpaginatedGetNamesError(
+            "HSD RPC bootstrap uses unpaginated getnames. Set --limit for a smoke run, "
+            "use bootstrap-jsonl for production-scale extraction, or pass "
+            "--allow-unpaginated-getnames for an intentional full getnames run."
+        )
     init_db(conn)
     info = client.get_blockchain_info()
     height = int(info.get("blocks") or info.get("height") or 0)
