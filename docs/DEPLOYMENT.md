@@ -125,7 +125,7 @@ Keep full HSD data off the production web VM unless there is a deliberate later 
 
 `scripts/publish-site.sh` refuses to publish through GCE unless `PROD_ARTIFACT_MOUNT` is mounted and the resolved `DENUO_WEB_PATH` is under that mount. It also stages incoming files under `REMOTE_TMP` on the artifact disk, not under `/tmp`, so large reports do not temporarily consume the production boot disk. `ALLOW_BOOT_DISK_PUBLISH=1` exists only as an emergency override and should not be used for normal Denuo deployment.
 
-`scripts/publish-site.sh` also runs `hns-topology validate-public --public-dir <public>` by default before upload. That validation reconstructs the database from `public/data/topology.sqlite.gz` and checks the static JSON/CSV/SQLite artifacts as a self-contained publish unit. Set `VALIDATE_BEFORE_PUBLISH=0` only for deliberate debugging.
+`scripts/publish-site.sh` also runs `hns-topology validate-public --public-dir <public>` by default before upload. That validation reconstructs the database from `public/data/topology.sqlite.gz` and checks the static JSON/CSV/SQLite artifacts plus `public/data/manifest.json` checksums as a self-contained publish unit. Set `VALIDATE_BEFORE_PUBLISH=0` only for deliberate debugging.
 
 ## HSD Service
 

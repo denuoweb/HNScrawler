@@ -49,7 +49,7 @@ hns-topology bootstrap-jsonl --jsonl /mnt/hnscrawler/data/extracted_names.jsonl 
 
 Use a temporary or dedicated indexer VM with a large persistent disk for HSD and the working database. Publish only generated `public/` artifacts to the existing production web VM, backed by its attached artifact disk rather than its boot disk.
 
-Every generated snapshot includes source provenance and provider-rule provenance in `data/summary.json`, including source type/hash, crawler version, provider rule version, and provider rule hash.
+Every generated snapshot includes source provenance and provider-rule provenance in `data/summary.json`, including source type/hash, crawler version, provider rule version, and provider rule hash. `data/manifest.json` records the export format version plus SHA-256 and byte-size entries for the public data files.
 
 Generated site files:
 
@@ -61,6 +61,7 @@ Generated site files:
 - `broken.html`
 - `dane.html`
 - `data/summary.json`
+- `data/manifest.json`
 - `data/faq_answers.json`
 - `data/classes.json`
 - `data/providers.json`

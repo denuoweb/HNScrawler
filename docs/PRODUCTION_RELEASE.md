@@ -31,6 +31,7 @@
 - Incremental block scans do not use `ALLOW_EMPTY_BLOCK_SCAN` or `ALLOW_UNRESOLVED_NAME_HASHES` unless the block/run has been inspected.
 - Provider rules version is committed.
 - Class counts are non-negative and active plus expired equals total.
+- Public `data/manifest.json` verifies every generated data artifact by byte size and SHA-256.
 - Public `topology.sqlite.gz` opens after decompression.
 - `hns-topology validate-release` passes against the DB and generated public directory.
 - `hns-topology archive-release` or `scripts/archive-release.sh` writes a manifest, site tarball, and SQLite gzip backup.

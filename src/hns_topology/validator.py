@@ -11,6 +11,7 @@ from typing import Any
 
 from .db import connect, get_meta, table_count
 from .exporter import build_summary
+from .fileutil import file_sha256
 from .models import FAILURE_REASONS
 
 REQUIRED_TABLES = {
@@ -47,6 +48,7 @@ REQUIRED_PUBLIC_FILES = (
     "styles.css",
     "app.js",
     "data/summary.json",
+    "data/manifest.json",
     "data/providers.json",
     "data/classes.json",
     "data/faq_answers.json",
@@ -59,6 +61,17 @@ REQUIRED_PUBLIC_FILES = (
 
 PUBLIC_JSON_FILES = tuple(path for path in REQUIRED_PUBLIC_FILES if path.endswith(".json"))
 FORBIDDEN_PUBLIC_SUFFIXES = (".key", ".pem")
+REQUIRED_MANIFEST_ARTIFACTS = (
+    "summary.json",
+    "faq_answers.json",
+    "classes.json",
+    "providers.json",
+    "broken.json",
+    "dane.json",
+    "names.json",
+    "names.csv",
+    "topology.sqlite.gz",
+)
 
 
 @dataclass(frozen=True)
@@ -343,6 +356,10 @@ def _validate_public_artifacts(
             )
         )
 
+    manifest_path = public_dir / "data/manifest.json"
+    if manifest_path.exists():
+        _validate_export_manifest(manifest_path, summary, checks)
+
     gz_path = public_dir / "data/topology.sqlite.gz"
     if gz_path.exists() and summary:
         checks.append(_validate_gzipped_sqlite(gz_path, expected_names=int(summary["total_names"])))
@@ -379,6 +396,99 @@ def _validate_gzipped_sqlite(gz_path: Path, *, expected_names: int) -> ReleaseCh
         ok,
         f"quick_check={quick_check} names={names}/{expected_names} bytes={exported_size}",
     )
+
+
+def _validate_export_manifest(
+    manifest_path: Path,
+    summary: dict[str, Any],
+    checks: list[ReleaseCheck],
+) -> None:
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        checks.append(ReleaseCheck("manifest_open", False, f"{type(exc).__name__}: {exc}"))
+        return
+
+    checks.append(
+        ReleaseCheck(
+            "manifest_version",
+            manifest.get("manifest_version") == 1,
+            str(manifest.get("manifest_version")),
+        )
+    )
+
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, list):
+        checks.append(ReleaseCheck("manifest_artifacts", False, "artifacts is not a list"))
+        return
+
+    by_path = {
+        item.get("path"): item
+        for item in artifacts
+        if isinstance(item, dict) and isinstance(item.get("path"), str)
+    }
+    missing = [relative for relative in REQUIRED_MANIFEST_ARTIFACTS if relative not in by_path]
+    checks.append(
+        ReleaseCheck(
+            "manifest_required_artifacts",
+            not missing,
+            "present" if not missing else ", ".join(missing),
+        )
+    )
+
+    errors: list[str] = []
+    for relative, item in by_path.items():
+        if _is_unsafe_manifest_path(relative):
+            errors.append(f"{relative}: unsafe path")
+            continue
+        path = manifest_path.parent / relative
+        if not path.is_file():
+            errors.append(f"{relative}: missing")
+            continue
+        expected_bytes = item.get("bytes")
+        actual_bytes = path.stat().st_size
+        if expected_bytes != actual_bytes:
+            errors.append(f"{relative}: bytes {actual_bytes}!={expected_bytes}")
+            continue
+        expected_hash = item.get("sha256")
+        actual_hash = file_sha256(path)
+        if expected_hash != actual_hash:
+            errors.append(f"{relative}: sha256 mismatch")
+
+    checks.append(
+        ReleaseCheck(
+            "manifest_artifacts",
+            not errors,
+            "matched" if not errors else "; ".join(errors[:10]),
+        )
+    )
+
+    if summary:
+        manifest_summary = manifest.get("summary") if isinstance(manifest.get("summary"), dict) else {}
+        manifest_snapshot = manifest.get("snapshot") if isinstance(manifest.get("snapshot"), dict) else {}
+        mismatches = [
+            key
+            for key in ("total_names", "active_names", "expired_names", "last_indexed_height")
+            if manifest_summary.get(key) != summary.get(key)
+        ]
+        if manifest_snapshot.get("height") != summary.get("last_indexed_height"):
+            mismatches.append("snapshot.height")
+        if manifest_snapshot.get("tip_hash") != summary.get("last_indexed_tip_hash"):
+            mismatches.append("snapshot.tip_hash")
+        if manifest_snapshot.get("provider_rules_hash") != summary.get("provider_rules_hash"):
+            mismatches.append("snapshot.provider_rules_hash")
+        checks.append(
+            ReleaseCheck(
+                "manifest_snapshot",
+                not mismatches,
+                "matched" if not mismatches else ", ".join(mismatches),
+            )
+        )
+
+
+def _is_unsafe_manifest_path(relative: str) -> bool:
+    path = Path(relative)
+    return path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts)
 
 
 def _is_nonnegative_int(value: str | None) -> bool:

@@ -8,10 +8,24 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from . import __version__
 from .db import get_meta, parse_json_columns, rows_to_dicts, table_count
+from .fileutil import file_sha256
 from .jsonutil import dumps_json, dumps_pretty
 from .models import FAILURE_REASONS, ONCHAIN_CLASSES
 from .timeutil import utc_now
+
+DATA_ARTIFACTS = (
+    "summary.json",
+    "faq_answers.json",
+    "classes.json",
+    "providers.json",
+    "broken.json",
+    "dane.json",
+    "names.json",
+    "names.csv",
+    "topology.sqlite.gz",
+)
 
 
 def export_all(conn: sqlite3.Connection, *, db_path: str | Path, out_dir: str | Path, names_limit: int = 5000) -> None:
@@ -27,6 +41,7 @@ def export_all(conn: sqlite3.Connection, *, db_path: str | Path, out_dir: str | 
     write_json(out / "names.json", build_names(conn, limit=names_limit))
     write_names_csv(conn, out / "names.csv", limit=names_limit)
     gzip_sqlite(db_path, out / "topology.sqlite.gz")
+    write_json(out / "manifest.json", build_manifest(out, summary=summary, names_limit=names_limit))
 
 
 def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -435,6 +450,43 @@ def gzip_sqlite(db_path: str | Path, out_path: Path) -> None:
 
 def write_json(path: Path, value: Any) -> None:
     path.write_text(dumps_pretty(value), encoding="utf-8")
+
+
+def build_manifest(out_dir: str | Path, *, summary: dict[str, Any], names_limit: int) -> dict[str, Any]:
+    out = Path(out_dir)
+    return {
+        "manifest_version": 1,
+        "exported_at": utc_now(),
+        "crawler_version": __version__,
+        "export": {
+            "format": "hns-topology-static-report",
+            "names_limit": names_limit,
+        },
+        "snapshot": {
+            "height": summary["last_indexed_height"],
+            "tip_hash": summary["last_indexed_tip_hash"],
+            "generated_at": summary["generated_at"],
+            "hsd_chain": summary["hsd_chain"],
+            "hsd_version": summary["hsd_version"],
+            "source_type": summary["source_type"],
+            "source_file": summary["source_file"],
+            "source_file_hash": summary["source_file_hash"],
+            "source_rpc_url": summary["source_rpc_url"],
+            "provider_rules_version": summary["provider_rules_version"],
+            "provider_rules_hash": summary["provider_rules_hash"],
+            "provider_rules_path": summary["provider_rules_path"],
+        },
+        "summary": summary,
+        "artifacts": [_artifact_entry(out / relative, relative) for relative in DATA_ARTIFACTS],
+    }
+
+
+def _artifact_entry(path: Path, relative: str) -> dict[str, Any]:
+    return {
+        "path": relative,
+        "sha256": file_sha256(path),
+        "bytes": path.stat().st_size,
+    }
 
 
 def _csv_value(value: Any) -> Any:

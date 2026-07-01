@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import sqlite3
 import tarfile
@@ -11,6 +10,7 @@ from typing import Any
 from . import __version__
 from .db import get_meta
 from .exporter import build_summary, gzip_sqlite, write_json
+from .fileutil import file_sha256
 from .timeutil import utc_now
 
 
@@ -105,17 +105,9 @@ def _tar_public(public_dir: Path, out_path: Path) -> None:
 def _artifact_entry(path: Path) -> dict[str, Any]:
     return {
         "file": path.name,
-        "sha256": _file_sha256(path),
+        "sha256": file_sha256(path),
         "bytes": path.stat().st_size,
     }
-
-
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _manifest_artifacts(manifest_path: Path) -> list[str]:

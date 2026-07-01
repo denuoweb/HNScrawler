@@ -117,11 +117,20 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
         "broken.html",
         "dane.html",
         "data/summary.json",
+        "data/manifest.json",
         "data/providers.json",
         "data/classes.json",
         "data/topology.sqlite.gz",
     ]:
         assert (out / relative).exists()
+
+    manifest = json.loads((out / "data/manifest.json").read_text(encoding="utf-8"))
+    manifest_artifacts = {item["path"]: item for item in manifest["artifacts"]}
+    assert manifest["manifest_version"] == 1
+    assert manifest["snapshot"]["height"] == 123456
+    assert manifest["summary"]["total_names"] == 9
+    assert "summary.json" in manifest_artifacts
+    assert "topology.sqlite.gz" in manifest_artifacts
 
     checks = validate_release(db_path=db_path, public_dir=out)
     assert release_is_valid(checks), [check for check in checks if not check.ok]
@@ -144,6 +153,23 @@ def test_release_validator_catches_missing_artifacts(tmp_path):
     assert not release_is_valid(checks)
     failed = {check.name: check.detail for check in checks if not check.ok}
     assert "required_public_files" in failed
+
+
+def test_release_validator_catches_manifest_checksum_mismatch(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    out = tmp_path / "public"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+        generate_site(conn, db_path=db_path, out_dir=out)
+
+    (out / "data/providers.json").write_text("[]\n", encoding="utf-8")
+    checks = validate_release(db_path=db_path, public_dir=out)
+
+    assert not release_is_valid(checks)
+    failed = {check.name: check.detail for check in checks if not check.ok}
+    assert "manifest_artifacts" in failed
+    assert "providers.json" in failed["manifest_artifacts"]
 
 
 def test_public_validator_requires_embedded_sqlite(tmp_path):

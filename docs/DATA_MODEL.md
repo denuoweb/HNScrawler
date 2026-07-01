@@ -110,6 +110,7 @@ The full row snapshots are required because restoring only a resource hash and c
 Public exports are generated from SQLite:
 
 - `summary.json`
+- `manifest.json`
 - `faq_answers.json`
 - `classes.json`
 - `providers.json`
@@ -118,3 +119,11 @@ Public exports are generated from SQLite:
 - `names.json`
 - `names.csv`
 - `topology.sqlite.gz`
+
+`manifest.json` is the export contract for the static data directory. It records:
+
+- `manifest_version`
+- crawler version
+- snapshot height, tip hash, source provenance, and provider-rule provenance
+- summary counts copied from `summary.json`
+- byte size and SHA-256 for each generated data artifact except the manifest itself

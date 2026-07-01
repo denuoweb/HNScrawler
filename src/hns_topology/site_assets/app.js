@@ -140,6 +140,7 @@ async function renderOverview(app) {
         <a href="data/classes.json">classes.json</a>
         <a href="data/names.csv">names.csv</a>
         <a href="data/topology.sqlite.gz">topology.sqlite.gz</a>
+        <a href="data/manifest.json">manifest.json</a>
       </div><p class="meta">Height ${summary.last_indexed_height ?? ""} generated ${summary.generated_at ?? ""}</p>
       <p class="meta">Source ${escapeHtml(summary.source_type || "unknown")} · rules v${summary.provider_rules_version ?? ""} ${escapeHtml((summary.provider_rules_hash || "").slice(0, 12))}</p></article>
     </section>`;
