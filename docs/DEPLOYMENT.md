@@ -28,6 +28,7 @@ Required for publishing:
 - `DENUO_WEB_PATH` defaults to `/var/www/denuoweb/hns-topology`
 - `PROD_ARTIFACT_DISK` defaults to `hns-topology-data`
 - `PROD_ARTIFACT_MOUNT` defaults to `/mnt/hns-topology`
+- `REMOTE_TMP` defaults to `/mnt/hns-topology/.incoming/hns-topology-public`
 
 ## Bootstrap
 
@@ -72,6 +73,8 @@ Current production shape:
 - web path: `/var/www/denuoweb/hns-topology` symlinked to `/mnt/hns-topology/site`
 
 Keep full HSD data off the production web VM unless there is a deliberate later decision to colocate a pruned node. The intended production VM payload is the generated static report and downloadable artifacts.
+
+`scripts/publish-site.sh` refuses to publish through GCE unless `PROD_ARTIFACT_MOUNT` is mounted and the resolved `DENUO_WEB_PATH` is under that mount. It also stages incoming files under `REMOTE_TMP` on the artifact disk, not under `/tmp`, so large reports do not temporarily consume the production boot disk. `ALLOW_BOOT_DISK_PUBLISH=1` exists only as an emergency override and should not be used for normal Denuo deployment.
 
 ## HSD Service
 
