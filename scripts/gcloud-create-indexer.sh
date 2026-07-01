@@ -41,7 +41,7 @@ if ! gcloud compute instances describe "$INDEXER_VM" --project "$GCP_PROJECT" --
     --image-family "$INDEXER_IMAGE_FAMILY" \
     --image-project "$INDEXER_IMAGE_PROJECT" \
     --boot-disk-size 30GB \
-    --disk "name=$INDEXER_DISK,mode=rw,boot=no,auto-delete=no"
+    --disk "name=$INDEXER_DISK,device-name=$INDEXER_DISK,mode=rw,boot=no,auto-delete=no"
 else
   attached_to="$(disk_users)"
   if [[ -n "$attached_to" && "$attached_to" != *"/instances/$INDEXER_VM" ]]; then
@@ -49,7 +49,13 @@ else
     exit 2
   fi
 
-  if ! instance_disk_names | tr ';' '\n' | grep -qx "$INDEXER_DISK"; then
+  disk_names="$(instance_disk_names | tr ';' '\n')"
+  if [[ -n "$attached_to" && "$attached_to" == *"/instances/$INDEXER_VM" ]] && ! grep -qx "$INDEXER_DISK" <<<"$disk_names"; then
+    echo "$INDEXER_DISK is attached to $INDEXER_VM with an unexpected device name; detach and reattach with device-name $INDEXER_DISK" >&2
+    exit 2
+  fi
+
+  if ! grep -qx "$INDEXER_DISK" <<<"$disk_names"; then
     gcloud compute instances attach-disk "$INDEXER_VM" \
       --project "$GCP_PROJECT" \
       --zone "$GCP_ZONE" \
