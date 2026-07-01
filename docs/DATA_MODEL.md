@@ -14,6 +14,13 @@ Key-value snapshot metadata.
 - `crawler_version`
 - `live_check_started_at`
 - `live_check_finished_at`
+- `source_type`
+- `source_file`
+- `source_file_hash`
+- `source_rpc_url`
+- `provider_rules_version`
+- `provider_rules_hash`
+- `provider_rules_path`
 
 ## `names`
 

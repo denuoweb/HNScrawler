@@ -42,6 +42,8 @@ hns-topology bootstrap --db data/topology.sqlite --rules configs/provider_rules.
 
 Use a temporary or dedicated indexer VM with a large persistent disk for HSD and the working database. Publish only generated static files to the small `denuowebsite-vm`.
 
+Every generated snapshot includes source provenance and provider-rule provenance in `data/summary.json`, including source type/hash, crawler version, provider rule version, and provider rule hash.
+
 Generated site files:
 
 - `index.html`

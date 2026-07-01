@@ -55,6 +55,10 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     assert summary["delegated_no_glue"] == 2
     assert summary["default_provider_names"] == 1
     assert summary["ds_records"] == 1
+    assert summary["source_type"] == "fixture"
+    assert summary["source_file_hash"]
+    assert summary["provider_rules_version"] == 1
+    assert summary["provider_rules_hash"]
     assert any(item["key"] == "direct_ip_records" for item in answers)
 
 

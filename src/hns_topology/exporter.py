@@ -124,6 +124,13 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
         "hsd_chain": get_meta(conn, "hsd_chain", ""),
         "hsd_version": get_meta(conn, "hsd_version", ""),
         "crawler_version": get_meta(conn, "crawler_version", ""),
+        "source_type": get_meta(conn, "source_type", ""),
+        "source_file": get_meta(conn, "source_file", ""),
+        "source_file_hash": get_meta(conn, "source_file_hash", ""),
+        "source_rpc_url": get_meta(conn, "source_rpc_url", ""),
+        "provider_rules_version": _meta_int(conn, "provider_rules_version"),
+        "provider_rules_hash": get_meta(conn, "provider_rules_hash", ""),
+        "provider_rules_path": get_meta(conn, "provider_rules_path", ""),
         "total_names": total,
         "active_names": active,
         "expired_names": expired,
@@ -416,4 +423,3 @@ def _meta_int(conn: sqlite3.Connection, key: str) -> int | None:
         return int(value)
     except ValueError:
         return None
-

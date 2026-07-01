@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import re
@@ -22,17 +23,29 @@ class ProviderRule:
 
 
 class ProviderRules:
-    def __init__(self, rules: list[ProviderRule], default_provider_key: str = "unknown/custom"):
+    def __init__(
+        self,
+        rules: list[ProviderRule],
+        default_provider_key: str = "unknown/custom",
+        *,
+        version: int = 0,
+        source_path: str = "",
+        content_hash: str = "",
+    ):
         self.rules = sorted(rules, key=lambda rule: rule.priority)
         self.default_provider_key = default_provider_key
+        self.version = version
+        self.source_path = source_path
+        self.content_hash = content_hash
         self.provider_types = {
             rule.provider_key: rule.provider_type for rule in self.rules
         } | {default_provider_key: "unknown"}
 
     @classmethod
     def from_file(cls, path: str | Path) -> ProviderRules:
-        with Path(path).open("r", encoding="utf-8") as handle:
-            data = json.load(handle)
+        source_path = Path(path)
+        text = source_path.read_text(encoding="utf-8")
+        data = json.loads(text)
         rules = [
             ProviderRule(
                 provider_key=item["provider_key"],
@@ -45,11 +58,24 @@ class ProviderRules:
             )
             for item in data.get("rules", [])
         ]
-        return cls(rules, data.get("default_provider_key", "unknown/custom"))
+        return cls(
+            rules,
+            data.get("default_provider_key", "unknown/custom"),
+            version=int(data.get("version", 0)),
+            source_path=str(source_path),
+            content_hash=hashlib.sha256(text.encode()).hexdigest(),
+        )
 
     @classmethod
     def empty(cls) -> ProviderRules:
         return cls([])
+
+    def provenance(self) -> dict[str, str | int]:
+        return {
+            "provider_rules_version": self.version,
+            "provider_rules_path": self.source_path,
+            "provider_rules_hash": self.content_hash,
+        }
 
     def match(self, name: str, summary: ResourceSummary) -> str:
         normalized_name = normalize_name(name)
@@ -92,4 +118,3 @@ def _matches_ip(summary: ResourceSummary, prefixes: tuple[str, ...]) -> bool:
         if any(address in network for network in networks):
             return True
     return False
-

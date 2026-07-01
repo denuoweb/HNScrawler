@@ -49,6 +49,9 @@ def bootstrap_from_hsd(
         set_meta(conn, "hsd_chain", str(info.get("chain", "unknown")))
         set_meta(conn, "hsd_version", str(info.get("version", "unknown")))
         set_meta(conn, "crawler_version", __version__)
+        set_meta(conn, "source_type", "hsd_rpc")
+        set_meta(conn, "source_rpc_url", client.url)
+        _set_provider_rule_meta(conn, rules)
         for item in names:
             name = item.get("name")
             if not name:
@@ -85,6 +88,10 @@ def bootstrap_from_fixture(
         set_meta(conn, "hsd_chain", data.get("chain", "fixture"))
         set_meta(conn, "hsd_version", data.get("hsd_version", "fixture"))
         set_meta(conn, "crawler_version", __version__)
+        set_meta(conn, "source_type", "fixture")
+        set_meta(conn, "source_file", str(fixture_path))
+        set_meta(conn, "source_file_hash", _file_sha256(fixture_path))
+        _set_provider_rule_meta(conn, rules)
         for item in items:
             name_info = {key: value for key, value in item.items() if key != "resource"}
             resource = item.get("resource", {"records": []})
@@ -131,6 +138,7 @@ def index_changed_names(
         set_meta(conn, "last_indexed_tip_hash", block_hash)
         set_meta(conn, "generated_at", now)
         set_meta(conn, "crawler_version", __version__)
+        _set_provider_rule_meta(conn, rules)
         prune_reorg_metadata(conn, reorg_keep_blocks, height)
         recompute_provider_summary(conn, rules.provider_types, now)
     return indexed
@@ -257,3 +265,16 @@ def _maybe_int(value: Any) -> int | None:
 
 def _fixture_tip_hash(data: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _file_sha256(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _set_provider_rule_meta(conn, rules: ProviderRules) -> None:
+    for key, value in rules.provenance().items():
+        set_meta(conn, key, str(value))

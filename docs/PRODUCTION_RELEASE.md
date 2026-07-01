@@ -21,7 +21,7 @@
 
 ## Data Gate
 
-- Snapshot metadata has height, tip hash, generated time, HSD chain, HSD version, and crawler version.
+- Snapshot metadata has height, tip hash, generated time, HSD chain, HSD version, crawler version, source hash, and provider rules hash.
 - `hns-topology reorg-check --db <db>` passes before incremental updates.
 - Provider rules version is committed.
 - Class counts are non-negative and active plus expired equals total.
