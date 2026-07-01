@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .classifier import classify_onchain, normalize_name, summarize_resource
+from .classifier import classify_onchain, normalize_name, normalize_ns, summarize_resource
 from .db import (
     capture_rollback,
     init_db,
@@ -18,10 +18,12 @@ from .db import (
     rollback_to_height,
     set_meta,
     upsert_name,
+    upsert_names,
     upsert_resource,
+    upsert_resources,
 )
 from .hsd_rpc import HsdRpcClient
-from .models import NameRecord
+from .models import NameRecord, ResourceSummary
 from .provider_rules import ProviderRules
 from .timeutil import utc_now
 
@@ -132,12 +134,30 @@ def bootstrap_from_jsonl(
     chain: str = "main",
     hsd_version: str = "unknown",
     limit: int | None = None,
+    batch_size: int = 5000,
 ) -> int:
     init_db(conn)
+    _configure_bulk_import(conn)
+    batch_size = max(1, batch_size)
     now = utc_now()
     indexed = 0
     digest = hashlib.sha256()
     metadata: dict[str, Any] = {}
+    compact_batch: list[dict[str, Any]] = []
+
+    def flush_compact_batch() -> None:
+        nonlocal indexed
+        if not compact_batch:
+            return
+        row_height = int(metadata.get("height", height) or 0)
+        indexed += index_compact_name_batch(
+            conn,
+            compact_batch,
+            rules,
+            height=row_height,
+            updated_at=now,
+        )
+        compact_batch.clear()
 
     with conn:
         set_meta(conn, "generated_at", now)
@@ -153,7 +173,8 @@ def bootstrap_from_jsonl(
         with Path(jsonl_path).open("rb") as handle:
             for raw_line in handle:
                 digest.update(raw_line)
-                if limit is not None and indexed >= limit:
+                pending = indexed + len(compact_batch)
+                if limit is not None and pending >= limit:
                     continue
                 line = raw_line.strip()
                 if not line:
@@ -162,6 +183,13 @@ def bootstrap_from_jsonl(
                 if "snapshot_meta" in item:
                     metadata.update(item["snapshot_meta"])
                     continue
+                compact_row = item.get("compact_name")
+                if isinstance(compact_row, dict):
+                    compact_batch.append(compact_row)
+                    if len(compact_batch) >= batch_size:
+                        flush_compact_batch()
+                    continue
+                flush_compact_batch()
                 name_info = item.get("name_info") or {
                     key: value for key, value in item.items() if key != "resource"
                 }
@@ -170,14 +198,60 @@ def bootstrap_from_jsonl(
                 index_one_name(conn, name_info, resource, rules, height=row_height, updated_at=now)
                 indexed += 1
 
+        flush_compact_batch()
         final_height = int(metadata.get("height", height) or 0)
         set_meta(conn, "last_indexed_height", str(final_height))
         set_meta(conn, "last_indexed_tip_hash", str(metadata.get("tip_hash", tip_hash)))
         set_meta(conn, "hsd_chain", str(metadata.get("chain", chain)))
         set_meta(conn, "hsd_version", str(metadata.get("hsd_version", hsd_version)))
+        if metadata.get("source"):
+            set_meta(conn, "source_hsd_export", str(metadata["source"]))
+        if metadata.get("export_format"):
+            set_meta(conn, "source_jsonl_format", str(metadata["export_format"]))
         set_meta(conn, "source_file_hash", digest.hexdigest())
         recompute_provider_summary(conn, rules.provider_types, now, rules.provider_patterns)
     return indexed
+
+
+def index_compact_name_batch(
+    conn,
+    rows: Iterable[dict[str, Any]],
+    rules: ProviderRules,
+    *,
+    height: int | None,
+    updated_at: str,
+) -> int:
+    records: list[NameRecord] = []
+    summaries: list[ResourceSummary] = []
+    for row in rows:
+        name = normalize_name(str(row.get("name") or ""))
+        if not name:
+            continue
+        summary = _summary_from_compact_row(name, row)
+        provider_guess = rules.match(name, summary)
+        expired = bool(row.get("expired"))
+        onchain_class = classify_onchain(summary, expired=expired, provider_guess=provider_guess)
+        records.append(
+            NameRecord(
+                name=name,
+                name_hash=str(row.get("name_hash") or row.get("nameHash") or _fallback_name_hash(name)),
+                state=row.get("state"),
+                renewal_height=_maybe_int(row.get("renewal_height") or row.get("renewal")),
+                expired=expired,
+                resource_hash=summary.resource_hash,
+                record_types=summary.record_types,
+                onchain_class=onchain_class,
+                provider_guess=provider_guess,
+                last_seen_height=height,
+                updated_at=updated_at,
+            )
+        )
+        summaries.append(summary)
+
+    if records:
+        upsert_names(conn, records)
+        upsert_resources(conn, summaries)
+    return len(records)
 
 
 def index_changed_names(
@@ -398,6 +472,26 @@ def _covenant_name_hash(items: Any) -> str | None:
     return normalized
 
 
+def _summary_from_compact_row(name: str, row: dict[str, Any]) -> ResourceSummary:
+    ds_records = _dict_list(row.get("ds_records"))
+    record_types = sorted({str(value).upper() for value in _string_list(row.get("record_types"))})
+    return ResourceSummary(
+        name=name,
+        ns_names=[normalize_ns(value) for value in _string_list(row.get("ns_names"))],
+        glue4=_string_list(row.get("glue4")),
+        glue6=_string_list(row.get("glue6")),
+        synth4=_string_list(row.get("synth4")),
+        synth6=_string_list(row.get("synth6")),
+        ds_records=sorted(ds_records, key=lambda item: json.dumps(item, sort_keys=True)),
+        has_ds=bool(row.get("has_ds")) or bool(ds_records),
+        has_txt=bool(row.get("has_txt")),
+        raw_size=int(row.get("raw_size") or 0),
+        resource_hash=str(row.get("resource_hash") or _compact_row_hash(row)),
+        record_types=record_types,
+        malformed=bool(row.get("malformed")),
+    )
+
+
 def index_one_name(
     conn,
     name_info: dict[str, Any],
@@ -468,6 +562,29 @@ def _file_sha256(path: str | Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result = {str(item).strip() for item in value if item is not None and str(item).strip()}
+    return sorted(result)
+
+
+def _dict_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
+
+
+def _compact_row_hash(row: dict[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(row, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _configure_bulk_import(conn) -> None:
+    conn.execute("PRAGMA synchronous = NORMAL")
+    conn.execute("PRAGMA temp_store = MEMORY")
+    conn.execute("PRAGMA cache_size = -200000")
 
 
 def _set_provider_rule_meta(conn, rules: ProviderRules) -> None:

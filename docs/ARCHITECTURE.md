@@ -50,7 +50,7 @@ The crawler does not store:
 
 HSD documents `getnameresource <name>` as the way to inspect resource records for a name. HSD also documents node `getnames`, but warns that it has no pagination and is mainly for debugging on regtest or testnet. The current code keeps HSD RPC access behind `HsdRpcClient` for smoke runs and incremental checks, and uses a stopped-node JSONL exporter for production-scale bootstrap so classification, exports, and site generation do not depend on unpaginated RPC.
 
-Production-scale bootstrap should use `scripts/export-hsd-jsonl.sh` followed by `hns-topology bootstrap-jsonl`, or the combined remote `PIPELINE_MODE=extract-jsonl` mode. Each JSONL line contains either `{"snapshot_meta": {...}}` or one name object with `name_info` and `resource`.
+Production-scale bootstrap should use `EXPORT_FORMAT=compact scripts/export-hsd-jsonl.sh` followed by `hns-topology bootstrap-jsonl`, or the combined remote `PIPELINE_MODE=extract-jsonl` mode. Each production JSONL line contains either `{"snapshot_meta": {...}}` or `{"compact_name": {...}}`, where the compact row already contains the resource summary fields needed by the report. `EXPORT_FORMAT=full` is kept for debugging and emits `name_info` plus full decoded `resource` JSON.
 
 ## Reorg Handling
 

@@ -4,7 +4,7 @@ import hashlib
 import ipaddress
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .classifier import normalize_name, normalize_ns
@@ -20,6 +20,24 @@ class ProviderRule:
     ns_regexes: tuple[str, ...] = ()
     ip_prefixes: tuple[str, ...] = ()
     self_hosted: bool = False
+    compiled_ns_regexes: tuple[re.Pattern[str], ...] = field(
+        init=False, repr=False, compare=False
+    )
+    ip_networks: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = field(
+        init=False, repr=False, compare=False
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "compiled_ns_regexes",
+            tuple(re.compile(pattern) for pattern in self.ns_regexes),
+        )
+        object.__setattr__(
+            self,
+            "ip_networks",
+            tuple(ipaddress.ip_network(prefix) for prefix in self.ip_prefixes),
+        )
 
     @property
     def ns_pattern(self) -> str:
@@ -104,9 +122,11 @@ class ProviderRules:
                 return rule.provider_key
             if rule.ns_suffixes and _matches_ns_suffix(summary.ns_names, rule.ns_suffixes):
                 return rule.provider_key
-            if rule.ns_regexes and _matches_ns_regex(summary.ns_names, rule.ns_regexes):
+            if rule.compiled_ns_regexes and _matches_ns_regex(
+                summary.ns_names, rule.compiled_ns_regexes
+            ):
                 return rule.provider_key
-            if rule.ip_prefixes and _matches_ip(summary, rule.ip_prefixes):
+            if rule.ip_networks and _matches_ip(summary, rule.ip_networks):
                 return rule.provider_key
         return self.default_provider_key
 
@@ -124,12 +144,14 @@ def _matches_ns_suffix(ns_names: list[str], suffixes: tuple[str, ...]) -> bool:
     return False
 
 
-def _matches_ns_regex(ns_names: list[str], regexes: tuple[str, ...]) -> bool:
-    return any(re.search(pattern, ns) for pattern in regexes for ns in ns_names)
+def _matches_ns_regex(ns_names: list[str], regexes: tuple[re.Pattern[str], ...]) -> bool:
+    return any(pattern.search(ns) for pattern in regexes for ns in ns_names)
 
 
-def _matches_ip(summary: ResourceSummary, prefixes: tuple[str, ...]) -> bool:
-    networks = [ipaddress.ip_network(prefix) for prefix in prefixes]
+def _matches_ip(
+    summary: ResourceSummary,
+    networks: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...],
+) -> bool:
     for value in [*summary.glue4, *summary.glue6, *summary.synth4, *summary.synth6]:
         try:
             address = ipaddress.ip_address(value)

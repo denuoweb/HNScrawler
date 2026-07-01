@@ -3,6 +3,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const {execFileSync} = require('child_process');
 const {once} = require('events');
 
@@ -27,11 +28,13 @@ function usage() {
     '  --network <name>  HSD network name. Default: main',
     '  --limit <n>       Export at most n names for a smoke run.',
     '  --progress <n>    Emit progress every n exported names. Default: 10000',
+    '  --format <name>   compact or full. Default: compact',
     '  --help            Show this help text.',
     '',
     'Environment:',
     '  HSD_MODULE_ROOT   Optional path to the installed hsd package root.',
     '  HSD_NETWORK       Default network when --network is omitted.',
+    '  EXPORT_FORMAT     compact or full when --format is omitted.',
   ].join('\n');
 }
 
@@ -41,7 +44,8 @@ function parseArgs(argv) {
     out: process.env.JSONL_PATH || '/mnt/hnscrawler/data/extracted_names.jsonl',
     network: process.env.HSD_NETWORK || 'main',
     limit: null,
-    progress: 10000
+    progress: 10000,
+    format: process.env.EXPORT_FORMAT || 'compact'
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -69,6 +73,9 @@ function parseArgs(argv) {
       case '--progress':
         args.progress = positiveInt('--progress', next());
         break;
+      case '--format':
+        args.format = next();
+        break;
       case '--help':
       case '-h':
         console.log(usage());
@@ -78,6 +85,9 @@ function parseArgs(argv) {
         throw new Error(`unknown argument: ${item}`);
     }
   }
+
+  if (!['compact', 'full'].includes(args.format))
+    throw new Error('--format must be compact or full');
 
   return args;
 }
@@ -150,6 +160,141 @@ async function closeStream(stream) {
   await once(stream, 'finish');
 }
 
+function sha256Hex(data) {
+  return crypto.createHash('sha256').update(data).digest('hex');
+}
+
+function normalizeNS(ns) {
+  return String(ns || '').trim().toLowerCase().replace(/\.+$/, '');
+}
+
+function normalizeAddress(address) {
+  return String(address || '').trim();
+}
+
+function sorted(set) {
+  return Array.from(set).sort();
+}
+
+function summarizeResourceData(data, Resource, hsTypesByVal) {
+  const summary = {
+    ns_names: [],
+    glue4: [],
+    glue6: [],
+    synth4: [],
+    synth6: [],
+    ds_records: [],
+    has_ds: false,
+    has_txt: false,
+    raw_size: data ? data.length : 0,
+    resource_hash: sha256Hex(data || Buffer.alloc(0)),
+    record_types: [],
+    malformed: false
+  };
+
+  if (!data || data.length === 0)
+    return summary;
+
+  let resource;
+  try {
+    resource = Resource.decode(data);
+  } catch (e) {
+    summary.malformed = true;
+    return summary;
+  }
+
+  const nsNames = new Set();
+  const glue4 = new Set();
+  const glue6 = new Set();
+  const synth4 = new Set();
+  const synth6 = new Set();
+  const recordTypes = new Set();
+  const dsRecords = [];
+
+  for (const record of resource.records) {
+    const recordType = hsTypesByVal[record.type] || String(record.type).toUpperCase();
+    recordTypes.add(recordType);
+
+    switch (recordType) {
+      case 'NS':
+        if (record.ns)
+          nsNames.add(normalizeNS(record.ns));
+        break;
+      case 'GLUE4':
+        if (record.ns)
+          nsNames.add(normalizeNS(record.ns));
+        if (record.address)
+          glue4.add(normalizeAddress(record.address));
+        break;
+      case 'GLUE6':
+        if (record.ns)
+          nsNames.add(normalizeNS(record.ns));
+        if (record.address)
+          glue6.add(normalizeAddress(record.address));
+        break;
+      case 'SYNTH4':
+        if (record.address)
+          synth4.add(normalizeAddress(record.address));
+        break;
+      case 'SYNTH6':
+        if (record.address)
+          synth6.add(normalizeAddress(record.address));
+        break;
+      case 'DS':
+        summary.has_ds = true;
+        dsRecords.push({
+          keyTag: record.keyTag,
+          algorithm: record.algorithm,
+          digestType: record.digestType,
+          digest: Buffer.isBuffer(record.digest) ? record.digest.toString('hex') : ''
+        });
+        break;
+      case 'TXT':
+        summary.has_txt = true;
+        break;
+    }
+  }
+
+  summary.ns_names = sorted(nsNames);
+  summary.glue4 = sorted(glue4);
+  summary.glue6 = sorted(glue6);
+  summary.synth4 = sorted(synth4);
+  summary.synth6 = sorted(synth6);
+  summary.ds_records = dsRecords.sort((a, b) =>
+    JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  summary.record_types = sorted(recordTypes);
+  return summary;
+}
+
+function compactNameRow(ns, nameHash, height, network, Resource, hsTypesByVal, statesByVal) {
+  return omitDefaultFields({
+    name: ns.name.toString('binary'),
+    name_hash: nameHash.toString('hex'),
+    state: statesByVal[ns.state(height, network)],
+    renewal_height: ns.renewal,
+    expired: ns.isExpired(height, network),
+    ...summarizeResourceData(ns.data, Resource, hsTypesByVal)
+  });
+}
+
+function omitDefaultFields(row) {
+  const compact = {};
+
+  for (const [key, value] of Object.entries(row)) {
+    if (Array.isArray(value) && value.length === 0)
+      continue;
+    if (value === false)
+      continue;
+    if (key === 'raw_size' && value === 0)
+      continue;
+    if (value === undefined || value === null || value === '')
+      continue;
+    compact[key] = value;
+  }
+
+  return compact;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const hsdRoot = discoverHsdRoot();
@@ -159,6 +304,7 @@ async function main() {
   const NameState = hsdRequire(hsdRoot, 'lib/covenants/namestate');
   const Network = hsdRequire(hsdRoot, 'lib/protocol/network');
   const {Resource} = hsdRequire(hsdRoot, 'lib/dns/resource');
+  const {hsTypesByVal} = hsdRequire(hsdRoot, 'lib/dns/common');
 
   const chainPath = path.join(args.prefix, 'chain');
   const treePath = path.join(args.prefix, 'tree');
@@ -212,7 +358,12 @@ async function main() {
         tip_hash: tipHash,
         chain: network.type,
         hsd_version: pkg.version || 'unknown',
-        source: 'hsd_chain_tree_stream'
+        source: args.format === 'compact'
+          ? 'hsd_chain_tree_compact'
+          : 'hsd_chain_tree_stream',
+        export_format: args.format === 'compact'
+          ? 'compact_summary_v1'
+          : 'full_json_v1'
       }
     });
 
@@ -221,20 +372,35 @@ async function main() {
       const ns = NameState.decode(iter.value);
       ns.nameHash = iter.key;
 
-      const nameInfo = ns.getJSON(height, network);
-      const name = nameInfo.name;
-      let resource = {records: []};
-
-      if (ns.data && ns.data.length > 0) {
-        try {
-          resource = Resource.decode(ns.data).getJSON(name);
-        } catch (e) {
+      if (args.format === 'compact') {
+        const compact = compactNameRow(
+          ns,
+          iter.key,
+          height,
+          network,
+          Resource,
+          hsTypesByVal,
+          NameState.statesByVal
+        );
+        if (compact.malformed)
           resourceDecodeErrors += 1;
-          resource = {records: [], decode_error: e.message};
-        }
-      }
+        await writeJsonLine(stream, {compact_name: compact});
+      } else {
+        const nameInfo = ns.getJSON(height, network);
+        const name = nameInfo.name;
+        let resource = {records: []};
 
-      await writeJsonLine(stream, {name_info: nameInfo, resource});
+        if (ns.data && ns.data.length > 0) {
+          try {
+            resource = Resource.decode(ns.data).getJSON(name);
+          } catch (e) {
+            resourceDecodeErrors += 1;
+            resource = {records: [], decode_error: e.message};
+          }
+        }
+
+        await writeJsonLine(stream, {name_info: nameInfo, resource});
+      }
       count += 1;
 
       if (args.progress > 0 && count % args.progress === 0)

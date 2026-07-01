@@ -20,7 +20,7 @@
 - `scripts/verify-release.sh` passes with `MIN_INDEXED_HEIGHT` set for production mainnet.
 - Confirm HSD RPC credentials are local-only or firewall-restricted.
 - Run HSD RPC bootstrap with `BOOTSTRAP_LIMIT` first.
-- Run the full bootstrap with `PIPELINE_MODE=extract-jsonl` so HSD state streams to JSONL before `bootstrap-jsonl`.
+- Run the full bootstrap with `PIPELINE_MODE=extract-jsonl EXPORT_FORMAT=compact` so HSD state streams to compact JSONL before `bootstrap-jsonl`.
 - Set `ALLOW_UNPAGINATED_GETNAMES=1` only after explicitly accepting HSD `getnames` scale risk and measuring disk/RAM usage.
 
 ## Data Gate

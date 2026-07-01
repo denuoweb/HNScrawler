@@ -30,7 +30,7 @@ Open `http://127.0.0.1:8080`.
 
 ## HSD Bootstrap
 
-HSD exposes `getnameresource <name>` for resource records, and exposes `getnames`, but the official API docs warn that node `getnames` has no pagination and is primarily useful for debugging/regtest/testnet. For production mainnet runs, use the stopped-node JSONL exporter so names are streamed from HSD state instead of accumulated through JSON-RPC.
+HSD exposes `getnameresource <name>` for resource records, and exposes `getnames`, but the official API docs warn that node `getnames` has no pagination and is primarily useful for debugging/regtest/testnet. For production mainnet runs, use the stopped-node compact JSONL exporter so names are streamed from HSD's name tree instead of accumulated through JSON-RPC.
 
 ```bash
 export HSD_RPC_URL=http://127.0.0.1:12037
@@ -41,9 +41,11 @@ hns-topology bootstrap --db data/topology.sqlite --rules configs/provider_rules.
 For a full indexer bootstrap, prefer streaming JSONL from the HSD datadir:
 
 ```bash
-JSONL_PATH=/mnt/hnscrawler/data/extracted_names.jsonl scripts/export-hsd-jsonl.sh
-hns-topology bootstrap-jsonl --jsonl /mnt/hnscrawler/data/extracted_names.jsonl --db data/topology.sqlite --rules configs/provider_rules.json
+EXPORT_FORMAT=compact JSONL_PATH=/mnt/hnscrawler/data/extracted_names.jsonl scripts/export-hsd-jsonl.sh
+hns-topology bootstrap-jsonl --jsonl /mnt/hnscrawler/data/extracted_names.jsonl --db data/topology.sqlite --rules configs/provider_rules.json --batch-size 5000
 ```
+
+See `docs/PERFORMANCE.md` for the HSD data-structure audit and bootstrap tuning knobs.
 
 ## Production Shape
 

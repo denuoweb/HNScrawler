@@ -338,6 +338,105 @@ def test_jsonl_bootstrap_streams_names_and_records_provenance(tmp_path):
     assert summary["hsd_version"] == "fixture-jsonl"
 
 
+def test_compact_jsonl_bootstrap_uses_summarized_rows(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    jsonl_path = tmp_path / "compact.jsonl"
+    rows = [
+        {
+            "snapshot_meta": {
+                "height": 222222,
+                "tip_hash": "compact-tip",
+                "chain": "main",
+                "hsd_version": "fixture-compact",
+                "source": "hsd_chain_tree_compact",
+                "export_format": "compact_summary_v1",
+            }
+        },
+        {
+            "compact_name": {
+                "name": "direct",
+                "name_hash": "hash-direct",
+                "state": "CLOSED",
+                "renewal_height": 221000,
+                "expired": False,
+                "resource_hash": "resource-direct",
+                "record_types": ["SYNTH4"],
+                "ns_names": [],
+                "glue4": [],
+                "glue6": [],
+                "synth4": ["203.0.113.10"],
+                "synth6": [],
+                "ds_records": [],
+                "has_ds": False,
+                "has_txt": False,
+                "raw_size": 5,
+            }
+        },
+        {
+            "compact_name": {
+                "name": "delegated",
+                "name_hash": "hash-delegated",
+                "state": "CLOSED",
+                "renewal_height": 221000,
+                "expired": False,
+                "resource_hash": "resource-delegated",
+                "record_types": ["NS"],
+                "ns_names": ["ns1.example."],
+                "glue4": [],
+                "glue6": [],
+                "synth4": [],
+                "synth6": [],
+                "ds_records": [],
+                "has_ds": False,
+                "has_txt": False,
+                "raw_size": 8,
+            }
+        },
+        {
+            "compact_name": {
+                "name": "expired",
+                "name_hash": "hash-expired",
+                "state": "CLOSED",
+                "renewal_height": 1,
+                "expired": True,
+                "resource_hash": "resource-expired",
+                "record_types": ["SYNTH4"],
+                "ns_names": [],
+                "glue4": [],
+                "glue6": [],
+                "synth4": ["203.0.113.11"],
+                "synth6": [],
+                "ds_records": [],
+                "has_ds": False,
+                "has_txt": False,
+                "raw_size": 5,
+            }
+        },
+    ]
+    jsonl_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        count = bootstrap_from_jsonl(conn, jsonl_path=jsonl_path, rules=rules, batch_size=1)
+        summary = build_summary(conn)
+        export_format = conn.execute(
+            "SELECT value FROM snapshot_meta WHERE key = 'source_jsonl_format'"
+        ).fetchone()
+        delegated = conn.execute(
+            "SELECT onchain_class FROM names WHERE name = 'delegated'"
+        ).fetchone()
+
+    assert count == 3
+    assert summary["active_names"] == 2
+    assert summary["expired_names"] == 1
+    assert summary["direct_ip_records"] == 1
+    assert summary["delegated_no_glue"] == 1
+    assert summary["last_indexed_height"] == 222222
+    assert summary["hsd_version"] == "fixture-compact"
+    assert export_format["value"] == "compact_summary_v1"
+    assert delegated["onchain_class"] == "DELEGATED_NO_GLUE"
+
+
 def test_hsd_bootstrap_requires_limit_or_explicit_unpaginated_opt_in(tmp_path):
     db_path = tmp_path / "topology.sqlite"
     rules = ProviderRules.from_file("configs/provider_rules.json")

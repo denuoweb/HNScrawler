@@ -68,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     jsonl.add_argument("--chain", default="main")
     jsonl.add_argument("--hsd-version", default="unknown")
     jsonl.add_argument("--limit", type=int)
+    jsonl.add_argument("--batch-size", type=int, default=5000)
     jsonl.set_defaults(func=cmd_bootstrap_jsonl)
 
     bootstrap = sub.add_parser("bootstrap", help="Build an index from HSD RPC.")
@@ -205,6 +206,7 @@ def cmd_bootstrap_jsonl(args: argparse.Namespace) -> int:
             chain=args.chain,
             hsd_version=args.hsd_version,
             limit=args.limit,
+            batch_size=args.batch_size,
         )
     print(f"indexed {count} JSONL names into {args.db}")
     return 0

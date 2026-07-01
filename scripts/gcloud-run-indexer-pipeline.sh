@@ -32,6 +32,8 @@ INCREMENTAL_MAX_BLOCKS="${INCREMENTAL_MAX_BLOCKS:-300}"
 INCREMENTAL_TO_HEIGHT="${INCREMENTAL_TO_HEIGHT:-}"
 JSONL_PATH="${JSONL_PATH:-}"
 EXPORT_LIMIT="${EXPORT_LIMIT:-}"
+EXPORT_FORMAT="${EXPORT_FORMAT:-compact}"
+JSONL_BOOTSTRAP_BATCH_SIZE="${JSONL_BOOTSTRAP_BATCH_SIZE:-5000}"
 STOP_HSD_FOR_EXPORT="${STOP_HSD_FOR_EXPORT:-1}"
 RESTART_HSD_AFTER_EXPORT="${RESTART_HSD_AFTER_EXPORT:-1}"
 ALLOW_RUNNING_HSD_EXPORT="${ALLOW_RUNNING_HSD_EXPORT:-0}"
@@ -79,6 +81,8 @@ export INCREMENTAL_MAX_BLOCKS='$INCREMENTAL_MAX_BLOCKS'
 export INCREMENTAL_TO_HEIGHT='$INCREMENTAL_TO_HEIGHT'
 export JSONL_PATH='$JSONL_PATH'
 export EXPORT_LIMIT='$EXPORT_LIMIT'
+export EXPORT_FORMAT='$EXPORT_FORMAT'
+export JSONL_BOOTSTRAP_BATCH_SIZE='$JSONL_BOOTSTRAP_BATCH_SIZE'
 export STOP_HSD_FOR_EXPORT='$STOP_HSD_FOR_EXPORT'
 export RESTART_HSD_AFTER_EXPORT='$RESTART_HSD_AFTER_EXPORT'
 export ALLOW_RUNNING_HSD_EXPORT='$ALLOW_RUNNING_HSD_EXPORT'
@@ -98,14 +102,14 @@ case '$PIPELINE_MODE' in
     ;;
   jsonl)
     [ -n \"\$JSONL_PATH\" ] || { echo 'JSONL_PATH is required for PIPELINE_MODE=jsonl' >&2; exit 2; }
-    hns-topology bootstrap-jsonl --jsonl \"\$JSONL_PATH\" --db '$TOPOLOGY_DB' --rules '$PROVIDER_RULES'
+    hns-topology bootstrap-jsonl --jsonl \"\$JSONL_PATH\" --db '$TOPOLOGY_DB' --rules '$PROVIDER_RULES' --batch-size \"\$JSONL_BOOTSTRAP_BATCH_SIZE\"
     ;;
   extract-jsonl)
     if [ -z \"\$JSONL_PATH\" ]; then
       export JSONL_PATH='$INDEXER_MOUNT/data/extracted_names.jsonl'
     fi
     scripts/export-hsd-jsonl.sh
-    hns-topology bootstrap-jsonl --jsonl \"\$JSONL_PATH\" --db '$TOPOLOGY_DB' --rules '$PROVIDER_RULES'
+    hns-topology bootstrap-jsonl --jsonl \"\$JSONL_PATH\" --db '$TOPOLOGY_DB' --rules '$PROVIDER_RULES' --batch-size \"\$JSONL_BOOTSTRAP_BATCH_SIZE\"
     ;;
 esac
 if [ '$RUN_LIVE_CHECKS' = '1' ]; then

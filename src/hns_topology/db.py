@@ -143,6 +143,42 @@ LIVE_COLUMNS = (
     "next_check_at",
 )
 
+UPSERT_NAME_SQL = """
+    INSERT INTO names(
+      name, name_hash, state, renewal_height, expired, resource_hash, record_types,
+      onchain_class, provider_guess, last_seen_height, updated_at
+    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(name) DO UPDATE SET
+      name_hash=excluded.name_hash,
+      state=excluded.state,
+      renewal_height=excluded.renewal_height,
+      expired=excluded.expired,
+      resource_hash=excluded.resource_hash,
+      record_types=excluded.record_types,
+      onchain_class=excluded.onchain_class,
+      provider_guess=excluded.provider_guess,
+      last_seen_height=excluded.last_seen_height,
+      updated_at=excluded.updated_at
+    """
+
+UPSERT_RESOURCE_SQL = """
+    INSERT INTO resource_summary(
+      name, ns_names, glue4, glue6, synth4, synth6, ds_records, has_ds, has_txt,
+      raw_size, resource_hash
+    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(name) DO UPDATE SET
+      ns_names=excluded.ns_names,
+      glue4=excluded.glue4,
+      glue6=excluded.glue6,
+      synth4=excluded.synth4,
+      synth6=excluded.synth6,
+      ds_records=excluded.ds_records,
+      has_ds=excluded.has_ds,
+      has_txt=excluded.has_txt,
+      raw_size=excluded.raw_size,
+      resource_hash=excluded.resource_hash
+    """
+
 
 def connect(db_path: str | Path) -> sqlite3.Connection:
     path = Path(db_path)
@@ -176,73 +212,19 @@ def get_meta(conn: sqlite3.Connection, key: str, default: str | None = None) -> 
 
 
 def upsert_name(conn: sqlite3.Connection, record: NameRecord) -> None:
-    conn.execute(
-        """
-        INSERT INTO names(
-          name, name_hash, state, renewal_height, expired, resource_hash, record_types,
-          onchain_class, provider_guess, last_seen_height, updated_at
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(name) DO UPDATE SET
-          name_hash=excluded.name_hash,
-          state=excluded.state,
-          renewal_height=excluded.renewal_height,
-          expired=excluded.expired,
-          resource_hash=excluded.resource_hash,
-          record_types=excluded.record_types,
-          onchain_class=excluded.onchain_class,
-          provider_guess=excluded.provider_guess,
-          last_seen_height=excluded.last_seen_height,
-          updated_at=excluded.updated_at
-        """,
-        (
-            record.name,
-            record.name_hash,
-            record.state,
-            record.renewal_height,
-            int(record.expired),
-            record.resource_hash,
-            dumps_json(record.record_types),
-            record.onchain_class,
-            record.provider_guess,
-            record.last_seen_height,
-            record.updated_at,
-        ),
-    )
+    conn.execute(UPSERT_NAME_SQL, _name_params(record))
+
+
+def upsert_names(conn: sqlite3.Connection, records: Iterable[NameRecord]) -> None:
+    conn.executemany(UPSERT_NAME_SQL, (_name_params(record) for record in records))
 
 
 def upsert_resource(conn: sqlite3.Connection, summary: ResourceSummary) -> None:
-    conn.execute(
-        """
-        INSERT INTO resource_summary(
-          name, ns_names, glue4, glue6, synth4, synth6, ds_records, has_ds, has_txt,
-          raw_size, resource_hash
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(name) DO UPDATE SET
-          ns_names=excluded.ns_names,
-          glue4=excluded.glue4,
-          glue6=excluded.glue6,
-          synth4=excluded.synth4,
-          synth6=excluded.synth6,
-          ds_records=excluded.ds_records,
-          has_ds=excluded.has_ds,
-          has_txt=excluded.has_txt,
-          raw_size=excluded.raw_size,
-          resource_hash=excluded.resource_hash
-        """,
-        (
-            summary.name,
-            dumps_json(summary.ns_names),
-            dumps_json(summary.glue4),
-            dumps_json(summary.glue6),
-            dumps_json(summary.synth4),
-            dumps_json(summary.synth6),
-            dumps_json(summary.ds_records),
-            int(summary.has_ds),
-            int(summary.has_txt),
-            summary.raw_size,
-            summary.resource_hash,
-        ),
-    )
+    conn.execute(UPSERT_RESOURCE_SQL, _resource_params(summary))
+
+
+def upsert_resources(conn: sqlite3.Connection, summaries: Iterable[ResourceSummary]) -> None:
+    conn.executemany(UPSERT_RESOURCE_SQL, (_resource_params(summary) for summary in summaries))
 
 
 def upsert_live_status(conn: sqlite3.Connection, status: LiveStatus) -> None:
@@ -501,6 +483,38 @@ def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str
     for column, column_type in columns.items():
         if column not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+
+
+def _name_params(record: NameRecord) -> tuple[Any, ...]:
+    return (
+        record.name,
+        record.name_hash,
+        record.state,
+        record.renewal_height,
+        int(record.expired),
+        record.resource_hash,
+        dumps_json(record.record_types),
+        record.onchain_class,
+        record.provider_guess,
+        record.last_seen_height,
+        record.updated_at,
+    )
+
+
+def _resource_params(summary: ResourceSummary) -> tuple[Any, ...]:
+    return (
+        summary.name,
+        dumps_json(summary.ns_names),
+        dumps_json(summary.glue4),
+        dumps_json(summary.glue6),
+        dumps_json(summary.synth4),
+        dumps_json(summary.synth6),
+        dumps_json(summary.ds_records),
+        int(summary.has_ds),
+        int(summary.has_txt),
+        summary.raw_size,
+        summary.resource_hash,
+    )
 
 
 def _row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:

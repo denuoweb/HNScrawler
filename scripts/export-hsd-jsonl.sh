@@ -7,6 +7,7 @@ JSONL_PATH="${JSONL_PATH:-/mnt/hnscrawler/data/extracted_names.jsonl}"
 HSD_NETWORK="${HSD_NETWORK:-main}"
 CHECK_HSD_READY="${CHECK_HSD_READY:-1}"
 EXPORT_LIMIT="${EXPORT_LIMIT:-}"
+EXPORT_FORMAT="${EXPORT_FORMAT:-compact}"
 STOP_HSD_FOR_EXPORT="${STOP_HSD_FOR_EXPORT:-1}"
 RESTART_HSD_AFTER_EXPORT="${RESTART_HSD_AFTER_EXPORT:-1}"
 ALLOW_RUNNING_HSD_EXPORT="${ALLOW_RUNNING_HSD_EXPORT:-0}"
@@ -42,6 +43,7 @@ args=(--prefix "$INDEXER_HSD_PREFIX" --out "$JSONL_PATH" --network "$HSD_NETWORK
 if [ -n "$EXPORT_LIMIT" ]; then
   args+=(--limit "$EXPORT_LIMIT")
 fi
+args+=(--format "$EXPORT_FORMAT")
 
 npm_root="$(npm root -g 2>/dev/null || true)"
 if [ -n "$npm_root" ]; then
