@@ -91,6 +91,51 @@ def validate_release(
     return checks
 
 
+def validate_public_release(
+    *,
+    public_dir: str | Path,
+    require_live_checks: bool = False,
+) -> list[ReleaseCheck]:
+    checks: list[ReleaseCheck] = []
+    public = Path(public_dir)
+    checks.append(ReleaseCheck("public_dir_exists", public.is_dir(), str(public)))
+    if not public.is_dir():
+        return checks
+
+    gz_path = public / "data/topology.sqlite.gz"
+    checks.append(
+        ReleaseCheck(
+            "public_topology_sqlite_gz_present",
+            gz_path.is_file(),
+            str(gz_path),
+        )
+    )
+    if not gz_path.is_file():
+        _validate_public_artifacts(public, {}, checks, include_public_dir_check=False)
+        return checks
+
+    with tempfile.NamedTemporaryFile(prefix="hns-topology-public-", suffix=".sqlite") as handle:
+        try:
+            with gzip.open(gz_path, "rb") as src:
+                shutil.copyfileobj(src, handle)
+            handle.flush()
+            with connect(handle.name) as conn:
+                _validate_database(conn, checks, require_live_checks=require_live_checks)
+                summary = build_summary(conn)
+        except Exception as exc:
+            checks.append(
+                ReleaseCheck(
+                    "public_topology_sqlite_gz_open",
+                    False,
+                    f"{type(exc).__name__}: {exc}",
+                )
+            )
+            summary = {}
+
+    _validate_public_artifacts(public, summary, checks, include_public_dir_check=False)
+    return checks
+
+
 def release_is_valid(checks: list[ReleaseCheck]) -> bool:
     return all(check.ok for check in checks)
 
@@ -223,14 +268,17 @@ def _validate_public_artifacts(
     public_dir: Path,
     summary: dict[str, Any],
     checks: list[ReleaseCheck],
+    *,
+    include_public_dir_check: bool = True,
 ) -> None:
-    checks.append(
-        ReleaseCheck(
-            "public_dir_exists",
-            public_dir.is_dir(),
-            str(public_dir),
+    if include_public_dir_check:
+        checks.append(
+            ReleaseCheck(
+                "public_dir_exists",
+                public_dir.is_dir(),
+                str(public_dir),
+            )
         )
-    )
     if not public_dir.is_dir():
         return
 
@@ -254,7 +302,7 @@ def _validate_public_artifacts(
                 checks.append(ReleaseCheck(f"json:{relative}", True, "valid JSON"))
 
     summary_path = public_dir / "data/summary.json"
-    if summary_path.exists():
+    if summary_path.exists() and summary:
         exported = json.loads(summary_path.read_text(encoding="utf-8"))
         mismatches = [
             key
@@ -270,7 +318,7 @@ def _validate_public_artifacts(
         )
 
     gz_path = public_dir / "data/topology.sqlite.gz"
-    if gz_path.exists():
+    if gz_path.exists() and summary:
         checks.append(_validate_gzipped_sqlite(gz_path, expected_names=int(summary["total_names"])))
 
     forbidden = [

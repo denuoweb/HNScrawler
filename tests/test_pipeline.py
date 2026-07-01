@@ -15,7 +15,7 @@ from hns_topology.indexer import (
 )
 from hns_topology.provider_rules import ProviderRules
 from hns_topology.site_generator import generate_site
-from hns_topology.validator import release_is_valid, validate_release
+from hns_topology.validator import release_is_valid, validate_public_release, validate_release
 
 FIXTURE = Path("tests/fixtures/sample_hsd_names.json")
 JSONL_FIXTURE = Path("tests/fixtures/sample_hsd_names.jsonl")
@@ -126,6 +126,9 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     checks = validate_release(db_path=db_path, public_dir=out)
     assert release_is_valid(checks), [check for check in checks if not check.ok]
 
+    public_checks = validate_public_release(public_dir=out)
+    assert release_is_valid(public_checks), [check for check in public_checks if not check.ok]
+
 
 def test_release_validator_catches_missing_artifacts(tmp_path):
     db_path = tmp_path / "topology.sqlite"
@@ -140,6 +143,23 @@ def test_release_validator_catches_missing_artifacts(tmp_path):
 
     assert not release_is_valid(checks)
     failed = {check.name: check.detail for check in checks if not check.ok}
+    assert "required_public_files" in failed
+
+
+def test_public_validator_requires_embedded_sqlite(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    out = tmp_path / "public"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+        generate_site(conn, db_path=db_path, out_dir=out)
+
+    (out / "data/topology.sqlite.gz").unlink()
+    checks = validate_public_release(public_dir=out)
+
+    assert not release_is_valid(checks)
+    failed = {check.name: check.detail for check in checks if not check.ok}
+    assert "public_topology_sqlite_gz_present" in failed
     assert "required_public_files" in failed
 
 

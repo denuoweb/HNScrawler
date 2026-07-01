@@ -6,8 +6,17 @@ DENUO_WEB_PATH="${DENUO_WEB_PATH:-/var/www/denuoweb/hns-topology}"
 PUBLISH_VIA_GCLOUD="${PUBLISH_VIA_GCLOUD:-1}"
 PROD_ARTIFACT_MOUNT="${PROD_ARTIFACT_MOUNT:-/mnt/hns-topology}"
 ALLOW_BOOT_DISK_PUBLISH="${ALLOW_BOOT_DISK_PUBLISH:-0}"
+VALIDATE_BEFORE_PUBLISH="${VALIDATE_BEFORE_PUBLISH:-1}"
 
 test -f "$PUBLIC_DIR/index.html"
+
+if [ "$VALIDATE_BEFORE_PUBLISH" = "1" ]; then
+  if [ -x .venv/bin/hns-topology ]; then
+    .venv/bin/hns-topology validate-public --public-dir "$PUBLIC_DIR"
+  else
+    hns-topology validate-public --public-dir "$PUBLIC_DIR"
+  fi
+fi
 
 if [[ "$PUBLISH_VIA_GCLOUD" == "1" ]]; then
   GCP_PROJECT="${GCP_PROJECT:-denuo-web-site}"

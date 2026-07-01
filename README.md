@@ -86,6 +86,7 @@ hns-topology live-check --db data/topology.sqlite --limit 100 --concurrency 4 --
 hns-topology export --db data/topology.sqlite --out public/data
 hns-topology generate-site --db data/topology.sqlite --out public
 hns-topology validate-release --db data/topology.sqlite --public-dir public
+hns-topology validate-public --public-dir public
 hns-topology archive-release --db data/topology.sqlite --public-dir public --out-dir archives
 ```
 
