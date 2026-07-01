@@ -24,15 +24,17 @@ denuoweb-vm  us-west1-b  RUNNING  e2-micro      ['30']        10.138.0.2  35.212
 Disk inventory:
 
 ```text
-NAME         ZONE        SIZE_GB  TYPE         USERS            STATUS
-denuoweb-vm  us-west1-b  30       pd-standard  ['denuoweb-vm']  READY
+NAME               ZONE        SIZE_GB  TYPE         USERS            STATUS
+denuoweb-vm        us-west1-b  30       pd-standard  ['denuoweb-vm']  READY
+hns-topology-data  us-west1-b  200      pd-standard  ['denuoweb-vm']  READY
 ```
 
 Read-only SSH check:
 
 ```text
-/dev/sda1  30G  19G  9.7G  66% /
-/var/www/denuoweb/index.html
+/dev/sda1  30G   19G  9.7G  66% /
+/dev/sdb   196G  32K  196G   1% /mnt/hns-topology
+/var/www/denuoweb/hns-topology -> /mnt/hns-topology/site
 ```
 
 No GCP APIs were enabled and no cloud resources were created. Before provisioning the ephemeral indexer VM, set the zone/VM variables explicitly:

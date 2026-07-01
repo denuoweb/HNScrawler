@@ -24,6 +24,8 @@ Required for publishing:
 
 - `DENUO_WEB_VM` should be `denuoweb-vm` for GCE publishing
 - `DENUO_WEB_PATH` defaults to `/var/www/denuoweb/hns-topology`
+- `PROD_ARTIFACT_DISK` defaults to `hns-topology-data`
+- `PROD_ARTIFACT_MOUNT` defaults to `/mnt/hns-topology`
 
 ## Bootstrap
 
@@ -40,7 +42,28 @@ scripts/gcloud-stop-indexer.sh
 
 Keep the persistent indexer disk until production recovery has been proven. Stop or delete the compute VM to avoid ongoing compute cost.
 
-The existing web VM currently has a 30 GB boot disk with about 9.7 GB free. Keep full HSD data off that VM.
+## Production Website Disk
+
+The existing web VM has a 30 GB boot disk with about 9.7 GB free. Keep generated report bytes off that boot disk.
+
+The production artifact disk workflow is:
+
+```bash
+scripts/gcloud-attach-production-disk.sh
+scripts/setup-production-disk.sh
+```
+
+Current production shape:
+
+- VM: `denuoweb-vm`
+- project: `denuo-web-site`
+- zone: `us-west1-b`
+- artifact disk: `hns-topology-data`
+- artifact mount: `/mnt/hns-topology`
+- generated site target: `/mnt/hns-topology/site`
+- web path: `/var/www/denuoweb/hns-topology` symlinked to `/mnt/hns-topology/site`
+
+Keep full HSD data off the production web VM unless there is a deliberate later decision to colocate a pruned node. The intended production VM payload is the generated static report and downloadable artifacts.
 
 ## Nightly Or Weekly Update
 
