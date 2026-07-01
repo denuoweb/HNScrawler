@@ -55,6 +55,8 @@ Keep the persistent indexer disk until production recovery has been proven. Stop
 
 The indexer disk is for HSD, the compact working database, live-check state, and generated artifacts while building. The production artifact disk on `denuoweb-vm` is for serving the finished static site and downloads. Do not use the production artifact disk as the live HSD datadir.
 
+`scripts/gcloud-create-indexer.sh` is idempotent for interrupted cycles: it creates the persistent disk if missing, creates the VM if missing, reattaches the indexer disk if the VM exists without it, refuses to attach a disk already mounted on a different VM, and only starts the VM when it is not already running.
+
 For the first production cycle, prefer the guarded wrapper:
 
 ```bash
