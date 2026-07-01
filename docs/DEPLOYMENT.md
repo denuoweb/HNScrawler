@@ -6,7 +6,7 @@ The cheapest sustainable deployment is an ephemeral indexer VM plus the existing
 
 Copy `scripts/env.example` to `.env` on the operator machine or export the variables directly.
 
-See `docs/CLOUD_AUDIT.md` for the current local `gcloud` context observed when the repository was bootstrapped.
+See `docs/CLOUD_AUDIT.md` for the current local `gcloud` context and the existing website VM inventory.
 
 Required for HSD indexing:
 
@@ -15,15 +15,15 @@ Required for HSD indexing:
 
 Required for GCP provisioning:
 
-- `GCP_PROJECT` should be `denuowebsite`
+- `GCP_PROJECT` should be `denuo-web-site`
 - `GCP_ZONE`
 - `INDEXER_VM`
 - `INDEXER_DISK`
 
 Required for publishing:
 
-- `DENUO_WEB_HOST`
-- `DENUO_WEB_PATH`
+- `DENUO_WEB_VM` should be `denuoweb-vm` for GCE publishing
+- `DENUO_WEB_PATH` defaults to `/var/www/denuoweb/hns-topology`
 
 ## Bootstrap
 
@@ -39,6 +39,8 @@ scripts/gcloud-stop-indexer.sh
 ```
 
 Keep the persistent indexer disk until production recovery has been proven. Stop or delete the compute VM to avoid ongoing compute cost.
+
+The existing web VM currently has a 30 GB boot disk with about 9.7 GB free. Keep full HSD data off that VM.
 
 ## Nightly Or Weekly Update
 

@@ -2,30 +2,43 @@
 
 Corrected local `gcloud` context:
 
-- account: `hns-browser-submit-testers@hns-browser.iam.gserviceaccount.com`
-- project: `denuowebsite`
+- account: `jaron.rosenau@gmail.com`
+- project: `denuo-web-site`
 - configured compute zone: unset
 - configured compute region: unset
 
-The local project was initially set to `crowdpmplatform`; it was corrected with:
+The local project was initially set to `crowdpmplatform`, then briefly to the display/name shorthand `denuowebsite`. The actual GCP project ID is `denuo-web-site`; it was corrected with:
 
 ```bash
-gcloud config set project denuowebsite
+gcloud config set account jaron.rosenau@gmail.com
+gcloud config set project denuo-web-site
 ```
 
-Read-only Compute Engine inventory against `denuowebsite` is currently blocked for the active service account:
+Read-only Compute Engine inventory now succeeds:
 
 ```text
-The resource 'projects/denuowebsite' was not found
-Project 'denuowebsite' not found or permission denied
+NAME         ZONE        STATUS   MACHINE_TYPE  DISK_SIZE_GB  NETWORK_IP  NAT_IP
+denuoweb-vm  us-west1-b  RUNNING  e2-micro      ['30']        10.138.0.2  35.212.156.128
 ```
 
-Project discovery is also blocked because Cloud Resource Manager is not usable from this account/context.
+Disk inventory:
 
-No GCP APIs were enabled and no cloud resources were created. Before provisioning the ephemeral indexer VM, confirm the active account has access to the `denuowebsite` project and set the zone/VM variables explicitly:
+```text
+NAME         ZONE        SIZE_GB  TYPE         USERS            STATUS
+denuoweb-vm  us-west1-b  30       pd-standard  ['denuoweb-vm']  READY
+```
+
+Read-only SSH check:
+
+```text
+/dev/sda1  30G  19G  9.7G  66% /
+/var/www/denuoweb/index.html
+```
+
+No GCP APIs were enabled and no cloud resources were created. Before provisioning the ephemeral indexer VM, set the zone/VM variables explicitly:
 
 ```bash
-export GCP_PROJECT="denuowebsite"
+export GCP_PROJECT="denuo-web-site"
 export GCP_ZONE="us-west1-b"
 export INDEXER_VM="hns-topology-indexer"
 export INDEXER_DISK="hns-topology-indexer-disk"
