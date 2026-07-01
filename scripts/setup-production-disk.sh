@@ -16,8 +16,9 @@ gcloud compute ssh "$DENUO_WEB_VM" \
   --command "set -euo pipefail
 DEVICE=/dev/disk/by-id/google-$PROD_ARTIFACT_DISK
 for i in 1 2 3 4 5; do [ -e \"\$DEVICE\" ] && break || sleep 1; done
-sudo file -sL \"\$DEVICE\"
-if sudo file -sL \"\$DEVICE\" | grep -Eq 'data$|empty'; then
+DEVICE_TYPE=\$(sudo file -sL \"\$DEVICE\")
+echo \"\$DEVICE_TYPE\"
+if [[ \"\$DEVICE_TYPE\" == *': data' || \"\$DEVICE_TYPE\" == *': empty' ]]; then
   sudo mkfs.ext4 -F -m 0 \"\$DEVICE\"
 fi
 sudo mkdir -p '$PROD_ARTIFACT_MOUNT'

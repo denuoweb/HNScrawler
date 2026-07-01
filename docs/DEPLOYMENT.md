@@ -84,8 +84,8 @@ The existing web VM has a 30 GB boot disk with about 9.7 GB free. Keep generated
 The production artifact disk workflow is:
 
 ```bash
-scripts/gcloud-attach-production-disk.sh
-scripts/setup-production-disk.sh
+DRY_RUN=1 scripts/gcloud-prepare-production-web.sh
+CONFIRM_PRODUCTION_WEB=1 scripts/gcloud-prepare-production-web.sh
 ```
 
 Current production shape:
@@ -97,6 +97,8 @@ Current production shape:
 - artifact mount: `/mnt/hns-topology`
 - generated site target: `/mnt/hns-topology/site`
 - web path: `/var/www/denuoweb/hns-topology` symlinked to `/mnt/hns-topology/site`
+
+`scripts/gcloud-prepare-production-web.sh` creates or attaches `PROD_ARTIFACT_DISK`, mounts it, moves an existing non-symlink `DENUO_WEB_PATH` aside with a timestamped boot-disk backup name, creates the symlink to `PROD_ARTIFACT_SITE_DIR`, and then runs the production preflight. It refuses to run unless `CONFIRM_PRODUCTION_WEB=1`, or `DRY_RUN=1` for plan output.
 
 Keep full HSD data off the production web VM unless there is a deliberate later decision to colocate a pruned node. The intended production VM payload is the generated static report and downloadable artifacts.
 
