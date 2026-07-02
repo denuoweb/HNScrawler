@@ -79,6 +79,17 @@ This is different from patching HSD's live full-node replay. HSD cannot safely s
 
 The first sidecar implementation is `scripts/export-hsd-nameonly-jsonl.sh`, backed by `scripts/hsd-nameonly-replay-jsonl.js`. It reads accepted blocks through local HSD RPC so it can run beside a syncing node, reuses HSD `NameState` for state/expiration math, writes compact JSONL rows compatible with `bootstrap-jsonl`, and marks its provenance as `hsd_nameonly_rpc_compact_experimental`.
 
+Initial benchmark on the `hns-topology-indexer` VM while HSD continued syncing:
+
+- Empty early-chain smoke: 500 blocks in 0.55 seconds, 904 blocks/sec.
+- Dense historical window, heights 90000-91999: 2000 blocks in 16.27 seconds, 122.90 blocks/sec, 467788 name covenants.
+- Full available replay to height 125475: 125476 blocks in 1273.93 seconds, 98.50 blocks/sec, 30109319 name covenants, 5279423 compact names, 5 resource decode errors.
+- Artifact sizes for that height: 1.8 GB compact JSONL and 2.5 GB imported SQLite.
+- Import time for the compact JSONL into SQLite with `bootstrap-jsonl --batch-size 20000`: 3 minutes 54 seconds.
+- Spot checks for delegated/GLUE and SYNTH rows matched live HSD RPC resource summaries for the sampled names.
+
+The speedup is real, but this path remains experimental until a same-height comparison against HSD's authoritative name-tree export passes. The current implementation also holds all `NameState` objects in memory before writing compact rows; the next productionization step is to reduce memory by using lighter state records, direct SQLite materialization, or deterministic streaming/spilling.
+
 ## Lower-Risk Experiments
 
 These can be benchmarked, but they are not expected to produce a 10x win by themselves:
