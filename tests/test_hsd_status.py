@@ -77,3 +77,61 @@ def test_hsd_readiness_rejects_shallow_mainnet_height():
     failed = {check.name for check in checks if not check.ok}
     assert not hsd_is_ready(checks)
     assert "minimum_block_height" in failed
+
+
+def test_hsd_readiness_rejects_low_verification_progress():
+    checks = evaluate_hsd_readiness(
+        {
+            "chain": "main",
+            "blocks": 300000,
+            "headers": 300000,
+            "bestblockhash": "00ab",
+            "verificationprogress": 0.91,
+        },
+        rpc_url="http://127.0.0.1:12037",
+        min_verification_progress=0.999,
+    )
+
+    failed = {check.name for check in checks if not check.ok}
+    assert not hsd_is_ready(checks)
+    assert "minimum_verification_progress" in failed
+
+
+def test_hsd_readiness_rejects_stale_median_time():
+    checks = evaluate_hsd_readiness(
+        {
+            "chain": "main",
+            "blocks": 300000,
+            "headers": 300000,
+            "bestblockhash": "00ab",
+            "mediantime": 1_700_000_000,
+            "verificationprogress": 1.0,
+        },
+        rpc_url="http://127.0.0.1:12037",
+        min_verification_progress=0.999,
+        max_median_time_age=172800,
+        now=1_700_259_200,
+    )
+
+    failed = {check.name for check in checks if not check.ok}
+    assert not hsd_is_ready(checks)
+    assert "median_time_freshness" in failed
+
+
+def test_hsd_readiness_accepts_fresh_synced_progress():
+    checks = evaluate_hsd_readiness(
+        {
+            "chain": "main",
+            "blocks": 300000,
+            "headers": 300000,
+            "bestblockhash": "00ab",
+            "mediantime": 1_700_172_000,
+            "verificationprogress": 0.9999,
+        },
+        rpc_url="http://127.0.0.1:12037",
+        min_verification_progress=0.999,
+        max_median_time_age=172800,
+        now=1_700_259_200,
+    )
+
+    assert hsd_is_ready(checks)

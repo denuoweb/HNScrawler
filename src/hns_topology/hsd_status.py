@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -20,10 +21,15 @@ def evaluate_hsd_readiness(
     rpc_url: str,
     max_block_lag: int = 2,
     min_block_height: int = 0,
+    min_verification_progress: float = 0.0,
+    max_median_time_age: int = 0,
     require_local_rpc: bool = True,
+    now: int | None = None,
 ) -> list[HsdCheck]:
     blocks = _maybe_int(info.get("blocks") or info.get("height"))
     headers = _maybe_int(info.get("headers"))
+    median_time = _maybe_int(info.get("mediantime"))
+    verification_progress = _maybe_float(info.get("verificationprogress"))
     ibd = info.get("initialblockdownload")
     best_hash = info.get("bestblockhash") or info.get("hash")
     chain = info.get("chain") or info.get("network")
@@ -45,6 +51,31 @@ def evaluate_hsd_readiness(
                 "minimum_block_height",
                 blocks is not None and blocks >= min_block_height,
                 f"blocks={blocks if blocks is not None else 'missing'} min={min_block_height}",
+            )
+        )
+
+    if min_verification_progress > 0:
+        checks.append(
+            HsdCheck(
+                "minimum_verification_progress",
+                verification_progress is not None
+                and verification_progress >= min_verification_progress,
+                "missing"
+                if verification_progress is None
+                else f"progress={verification_progress:.6f} min={min_verification_progress:.6f}",
+            )
+        )
+
+    if max_median_time_age > 0:
+        current_time = int(time.time()) if now is None else now
+        age = None if median_time is None else current_time - median_time
+        checks.append(
+            HsdCheck(
+                "median_time_freshness",
+                age is not None and 0 <= age <= max_median_time_age,
+                "missing"
+                if age is None
+                else f"age={age}s max={max_median_time_age}s mediantime={median_time}",
             )
         )
 
@@ -90,5 +121,12 @@ def _local_rpc_check(rpc_url: str, *, require_local_rpc: bool) -> HsdCheck:
 def _maybe_int(value: Any) -> int | None:
     try:
         return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _maybe_float(value: Any) -> float | None:
+    try:
+        return float(value)
     except (TypeError, ValueError):
         return None

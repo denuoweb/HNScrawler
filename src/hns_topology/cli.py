@@ -85,6 +85,8 @@ def build_parser() -> argparse.ArgumentParser:
     hsd_status.add_argument("--hsd-api-key")
     hsd_status.add_argument("--max-block-lag", type=int, default=2)
     hsd_status.add_argument("--min-block-height", type=int, default=0)
+    hsd_status.add_argument("--min-verification-progress", type=float, default=0.0)
+    hsd_status.add_argument("--max-median-time-age", type=int, default=0)
     hsd_status.add_argument("--allow-remote-rpc", action="store_true")
     hsd_status.set_defaults(func=cmd_hsd_status)
 
@@ -242,6 +244,8 @@ def cmd_hsd_status(args: argparse.Namespace) -> int:
         rpc_url=client.url,
         max_block_lag=args.max_block_lag,
         min_block_height=args.min_block_height,
+        min_verification_progress=args.min_verification_progress,
+        max_median_time_age=args.max_median_time_age,
         require_local_rpc=not args.allow_remote_rpc,
     )
     for check in checks:
