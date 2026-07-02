@@ -7,6 +7,8 @@ INDEXER_VM="${INDEXER_VM:-hns-topology-indexer}"
 INDEXER_MOUNT="${INDEXER_MOUNT:-/mnt/hnscrawler}"
 INDEXER_HSD_PREFIX="${INDEXER_HSD_PREFIX:-/mnt/hnscrawler/hsd}"
 INDEXER_USER="${INDEXER_USER:-den}"
+HSD_MAX_OUTBOUND="${HSD_MAX_OUTBOUND:-16}"
+HSD_LOG_LEVEL="${HSD_LOG_LEVEL:-warning}"
 
 gcloud compute ssh "$INDEXER_VM" \
   --project "$GCP_PROJECT" \
@@ -39,7 +41,7 @@ User=$INDEXER_USER
 Group=$INDEXER_USER
 WorkingDirectory=$INDEXER_MOUNT
 EnvironmentFile=$INDEXER_MOUNT/secrets/hsd.env
-ExecStart=\$HSD_BIN --prefix $INDEXER_HSD_PREFIX --network main --api-key \\\$HSD_API_KEY --http-host 127.0.0.1 --no-wallet
+ExecStart=\$HSD_BIN --prefix $INDEXER_HSD_PREFIX --network main --api-key \\\$HSD_API_KEY --http-host 127.0.0.1 --no-wallet --max-outbound $HSD_MAX_OUTBOUND --log-level $HSD_LOG_LEVEL
 Restart=always
 RestartSec=15
 LimitNOFILE=65536
