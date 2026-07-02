@@ -57,7 +57,9 @@ REQUIRED_PUBLIC_FILES = (
     "data/names.csv",
     "data/broken.json",
     "data/dane.json",
+    "data/dane-pages.json",
     "data/topology.sqlite.gz",
+    "data/names-pages.json",
 )
 
 PUBLIC_JSON_FILES = tuple(path for path in REQUIRED_PUBLIC_FILES if path.endswith(".json"))
@@ -69,7 +71,9 @@ REQUIRED_MANIFEST_ARTIFACTS = (
     "providers.json",
     "broken.json",
     "dane.json",
+    "dane-pages.json",
     "names.json",
+    "names-pages.json",
     "names.csv",
     "topology.sqlite.gz",
 )
@@ -575,6 +579,7 @@ def _validate_export_counts(
 
     names_json_path = manifest_path.parent / "names.json"
     names_csv_path = manifest_path.parent / "names.csv"
+    names_pages_path = manifest_path.parent / "names-pages.json"
     row_mismatches: list[str] = []
     try:
         names_json = json.loads(names_json_path.read_text(encoding="utf-8"))
@@ -594,6 +599,18 @@ def _validate_export_counts(
         if csv_rows != expected_exported:
             row_mismatches.append(f"names.csv rows={csv_rows}!={expected_exported}")
 
+    try:
+        names_pages = json.loads(names_pages_path.read_text(encoding="utf-8"))
+        names_all = names_pages["collections"]["all"]
+        page_rows = _count_paginated_rows(manifest_path.parent, names_all)
+    except Exception as exc:
+        row_mismatches.append(f"names-pages.json: {type(exc).__name__}")
+    else:
+        if names_all.get("row_count") != expected_exported:
+            row_mismatches.append(f"names-pages row_count={names_all.get('row_count')}!={expected_exported}")
+        if page_rows != expected_exported:
+            row_mismatches.append(f"names page rows={page_rows}!={expected_exported}")
+
     checks.append(
         ReleaseCheck(
             "names_export_rows",
@@ -601,6 +618,20 @@ def _validate_export_counts(
             "matched" if not row_mismatches else "; ".join(row_mismatches),
         )
     )
+
+
+def _count_paginated_rows(data_dir: Path, collection: dict[str, Any]) -> int:
+    path_template = collection["path_template"]
+    page_count = int(collection.get("page_count") or 0)
+    total = 0
+    for page in range(1, page_count + 1):
+        path = data_dir / path_template.replace("{page}", str(page))
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        rows = payload.get("rows")
+        if not isinstance(rows, list):
+            raise ValueError(f"{path}: rows is not a list")
+        total += len(rows)
+    return total
 
 
 def _is_unsafe_manifest_path(relative: str) -> bool:

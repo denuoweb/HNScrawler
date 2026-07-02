@@ -127,6 +127,8 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
         "data/manifest.json",
         "data/providers.json",
         "data/classes.json",
+        "data/names-pages.json",
+        "data/dane-pages.json",
         "data/topology.sqlite.gz",
     ]:
         assert (out / relative).exists()
@@ -134,6 +136,8 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     manifest = json.loads((out / "data/manifest.json").read_text(encoding="utf-8"))
     manifest_artifacts = {item["path"]: item for item in manifest["artifacts"]}
     providers = json.loads((out / "data/providers.json").read_text(encoding="utf-8"))
+    names_pages = json.loads((out / "data/names-pages.json").read_text(encoding="utf-8"))
+    dane_pages = json.loads((out / "data/dane-pages.json").read_text(encoding="utf-8"))
     namebase_provider = next(item for item in providers if item["provider_key"] == "namebase/default")
     assert manifest["manifest_version"] == 1
     assert manifest["snapshot"]["height"] == 123456
@@ -143,7 +147,13 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert manifest["export"]["names_exported_count"] == 9
     assert manifest["export"]["names_truncated"] is False
     assert "summary.json" in manifest_artifacts
+    assert "names-pages.json" in manifest_artifacts
+    assert "names-pages/all/page-1.json" in manifest_artifacts
+    assert "dane-pages.json" in manifest_artifacts
     assert "topology.sqlite.gz" in manifest_artifacts
+    assert names_pages["collections"]["all"]["row_count"] == 9
+    assert names_pages["collections"]["all"]["page_count"] == 1
+    assert dane_pages["collections"]["all"]["row_count"] == 1
     assert namebase_provider["ns_pattern"] == "suffix:namebase.io,suffix:parking.namebase.io"
 
     checks = validate_release(db_path=db_path, public_dir=out)
@@ -163,6 +173,8 @@ def test_generate_site_records_limited_names_export_counts(tmp_path):
 
     manifest = json.loads((out / "data/manifest.json").read_text(encoding="utf-8"))
     names_json = json.loads((out / "data/names.json").read_text(encoding="utf-8"))
+    names_pages = json.loads((out / "data/names-pages.json").read_text(encoding="utf-8"))
+    names_page_rows = json.loads((out / "data/names-pages/all/page-1.json").read_text(encoding="utf-8"))["rows"]
     csv_rows = (out / "data/names.csv").read_text(encoding="utf-8").splitlines()
 
     assert manifest["export"]["names_limit"] == 3
@@ -170,6 +182,8 @@ def test_generate_site_records_limited_names_export_counts(tmp_path):
     assert manifest["export"]["names_exported_count"] == 3
     assert manifest["export"]["names_truncated"] is True
     assert len(names_json) == 3
+    assert names_pages["collections"]["all"]["row_count"] == 3
+    assert len(names_page_rows) == 3
     assert len(csv_rows) == 4
 
     checks = validate_release(db_path=db_path, public_dir=out)

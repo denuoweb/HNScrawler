@@ -1,9 +1,23 @@
 const fmt = new Intl.NumberFormat("en-US");
+const PAGE_FETCH_MIN_DELAY_MS = 350;
+let nextPageFetchAt = 0;
 
 async function loadJson(path) {
   const response = await fetch(path);
   if (!response.ok) throw new Error(`Failed to load ${path}`);
   return response.json();
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function loadPageJson(path) {
+  const now = Date.now();
+  const wait = Math.max(0, nextPageFetchAt - now);
+  nextPageFetchAt = Math.max(nextPageFetchAt, now) + PAGE_FETCH_MIN_DELAY_MS;
+  if (wait > 0) await sleep(wait);
+  return loadJson(path);
 }
 
 function pct(value, total) {
@@ -17,6 +31,11 @@ function metric(label, value, sub = "") {
 
 function activeFilter() {
   return new URLSearchParams(window.location.search).get("filter") || "";
+}
+
+function activePage() {
+  const page = Number.parseInt(new URLSearchParams(window.location.search).get("page") || "1", 10);
+  return Number.isFinite(page) && page > 0 ? page : 1;
 }
 
 function hasItems(value) {
@@ -87,6 +106,7 @@ function bars(rows, labelKey, valueKey, limit = 12) {
 }
 
 function table(rows, columns) {
+  if (!rows.length) return `<p class="empty-state">No rows in this page.</p>`;
   return `<div class="table-wrap"><table><thead><tr>${columns.map((column) => `<th>${column.label}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${columns.map((column) => `<td>${formatCell(row[column.key])}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
 }
 
@@ -124,7 +144,71 @@ function snapshot(summary) {
 
 function liveCheckMeta(summary) {
   if (!summary.live_check_started_at) return "";
-  return `<p class="meta">Live checks ${fmt.format(summary.live_check_checked_count ?? 0)} of ${fmt.format(summary.live_check_candidate_count ?? 0)} due · concurrency ${fmt.format(summary.live_check_concurrency ?? 0)} · delay ${fmt.format(summary.live_check_min_delay_ms ?? 0)}ms · timeout ${summary.live_check_timeout_seconds ?? ""}s</p>`;
+  return `<p class="meta">Live checks ${fmt.format(summary.live_check_checked_count ?? 0)} of ${fmt.format(summary.live_check_candidate_count ?? 0)} due - concurrency ${fmt.format(summary.live_check_concurrency ?? 0)} - delay ${fmt.format(summary.live_check_min_delay_ms ?? 0)}ms - timeout ${summary.live_check_timeout_seconds ?? ""}s</p>`;
+}
+
+function collectionForFilter(index, filter) {
+  if (filter && index.collections && index.collections[filter]) {
+    return {key: filter, collection: index.collections[filter]};
+  }
+  return {key: "all", collection: index.collections.all};
+}
+
+function pagePath(pathTemplate, page) {
+  return `data/${pathTemplate.replace("{page}", String(page))}`;
+}
+
+function clampedPage(collection) {
+  const pageCount = Number(collection.page_count || 0);
+  if (pageCount <= 0) return 1;
+  return Math.min(activePage(), pageCount);
+}
+
+function pageHref(page) {
+  const params = new URLSearchParams(window.location.search);
+  if (page <= 1) {
+    params.delete("page");
+  } else {
+    params.set("page", String(page));
+  }
+  const query = params.toString();
+  const path = window.location.pathname.split("/").pop() || "index.html";
+  return query ? `${path}?${query}` : path;
+}
+
+function pagination(collection, page) {
+  const pageCount = Number(collection.page_count || 0);
+  if (pageCount <= 1) return "";
+  const prev = page > 1
+    ? `<a class="page-link" href="${escapeHtml(pageHref(page - 1))}">Previous</a>`
+    : `<span class="page-link disabled">Previous</span>`;
+  const next = page < pageCount
+    ? `<a class="page-link" href="${escapeHtml(pageHref(page + 1))}">Next</a>`
+    : `<span class="page-link disabled">Next</span>`;
+  return `<nav class="pagination" aria-label="Pagination">${prev}<span class="page-status">Page ${fmt.format(page)} of ${fmt.format(pageCount)}</span>${next}</nav>`;
+}
+
+function pageRangeMeta(collection, page, rows) {
+  const total = Number(collection.row_count || 0);
+  if (!total) return "0 exported rows";
+  const start = (page - 1) * Number(collection.page_size || rows.length || 1) + 1;
+  const end = Math.min(start + rows.length - 1, total);
+  return `${fmt.format(start)}-${fmt.format(end)} of ${fmt.format(total)} exported rows`;
+}
+
+async function loadPaginatedRows(indexPath, filter) {
+  const index = await loadJson(indexPath);
+  const {collection} = collectionForFilter(index, filter);
+  const page = clampedPage(collection);
+  const data = collection.page_count > 0
+    ? await loadPageJson(pagePath(collection.path_template, page))
+    : {rows: []};
+  return {
+    index,
+    collection,
+    page,
+    rows: Array.isArray(data.rows) ? data.rows : []
+  };
 }
 
 async function renderOverview(app) {
@@ -147,7 +231,7 @@ async function renderOverview(app) {
         <a href="data/topology.sqlite.gz">topology.sqlite.gz</a>
         <a href="data/manifest.json">manifest.json</a>
       </div><p class="meta">Height ${summary.last_indexed_height ?? ""} generated ${summary.generated_at ?? ""}</p>
-      <p class="meta">Source ${escapeHtml(summary.source_type || "unknown")} · rules v${summary.provider_rules_version ?? ""} ${escapeHtml((summary.provider_rules_hash || "").slice(0, 12))}</p>
+      <p class="meta">Source ${escapeHtml(summary.source_type || "unknown")} - rules v${summary.provider_rules_version ?? ""} ${escapeHtml((summary.provider_rules_hash || "").slice(0, 12))}</p>
       ${liveCheckMeta(summary)}</article>
     </section>`;
 }
@@ -157,7 +241,7 @@ async function renderFaq(app) {
     loadJson("data/summary.json"),
     loadJson("data/faq_answers.json")
   ]);
-  app.innerHTML = `${snapshot(summary)}<section class="faq-list">${answers.map((item) => `
+  app.innerHTML = `<section class="faq-list">${answers.map((item) => `
     <article class="faq-item">
       <h3>${escapeHtml(item.question)}</h3>
       <span class="faq-count">${fmt.format(item.count)}</span>
@@ -169,10 +253,10 @@ async function renderFaq(app) {
 }
 
 async function renderProviders(app) {
-  const [summary, providers] = await Promise.all([loadJson("data/summary.json"), loadJson("data/providers.json")]);
+  const providers = await loadJson("data/providers.json");
   const filter = activeFilter();
   const rows = applyFilter(providers, filter, providerMatchesFilter);
-  app.innerHTML = `${snapshot(summary)}${filterNotice(filter, providers.length, rows.length)}<section class="panel full"><h2>Providers</h2>${bars(rows, "provider_key", "names_count", 20)}</section>
+  app.innerHTML = `${filterNotice(filter, providers.length, rows.length)}<section class="panel full"><h2>Providers</h2>${bars(rows, "provider_key", "names_count", 20)}</section>
     <section class="panel full">${table(rows, [
       {key: "provider_key", label: "Provider"},
       {key: "provider_type", label: "Type"},
@@ -186,33 +270,43 @@ async function renderProviders(app) {
 }
 
 async function renderClasses(app) {
-  const [summary, classes] = await Promise.all([loadJson("data/summary.json"), loadJson("data/classes.json")]);
-  app.innerHTML = `${snapshot(summary)}<section class="panel full"><h2>Classes</h2>${bars(classes, "class", "count", 20)}</section>`;
+  const classes = await loadJson("data/classes.json");
+  app.innerHTML = `<section class="panel full"><h2>Classes</h2>${bars(classes, "class", "count", 20)}</section>`;
 }
 
 async function renderNames(app) {
-  const [summary, names] = await Promise.all([loadJson("data/summary.json"), loadJson("data/names.json")]);
+  const [summary, pageData] = await Promise.all([
+    loadJson("data/summary.json"),
+    loadPaginatedRows("data/names-pages.json", activeFilter())
+  ]);
   const filter = activeFilter();
-  const rows = applyFilter(names, filter);
-  app.innerHTML = `${snapshot(summary)}${filterNotice(filter, names.length, rows.length)}<section class="panel full"><h2>Names</h2>${table(rows, [
-    {key: "name", label: "Name"},
-    {key: "onchain_class", label: "Class"},
-    {key: "provider_guess", label: "Provider"},
-    {key: "record_types", label: "Records"},
-    {key: "ns_names", label: "NS"},
-    {key: "synth4", label: "SYNTH4"},
-    {key: "synth6", label: "SYNTH6"},
-    {key: "dnssec_status", label: "DNSSEC"},
-    {key: "dane_status", label: "DANE"},
-    {key: "failure_reason", label: "Failure"}
-  ])}</section>`;
+  app.innerHTML = `${filterNotice(filter, pageData.index.collections.all.row_count, pageData.collection.row_count)}
+    <section class="panel full">
+      <div class="panel-heading">
+        <div><h2>Names</h2><p class="meta">${pageRangeMeta(pageData.collection, pageData.page, pageData.rows)} - height ${summary.last_indexed_height ?? ""}</p></div>
+        ${pagination(pageData.collection, pageData.page)}
+      </div>
+      ${table(pageData.rows, [
+        {key: "name", label: "Name"},
+        {key: "onchain_class", label: "Class"},
+        {key: "provider_guess", label: "Provider"},
+        {key: "record_types", label: "Records"},
+        {key: "ns_names", label: "NS"},
+        {key: "synth4", label: "SYNTH4"},
+        {key: "synth6", label: "SYNTH6"},
+        {key: "dnssec_status", label: "DNSSEC"},
+        {key: "dane_status", label: "DANE"},
+        {key: "failure_reason", label: "Failure"}
+      ])}
+      ${pagination(pageData.collection, pageData.page)}
+    </section>`;
 }
 
 async function renderBroken(app) {
-  const [summary, broken] = await Promise.all([loadJson("data/summary.json"), loadJson("data/broken.json")]);
+  const broken = await loadJson("data/broken.json");
   const filter = activeFilter();
   const examples = applyFilter(broken.examples, filter);
-  app.innerHTML = `${snapshot(summary)}<section class="grid">
+  app.innerHTML = `<section class="grid">
     <article class="panel"><h2>Failure Reasons</h2>${bars(broken.reasons, "failure_reason", "count", 20)}</article>
     <article class="panel"><h2>Examples</h2>${filterNotice(filter, broken.examples.length, examples.length)}${table(examples, [
       {key: "name", label: "Name"},
@@ -227,17 +321,24 @@ async function renderBroken(app) {
 }
 
 async function renderDane(app) {
-  const [summary, dane] = await Promise.all([loadJson("data/summary.json"), loadJson("data/dane.json")]);
+  const [summary, dane, pageData] = await Promise.all([
+    loadJson("data/summary.json"),
+    loadJson("data/dane.json"),
+    loadPaginatedRows("data/dane-pages.json", activeFilter())
+  ]);
   const filter = activeFilter();
-  const rows = applyFilter(dane.rows, filter);
-  app.innerHTML = `${snapshot(summary)}<section class="grid">
+  app.innerHTML = `<section class="grid">
     <article class="panel"><h2>DANE Summary</h2>
       <div class="stat-list">
         <div class="stat-line"><span>DS records</span><strong>${fmt.format(dane.ds_count)}</strong></div>
         <div class="stat-line"><span>Valid DANE</span><strong>${fmt.format(dane.valid_dane_count)}</strong></div>
       </div>
+      <p class="meta">Height ${summary.last_indexed_height ?? ""}</p>
     </article>
-    <article class="panel"><h2>DANE Rows</h2>${filterNotice(filter, dane.rows.length, rows.length)}${table(rows, [
+    <article class="panel"><div class="panel-heading">
+      <div><h2>DANE Rows</h2>${filterNotice(filter, pageData.index.collections.all.row_count, pageData.collection.row_count)}<p class="meta">${pageRangeMeta(pageData.collection, pageData.page, pageData.rows)}</p></div>
+      ${pagination(pageData.collection, pageData.page)}
+    </div>${table(pageData.rows, [
       {key: "name", label: "Name"},
       {key: "has_ds", label: "DS"},
       {key: "ns_names", label: "NS"},
@@ -246,7 +347,7 @@ async function renderDane(app) {
       {key: "dane_status", label: "DANE"},
       {key: "failure_reason", label: "Failure"},
       {key: "checked_at", label: "Checked"}
-    ])}</article>
+    ])}${pagination(pageData.collection, pageData.page)}</article>
   </section>`;
 }
 
