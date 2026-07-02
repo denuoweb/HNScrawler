@@ -77,6 +77,8 @@ The safe shape is:
 
 This is different from patching HSD's live full-node replay. HSD cannot safely skip non-name UTXOs and still remain a general validating node. The speedup comes from changing the bootstrapper's contract, not from making HSD consensus code less complete.
 
+The first sidecar implementation is `scripts/export-hsd-nameonly-jsonl.sh`, backed by `scripts/hsd-nameonly-replay-jsonl.js`. It reads accepted blocks through local HSD RPC so it can run beside a syncing node, reuses HSD `NameState` for state/expiration math, writes compact JSONL rows compatible with `bootstrap-jsonl`, and marks its provenance as `hsd_nameonly_rpc_compact_experimental`.
+
 ## Lower-Risk Experiments
 
 These can be benchmarked, but they are not expected to produce a 10x win by themselves:

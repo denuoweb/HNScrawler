@@ -377,6 +377,13 @@ def test_compact_jsonl_bootstrap_uses_summarized_rows(tmp_path):
             }
         },
         {
+            "block_history": {
+                "height": 222221,
+                "block_hash": "previous-block",
+                "changed_names": ["direct", "delegated"],
+            }
+        },
+        {
             "compact_name": {
                 "name": "expired",
                 "name_hash": "hash-expired",
@@ -402,6 +409,9 @@ def test_compact_jsonl_bootstrap_uses_summarized_rows(tmp_path):
         delegated = conn.execute(
             "SELECT onchain_class FROM names WHERE name = 'delegated'"
         ).fetchone()
+        history = conn.execute(
+            "SELECT block_hash, changed_names FROM block_history WHERE height = 222221"
+        ).fetchone()
 
     assert count == 3
     assert summary["active_names"] == 2
@@ -412,6 +422,8 @@ def test_compact_jsonl_bootstrap_uses_summarized_rows(tmp_path):
     assert summary["hsd_version"] == "fixture-compact"
     assert export_format["value"] == "compact_summary_v1"
     assert delegated["onchain_class"] == "DELEGATED_NO_GLUE"
+    assert history["block_hash"] == "previous-block"
+    assert json.loads(history["changed_names"]) == ["delegated", "direct"]
 
 
 def test_hsd_bootstrap_requires_limit_or_explicit_unpaginated_opt_in(tmp_path):

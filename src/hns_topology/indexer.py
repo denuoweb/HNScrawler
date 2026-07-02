@@ -192,6 +192,16 @@ def bootstrap_from_jsonl(
                 if "snapshot_meta" in item:
                     metadata.update(item["snapshot_meta"])
                     continue
+                block_history = item.get("block_history")
+                if isinstance(block_history, dict):
+                    record_block_history(
+                        conn,
+                        height=int(block_history["height"]),
+                        block_hash=str(block_history["block_hash"]),
+                        changed_names=_string_list(block_history.get("changed_names")),
+                        indexed_at=now,
+                    )
+                    continue
                 compact_row = item.get("compact_name")
                 if isinstance(compact_row, dict):
                     compact_batch.append(compact_row)
