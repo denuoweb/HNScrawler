@@ -450,11 +450,9 @@ def write_names_pages(
         page_size=page_size,
         limit=limit,
         filters=NAME_FILTERS,
-        row_count=lambda where: _limited_count(conn, _names_count_sql(where), limit),
-        page_rows=lambda where, page_limit, offset: build_names(
+        collection_rows=lambda where: build_names(
             conn,
-            limit=page_limit,
-            offset=offset,
+            limit=limit,
             where=where,
         ),
     )
@@ -475,11 +473,9 @@ def write_dane_pages(
         limit=limit,
         filters=filters,
         base_where=DANE_BASE_WHERE,
-        row_count=lambda where: _limited_count(conn, _dane_count_sql(where), limit),
-        page_rows=lambda where, page_limit, offset: build_dane_rows(
+        collection_rows=lambda where: build_dane_rows(
             conn,
-            limit=page_limit,
-            offset=offset,
+            limit=limit,
             where=where,
         ),
     )
@@ -492,8 +488,7 @@ def _write_paginated_collections(
     page_size: int,
     limit: int,
     filters: dict[str, str],
-    row_count,
-    page_rows,
+    collection_rows,
     base_where: str = "1=1",
 ) -> dict[str, Any]:
     if base_dir.exists():
@@ -503,7 +498,8 @@ def _write_paginated_collections(
     for key, where in {"all": base_where, **filters}.items():
         collection_dir = base_dir / key
         collection_dir.mkdir(parents=True, exist_ok=True)
-        count = row_count(where)
+        rows = collection_rows(where)
+        count = min(len(rows), limit)
         page_count = max(1, math.ceil(count / page_size)) if count else 0
         collections[key] = {
             "row_count": count,
@@ -513,8 +509,8 @@ def _write_paginated_collections(
         }
         for page in range(1, page_count + 1):
             offset = (page - 1) * page_size
-            rows = page_rows(where, min(page_size, limit - offset), offset)
-            write_json(collection_dir / f"page-{page}.json", {"page": page, "rows": rows})
+            page_rows = rows[offset : offset + page_size]
+            write_json(collection_dir / f"page-{page}.json", {"page": page, "rows": page_rows})
         if page_count == 0:
             write_json(collection_dir / "page-1.json", {"page": 1, "rows": []})
 
@@ -523,31 +519,6 @@ def _write_paginated_collections(
         "limit": limit,
         "collections": collections,
     }
-
-
-def _limited_count(conn: sqlite3.Connection, sql: str, limit: int) -> int:
-    count = table_count(conn, sql)
-    return min(count, limit)
-
-
-def _names_count_sql(where: str) -> str:
-    return f"""
-        SELECT COUNT(*)
-        FROM names n
-        JOIN resource_summary rs ON rs.name = n.name
-        LEFT JOIN live_status ls ON ls.name = n.name
-        WHERE {where}
-    """
-
-
-def _dane_count_sql(where: str) -> str:
-    return f"""
-        SELECT COUNT(*)
-        FROM names n
-        JOIN resource_summary rs ON rs.name = n.name
-        LEFT JOIN live_status ls ON ls.name = n.name
-        WHERE {where}
-    """
 
 
 def examples_for_filter(conn: sqlite3.Connection, key: str) -> list[str]:
