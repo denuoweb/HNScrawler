@@ -223,14 +223,8 @@ async function renderOverview(app) {
       <article class="panel"><h2>Provider Dominance</h2>${bars(providers, "provider_key", "names_count")}</article>
       <article class="panel"><h2>On-Chain Classes</h2>${bars(classes, "class", "count")}</article>
       <article class="panel"><h2>Broken Paths</h2>${bars(broken.reasons, "failure_reason", "count", 10)}</article>
-      <article class="panel"><h2>Downloads</h2><div class="downloads">
-        <a href="data/summary.json">summary.json</a>
-        <a href="data/providers.json">providers.json</a>
-        <a href="data/classes.json">classes.json</a>
-        <a href="data/names.csv">names.csv</a>
-        <a href="data/topology.sqlite.gz">topology.sqlite.gz</a>
-        <a href="data/manifest.json">manifest.json</a>
-      </div><p class="meta">Height ${summary.last_indexed_height ?? ""} generated ${summary.generated_at ?? ""}</p>
+      <article class="panel"><h2>Snapshot</h2>
+      <p class="meta">Height ${summary.last_indexed_height ?? ""} generated ${summary.generated_at ?? ""}</p>
       <p class="meta">Source ${escapeHtml(summary.source_type || "unknown")} - rules v${summary.provider_rules_version ?? ""} ${escapeHtml((summary.provider_rules_hash || "").slice(0, 12))}</p>
       ${liveCheckMeta(summary)}</article>
     </section>`;
