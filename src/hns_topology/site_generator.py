@@ -7,7 +7,7 @@ from pathlib import Path
 from .exporter import export_all
 
 PAGES = {
-    "index.html": ("overview", "Denuo HNS Topology"),
+    "index.html": ("overview", "HNS Topology"),
     "faq.html": ("faq", "Topology FAQ"),
     "providers.html": ("providers", "Provider Dominance"),
     "classes.html": ("classes", "On-Chain Classes"),
@@ -59,7 +59,6 @@ def _html(*, page: str, title: str) -> str:
 <body data-page="{page}">
   <header class="topbar">
     <div>
-      <p class="eyebrow">Denuo</p>
       <h1>{title}</h1>
     </div>
     <nav>{nav}</nav>
@@ -71,4 +70,3 @@ def _html(*, page: str, title: str) -> str:
 </body>
 </html>
 """
-
