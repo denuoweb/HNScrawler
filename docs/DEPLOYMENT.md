@@ -139,7 +139,7 @@ Keep full HSD data off the production web VM unless there is a deliberate later 
 
 HSD mainnet RPC listens on `127.0.0.1:12037` by default. Bootstrap and incremental scripts source `/mnt/hnscrawler/secrets/hsd.env` when present.
 
-The production HSD service targets `HSD_MAX_OUTBOUND=16` outbound peers and `HSD_LOG_LEVEL=warning` by default. Extra outbound peers improve peer diversity and failover but HSD still uses a single loader peer for historical sync. Warning-level logging avoids per-block debug/info journal writes during bootstrap.
+The production HSD service targets `HSD_MAX_OUTBOUND=16` outbound peers and `HSD_LOG_LEVEL=warning` by default. Extra outbound peers improve peer diversity and failover but HSD still uses a single loader peer for historical sync. Warning-level logging avoids per-block debug/info journal writes during bootstrap. The service also raises conservative ChainDB/blockstore cache settings with `HSD_CACHE_SIZE_MB=512`, `HSD_BLOCK_CACHE_SIZE_MB=128`, `HSD_MAX_FILES=256`, and `HSD_ENTRY_CACHE=50000`; these are runtime cache knobs, not consensus changes.
 
 `scripts/check-hsd-ready.sh` runs `hns-topology hsd-status` before HSD-backed bootstrap and incremental indexing. It requires a local RPC URL, reported chain and tip hash, a non-negative block height, `blocks >= HSD_MIN_BLOCK_HEIGHT`, `verificationprogress >= HSD_MIN_VERIFICATION_PROGRESS`, median block time no older than `HSD_MAX_MEDIAN_TIME_AGE_SECONDS`, `initialblockdownload = false` when HSD reports that field, and `headers - blocks <= HSD_MAX_BLOCK_LAG` when headers are reported. Use `CHECK_HSD_READY=0` only for deliberate debugging. Use `HSD_ALLOW_REMOTE_RPC=1` only when intentionally checking a remote RPC endpoint.
 
