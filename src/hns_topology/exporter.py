@@ -514,29 +514,7 @@ def build_broken(conn: sqlite3.Connection) -> dict[str, Any]:
         }
         for reason in FAILURE_REASONS
     ]
-    example_rows = conn.execute(
-        """
-        SELECT
-          n.name, n.onchain_class, n.provider_guess,
-          rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.has_ds,
-          ls.dns_reachable, ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.https_status,
-          ls.strict_hns_status, ls.doh_fallback_status, ls.failure_reason, ls.checked_at
-        FROM live_status ls
-        JOIN names n ON n.name = ls.name
-        JOIN resource_summary rs ON rs.name = n.name
-        WHERE ls.failure_reason IS NOT NULL
-        ORDER BY ls.checked_at DESC, n.name
-        LIMIT 200
-        """
-    ).fetchall()
-    examples = [
-        parse_json_columns(
-            dict(row),
-            ["ns_names", "glue4", "glue6", "synth4", "synth6"],
-        )
-        for row in example_rows
-    ]
-    return {"reasons": reasons, "examples": examples}
+    return {"reasons": reasons}
 
 
 def build_dane(conn: sqlite3.Connection, summary: dict[str, Any] | None = None) -> dict[str, Any]:

@@ -13,7 +13,7 @@ from hns_topology.indexer import (
     index_changed_names,
     rollback_reorg,
 )
-from hns_topology.models import LiveStatus
+from hns_topology.models import FAILURE_REASONS, LiveStatus
 from hns_topology.provider_rules import ProviderRules
 from hns_topology.site_generator import generate_site
 from hns_topology.validator import release_is_valid, validate_public_release, validate_release
@@ -118,6 +118,8 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     assert any(item["key"] == "direct_ip_records" for item in answers)
     assert any(item["key"] == "needs_dane" for item in answers)
     assert any(item["key"] == "needs_fix" for item in answers)
+    assert "examples" not in summary["broken"]
+    assert {item["failure_reason"] for item in summary["broken"]["reasons"]} == set(FAILURE_REASONS)
     assert namebase_provider["ns_pattern"] == "suffix:namebase.io,suffix:parking.namebase.io"
     assert namebase_provider["ip_pattern"] == ""
 
@@ -197,6 +199,7 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert "provider_type" in names_page_rows[0]
     assert "classes" in summary
     assert "broken" in summary
+    assert "examples" not in summary["broken"]
     assert "next_actions" in summary
     assert {item["filter"] for item in summary["next_actions"]} <= set(names_pages["collections"])
     assert namebase_provider["ns_pattern"] == "suffix:namebase.io,suffix:parking.namebase.io"

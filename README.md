@@ -74,6 +74,8 @@ Exact name search first tries the lightweight lookup API when it is available. O
 
 Overview provider and class summaries link back into existing Names filters where doing so is storage-safe. Class rows only link to existing action or status queues; the export does not create large class-specific duplicate page sets.
 
+Broken/failure summaries keep only reason counts for the Names filter dropdown. Example rows are not duplicated into `summary.json`; use the filtered Names table instead.
+
 `summary.json` also includes a compact `next_actions` list that powers the Overview action panel and the filtered Names queue context. These entries reuse existing Names filters and DANE generator intents instead of creating separate action-specific artifacts.
 
 Generated site files:

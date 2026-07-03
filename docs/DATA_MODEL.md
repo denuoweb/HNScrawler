@@ -127,6 +127,8 @@ Public exports are generated from SQLite:
 
 The default public export does not write standalone Providers, Classes, Broken, DANE, CSV, SQLite, or full `names.json` artifacts. Provider, class, failure, and DANE summaries live in `summary.json`; rows are searched and filtered through the Names collections. `names.json`, `names.csv`, and `topology.sqlite.gz` are written only when `--include-downloads` is explicitly requested.
 
+`summary.broken` contains failure reason counts for the Names filter dropdown, not duplicated example rows. Example names for a failure reason come from the filtered Names collection.
+
 Names collections are ordered by normalized name. The browser uses that invariant for static exact-name lookup: if `/api/name` is unavailable, it binary-searches the sorted `all` collection by fetching only a small number of page files. Compact row arrays still include first NS/GLUE/SYNTH scalar fields for DANE generator handoff links.
 
 `summary.json` includes `next_actions`, a small derived list for the Overview action panel and filtered Names queue context. Each item contains a count, a primary Names filter, a filter link, and the DANE generator intent to use for matching row-level handoffs. The list is deliberately derived from existing counters and filters so it does not create new row artifacts.
