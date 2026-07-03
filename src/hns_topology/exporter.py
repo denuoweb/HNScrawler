@@ -116,47 +116,55 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0 THEN 1 ELSE 0 END) AS active_names,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 1 THEN 1 ELSE 0 END) AS expired_names,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0
-                    AND (COALESCE(json_array_length(rs.synth4), 0) > 0
-                         OR COALESCE(json_array_length(rs.synth6), 0) > 0)
+                    AND (instr(COALESCE(n.record_types, ''), '"SYNTH4"') > 0
+                         OR instr(COALESCE(n.record_types, ''), '"SYNTH6"') > 0)
                    THEN 1 ELSE 0 END) AS direct_ip_records,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0
-                    AND COALESCE(json_array_length(rs.ns_names), 0) > 0
+                    AND (instr(COALESCE(n.record_types, ''), '"NS"') > 0
+                         OR instr(COALESCE(n.record_types, ''), '"GLUE4"') > 0
+                         OR instr(COALESCE(n.record_types, ''), '"GLUE6"') > 0)
                    THEN 1 ELSE 0 END) AS delegated_names,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0
-                    AND COALESCE(json_array_length(rs.ns_names), 0) > 0
-                    AND (COALESCE(json_array_length(rs.glue4), 0) > 0
-                         OR COALESCE(json_array_length(rs.glue6), 0) > 0)
+                    AND (instr(COALESCE(n.record_types, ''), '"GLUE4"') > 0
+                         OR instr(COALESCE(n.record_types, ''), '"GLUE6"') > 0)
                    THEN 1 ELSE 0 END) AS delegated_with_glue,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0
-                    AND COALESCE(json_array_length(rs.ns_names), 0) > 0
-                    AND COALESCE(json_array_length(rs.glue4), 0) = 0
-                    AND COALESCE(json_array_length(rs.glue6), 0) = 0
+                    AND instr(COALESCE(n.record_types, ''), '"NS"') > 0
+                    AND instr(COALESCE(n.record_types, ''), '"GLUE4"') = 0
+                    AND instr(COALESCE(n.record_types, ''), '"GLUE6"') = 0
                    THEN 1 ELSE 0 END) AS delegated_no_glue,
-          SUM(CASE WHEN COALESCE(n.expired, 0) = 0 AND COALESCE(rs.has_ds, 0) = 1
+          SUM(CASE WHEN COALESCE(n.expired, 0) = 0
+                    AND instr(COALESCE(n.record_types, ''), '"DS"') > 0
                    THEN 1 ELSE 0 END) AS ds_records,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0
-                    AND COALESCE(rs.has_ds, 0) = 1
-                    AND COALESCE(json_array_length(rs.ns_names), 0) > 0
+                    AND instr(COALESCE(n.record_types, ''), '"DS"') > 0
+                    AND (instr(COALESCE(n.record_types, ''), '"NS"') > 0
+                         OR instr(COALESCE(n.record_types, ''), '"GLUE4"') > 0
+                         OR instr(COALESCE(n.record_types, ''), '"GLUE6"') > 0)
                    THEN 1 ELSE 0 END) AS dnssec_candidates,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0
                     AND (
-                      COALESCE(json_array_length(rs.synth4), 0) > 0
-                      OR COALESCE(json_array_length(rs.synth6), 0) > 0
-                      OR COALESCE(json_array_length(rs.glue4), 0) > 0
-                      OR COALESCE(json_array_length(rs.glue6), 0) > 0
-                      OR (COALESCE(rs.has_ds, 0) = 1 AND COALESCE(json_array_length(rs.ns_names), 0) > 0)
+                      instr(COALESCE(n.record_types, ''), '"SYNTH4"') > 0
+                      OR instr(COALESCE(n.record_types, ''), '"SYNTH6"') > 0
+                      OR instr(COALESCE(n.record_types, ''), '"GLUE4"') > 0
+                      OR instr(COALESCE(n.record_types, ''), '"GLUE6"') > 0
+                      OR (
+                        instr(COALESCE(n.record_types, ''), '"DS"') > 0
+                        AND (instr(COALESCE(n.record_types, ''), '"NS"') > 0
+                             OR instr(COALESCE(n.record_types, ''), '"GLUE4"') > 0
+                             OR instr(COALESCE(n.record_types, ''), '"GLUE6"') > 0)
+                      )
                     )
                    THEN 1 ELSE 0 END) AS likely_websites,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0 AND ps.provider_type = 'default_parking'
                    THEN 1 ELSE 0 END) AS default_provider_names,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0
-                    AND COALESCE(json_array_length(rs.ns_names), 0) > 0
-                    AND COALESCE(json_array_length(rs.glue4), 0) = 0
-                    AND COALESCE(json_array_length(rs.glue6), 0) = 0
+                    AND instr(COALESCE(n.record_types, ''), '"NS"') > 0
+                    AND instr(COALESCE(n.record_types, ''), '"GLUE4"') = 0
+                    AND instr(COALESCE(n.record_types, ''), '"GLUE6"') = 0
                     AND COALESCE(ls.failure_reason, 'missing_glue') = 'missing_glue'
                    THEN 1 ELSE 0 END) AS missing_glue_only
         FROM names n
-        LEFT JOIN resource_summary rs ON rs.name = n.name
         LEFT JOIN live_status ls ON ls.name = n.name
         LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
         """
@@ -356,25 +364,24 @@ def build_faq_examples(conn: sqlite3.Connection) -> dict[str, list[str]]:
     for row in conn.execute(
         """
         SELECT
-          n.name, n.provider_guess,
-          rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.has_ds,
+          n.name, n.provider_guess, n.record_types,
           ls.failure_reason, ps.provider_type
         FROM names n
-        LEFT JOIN resource_summary rs ON rs.name = n.name
         LEFT JOIN live_status ls ON ls.name = n.name
         LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
         WHERE COALESCE(n.expired, 0) = 0
         ORDER BY n.name
         """
     ):
-        item = parse_json_columns(dict(row), ["ns_names", "glue4", "glue6", "synth4", "synth6"])
+        item = dict(row)
+        flags = _record_type_flags(item.get("record_types"))
         for key in resource_keys:
             if len(examples[key]) >= 5:
                 continue
             if key == "default_provider_names":
                 matches = item.get("provider_type") == "default_parking"
             else:
-                matches = _name_row_matches_filter(item, key)
+                matches = _record_type_filter_matches(flags, key, item.get("failure_reason"))
             if matches:
                 examples[key].append(item["name"])
         if all(len(examples[key]) >= 5 for key in resource_keys):
@@ -666,6 +673,35 @@ def _dane_row_matches_filter(row: dict[str, Any], key: str) -> bool:
     if key == "stale_tlsa_only":
         return row.get("failure_reason") == "stale_tlsa_spki_mismatch"
     return True
+
+
+def _record_type_flags(record_types: Any) -> dict[str, bool]:
+    text = record_types if isinstance(record_types, str) else ""
+    has_ns = '"NS"' in text
+    has_glue = '"GLUE4"' in text or '"GLUE6"' in text
+    return {
+        "has_synth": '"SYNTH4"' in text or '"SYNTH6"' in text,
+        "has_ns": has_ns,
+        "has_delegation": has_ns or has_glue,
+        "has_glue": has_glue,
+        "has_ds": '"DS"' in text,
+    }
+
+
+def _record_type_filter_matches(flags: dict[str, bool], key: str, failure_reason: str | None) -> bool:
+    if key == "direct_ip_records":
+        return flags["has_synth"]
+    if key == "delegated_names":
+        return flags["has_delegation"]
+    if key == "ds_records":
+        return flags["has_ds"]
+    if key == "dnssec_candidates":
+        return flags["has_ds"] and flags["has_delegation"]
+    if key == "likely_websites":
+        return flags["has_synth"] or flags["has_glue"] or (flags["has_ds"] and flags["has_delegation"])
+    if key == "missing_glue_only":
+        return flags["has_ns"] and not flags["has_glue"] and (failure_reason or "missing_glue") == "missing_glue"
+    return False
 
 
 def _write_paginated_collections(
