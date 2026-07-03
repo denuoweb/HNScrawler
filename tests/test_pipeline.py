@@ -104,8 +104,12 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     assert summary["needs_fix"] == 2
     next_actions = {item["key"]: item for item in summary["next_actions"]}
     assert next_actions["generate_tlsa"]["count"] == 1
+    assert next_actions["generate_tlsa"]["filter"] == "needs_dane"
     assert next_actions["generate_tlsa"]["filter_link"] == "names.html?filter=needs_dane"
+    assert next_actions["generate_tlsa"]["generator_intent"] == "generate_tlsa"
     assert next_actions["fix_ns_glue"]["count"] == 2
+    assert next_actions["fix_ns_glue"]["filter"] == "missing_glue_only"
+    assert next_actions["fix_ns_glue"]["generator_intent"] == "missing_glue"
     assert next_actions["plan_dnssec_dane"]["count"] == 3
     assert summary["source_type"] == "fixture"
     assert summary["source_file_hash"]
@@ -194,6 +198,7 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert "classes" in summary
     assert "broken" in summary
     assert "next_actions" in summary
+    assert {item["filter"] for item in summary["next_actions"]} <= set(names_pages["collections"])
     assert namebase_provider["ns_pattern"] == "suffix:namebase.io,suffix:parking.namebase.io"
 
     checks = validate_release(db_path=db_path, public_dir=out)

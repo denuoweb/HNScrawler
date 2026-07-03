@@ -129,7 +129,7 @@ The default public export does not write standalone Providers, Classes, Broken, 
 
 Names collections are ordered by normalized name. The browser uses that invariant for static exact-name lookup: if `/api/name` is unavailable, it binary-searches the sorted `all` collection by fetching only a small number of page files. Compact row arrays still include first NS/GLUE/SYNTH scalar fields for DANE generator handoff links.
 
-`summary.json` includes `next_actions`, a small derived list for the Overview action panel. Each item contains a count, a Names filter link, and the DANE generator intent to use for matching row-level handoffs. The list is deliberately derived from existing counters and filters so it does not create new row artifacts.
+`summary.json` includes `next_actions`, a small derived list for the Overview action panel and filtered Names queue context. Each item contains a count, a primary Names filter, a filter link, and the DANE generator intent to use for matching row-level handoffs. The list is deliberately derived from existing counters and filters so it does not create new row artifacts.
 
 `manifest.json` is the export contract for the static data directory. It records:
 

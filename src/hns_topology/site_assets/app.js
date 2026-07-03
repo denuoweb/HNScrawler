@@ -803,6 +803,31 @@ function nextActionsPanel(actions = []) {
   </article>`;
 }
 
+function filterFromLink(link) {
+  try {
+    return new URL(sitePath(link || "names.html"), window.location.origin).searchParams.get("filter") || "";
+  } catch (_error) {
+    return "";
+  }
+}
+
+function actionForFilter(actions = [], filter = "") {
+  if (!filter) return null;
+  return actions.find((action) => (action.filter || filterFromLink(action.filter_link)) === filter) || null;
+}
+
+function namesActionContext(actions = [], filter = "") {
+  const action = actionForFilter(actions, filter);
+  if (!action) return "";
+  return `<section class="queue-context" data-generator-intent="${escapeHtml(action.generator_intent || "")}">
+    <div>
+      <span class="search-label">Action Queue</span>
+      <strong>${escapeHtml(action.label)}</strong>
+    </div>
+    <p class="meta">${escapeHtml(action.definition || "")}</p>
+  </section>`;
+}
+
 async function renderOverview(app) {
   const summary = await loadJson("data/summary.json");
   const providers = summary.providers || [];
@@ -975,6 +1000,7 @@ async function renderNames(app) {
           query,
           search: pageData.search
         })}
+        ${namesActionContext(summary.next_actions || [], filter)}
         ${lookupNotice(pageData, "names")}
         ${table(pageData.rows, columns, query ? "No names match this search." : "No rows in this page.", {tbodyId: "names-tbody"})}
         ${namesScrollControls(pageData.collection, pageData.page, pageData.rows, Boolean(query))}

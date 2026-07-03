@@ -328,6 +328,30 @@ main {
   margin-top: 12px;
 }
 
+.queue-context {
+  display: grid;
+  grid-template-columns: minmax(180px, max-content) minmax(0, 1fr);
+  align-items: center;
+  gap: 10px 16px;
+  margin: 0 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: #fbfcfe;
+}
+
+.queue-context strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--blue);
+  font-size: 18px;
+  line-height: 1.15;
+}
+
+.queue-context .meta {
+  margin: 0;
+}
+
 .panel.full {
   grid-column: 1 / -1;
 }
@@ -719,6 +743,11 @@ th {
 
   .names-faq {
     position: static;
+  }
+
+  .queue-context {
+    grid-template-columns: 1fr;
+    align-items: start;
   }
 
   .panel-heading,
