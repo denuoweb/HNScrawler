@@ -218,7 +218,8 @@ function providerFilterHref(row) {
 
 function daneGeneratorUrl(row, intent) {
   const params = new URLSearchParams();
-  params.set("domain", row.name || "");
+  const name = String(row.name || "");
+  params.set("domain", name && !name.endsWith("/") ? `${name}/` : name);
   params.set("domain_type", "hns");
   params.set("intent", intent);
   params.set("mode", hasSynth(row) && row.onchain_class === "DIRECT_SYNTH" ? "synth" : "delegated");
