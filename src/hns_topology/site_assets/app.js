@@ -573,6 +573,29 @@ function wireNamesInfiniteScroll(collection, page, columns) {
   }
 }
 
+function namesColumns(rowDetail) {
+  const compactColumns = [
+    {key: "name", label: "Name"},
+    {key: "onchain_class", label: "Class"},
+    {key: "provider_guess", label: "Provider"},
+    {key: "provider_type", label: "Provider type"},
+    {key: "record_types", label: "Records"},
+    {key: "has_ds", label: "DS"},
+    {key: "dnssec_status", label: "DNSSEC"},
+    {key: "tlsa_status", label: "TLSA"},
+    {key: "dane_status", label: "DANE"},
+    {key: "failure_reason", label: "Failure"}
+  ];
+  if (rowDetail === "compact") return compactColumns;
+  return [
+    ...compactColumns.slice(0, 5),
+    {key: "ns_names", label: "NS"},
+    {key: "synth4", label: "SYNTH4"},
+    {key: "synth6", label: "SYNTH6"},
+    ...compactColumns.slice(5)
+  ];
+}
+
 async function renderNames(app) {
   const [summary, providers, broken, loadedPageData] = await Promise.all([
     loadJson("data/summary.json"),
@@ -583,21 +606,7 @@ async function renderNames(app) {
   const filter = activeFilter();
   const query = activeSearch();
   const pageData = await applySearchToPageData(loadedPageData, query);
-  const columns = [
-    {key: "name", label: "Name"},
-    {key: "onchain_class", label: "Class"},
-    {key: "provider_guess", label: "Provider"},
-    {key: "provider_type", label: "Provider type"},
-    {key: "record_types", label: "Records"},
-    {key: "ns_names", label: "NS"},
-    {key: "synth4", label: "SYNTH4"},
-    {key: "synth6", label: "SYNTH6"},
-    {key: "has_ds", label: "DS"},
-    {key: "dnssec_status", label: "DNSSEC"},
-    {key: "tlsa_status", label: "TLSA"},
-    {key: "dane_status", label: "DANE"},
-    {key: "failure_reason", label: "Failure"}
-  ];
+  const columns = namesColumns(pageData.collection.row_detail);
   app.innerHTML = `${filterNotice(filter, pageData.index.collections.all.row_count, loadedPageData.collection.row_count)}
     <section class="panel full">
       <div class="panel-heading">

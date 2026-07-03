@@ -27,6 +27,7 @@ DATA_ARTIFACTS = (
 )
 
 PAGE_SIZE = 1000
+DETAILED_NAME_COLLECTION_ROW_LIMIT = 100_000
 FAILURE_REASON_FILTER_PREFIX = "failure_reason:"
 PROVIDER_TYPE_FILTER_PREFIX = "provider_type:"
 
@@ -661,16 +662,19 @@ def _write_name_collection(
     )
     count = min(total_count, max(0, limit))
     page_count = max(1, math.ceil(count / page_size)) if count else 0
+    row_detail = "full" if total_count <= DETAILED_NAME_COLLECTION_ROW_LIMIT else "compact"
     _log_export(
         f"writing names-pages/{key} rows={count} total={total_count} pages={page_count} "
-        f"truncated={total_count > count}"
+        f"truncated={total_count > count} row_detail={row_detail}"
     )
+    row_columns = _name_row_columns(row_detail=row_detail)
+    json_columns = _name_json_columns(row_detail=row_detail)
     if count == 0:
         write_json(collection_dir / "page-1.json", {"page": 1, "rows": []})
     else:
         cursor = conn.execute(
             f"""
-            SELECT {_name_row_columns()}
+            SELECT {row_columns}
             {from_sql}
             WHERE {where}
             ORDER BY n.name
@@ -686,7 +690,7 @@ def _write_name_collection(
             rows = [
                 parse_json_columns(
                     dict(row),
-                    ["record_types", "ns_names", "glue4", "glue6", "synth4", "synth6", "ds_records"],
+                    json_columns,
                 )
                 for row in page_rows
             ]
@@ -700,6 +704,7 @@ def _write_name_collection(
         "page_count": page_count,
         "path_template": f"{base_dir.name}/{key}/page-{{page}}.json",
         "truncated": total_count > count,
+        "row_detail": row_detail,
     }
 
 
@@ -723,7 +728,14 @@ def _name_collection_keys(conn: sqlite3.Connection) -> list[str]:
     ]
 
 
-def _name_row_columns() -> str:
+def _name_row_columns(*, row_detail: str = "full") -> str:
+    if row_detail == "compact":
+        return """
+      n.name, n.state, n.expired, n.onchain_class, n.provider_guess,
+      COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types, rs.has_ds,
+      ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.https_status,
+      ls.strict_hns_status, ls.doh_fallback_status, ls.failure_reason, ls.checked_at
+    """
     return """
       n.name, n.state, n.expired, n.onchain_class, n.provider_guess,
       COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types,
@@ -731,6 +743,12 @@ def _name_row_columns() -> str:
       ls.dns_reachable, ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.https_status,
       ls.strict_hns_status, ls.doh_fallback_status, ls.failure_reason, ls.checked_at
     """
+
+
+def _name_json_columns(*, row_detail: str = "full") -> list[str]:
+    if row_detail == "compact":
+        return ["record_types"]
+    return ["record_types", "ns_names", "glue4", "glue6", "synth4", "synth6", "ds_records"]
 
 
 def _name_rows_from_sql() -> str:
