@@ -350,7 +350,6 @@ def build_faq_examples(conn: sqlite3.Connection) -> dict[str, list[str]]:
             SELECT n.name
             FROM names n
             WHERE COALESCE(n.expired, 0) = 0 AND {where}
-            ORDER BY n.name
             LIMIT 5
             """
         ).fetchall()
