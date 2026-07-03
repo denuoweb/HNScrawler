@@ -326,6 +326,7 @@ async function main() {
     memory: false,
     maxFiles: 64,
     cacheSize: 32 << 20,
+    entryCache: 5000,
     compression: true,
     spv: false,
     prune: false,
