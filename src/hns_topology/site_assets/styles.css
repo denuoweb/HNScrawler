@@ -274,6 +274,35 @@ main {
   grid-column: 1 / -1;
 }
 
+.names-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+  gap: 14px;
+  align-items: start;
+}
+
+.names-main,
+.names-faq {
+  min-width: 0;
+}
+
+.names-faq {
+  position: sticky;
+  top: 16px;
+}
+
+.names-faq-item {
+  display: grid;
+  gap: 6px;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+.names-faq-item:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
 .bar-list {
   display: grid;
   gap: 10px;
@@ -520,8 +549,13 @@ th {
 
   .snapshot,
   .grid,
+  .names-layout,
   .faq-list {
     grid-template-columns: 1fr;
+  }
+
+  .names-faq {
+    position: static;
   }
 
   .panel-heading,

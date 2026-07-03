@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "default_provider_key": "unknown/custom",
   "rules": [
     {
@@ -34,9 +34,131 @@
       ]
     },
     {
+      "provider_key": "aws/route53",
+      "provider_type": "external_dns",
+      "priority": 41,
+      "ns_regexes": [
+        "^ns-[0-9]+\\.awsdns-[0-9]+\\.(com|net|org|co\\.uk)$"
+      ]
+    },
+    {
+      "provider_key": "digitalocean",
+      "provider_type": "external_dns",
+      "priority": 42,
+      "ns_suffixes": [
+        "digitalocean.com"
+      ]
+    },
+    {
+      "provider_key": "namecheap",
+      "provider_type": "external_dns",
+      "priority": 43,
+      "ns_suffixes": [
+        "registrar-servers.com"
+      ]
+    },
+    {
+      "provider_key": "godaddy",
+      "provider_type": "external_dns",
+      "priority": 44,
+      "ns_suffixes": [
+        "domaincontrol.com"
+      ]
+    },
+    {
+      "provider_key": "porkbun",
+      "provider_type": "external_dns",
+      "priority": 45,
+      "ns_suffixes": [
+        "porkbun.com"
+      ]
+    },
+    {
+      "provider_key": "dynadot",
+      "provider_type": "external_dns",
+      "priority": 46,
+      "ns_suffixes": [
+        "dynadot.com"
+      ]
+    },
+    {
+      "provider_key": "dnsimple",
+      "provider_type": "external_dns",
+      "priority": 47,
+      "ns_suffixes": [
+        "dnsimple.com"
+      ]
+    },
+    {
+      "provider_key": "gandi",
+      "provider_type": "external_dns",
+      "priority": 48,
+      "ns_suffixes": [
+        "gandi.net"
+      ]
+    },
+    {
+      "provider_key": "ovh",
+      "provider_type": "external_dns",
+      "priority": 49,
+      "ns_suffixes": [
+        "ovh.net"
+      ]
+    },
+    {
+      "provider_key": "hurricane-electric",
+      "provider_type": "external_dns",
+      "priority": 50,
+      "ns_suffixes": [
+        "he.net"
+      ]
+    },
+    {
+      "provider_key": "akamai/linode",
+      "provider_type": "external_dns",
+      "priority": 51,
+      "ns_suffixes": [
+        "linode.com",
+        "akam.net",
+        "akamai.net"
+      ]
+    },
+    {
+      "provider_key": "ns1",
+      "provider_type": "external_dns",
+      "priority": 52,
+      "ns_suffixes": [
+        "nsone.net"
+      ]
+    },
+    {
+      "provider_key": "vercel",
+      "provider_type": "external_dns",
+      "priority": 53,
+      "ns_suffixes": [
+        "vercel-dns.com"
+      ]
+    },
+    {
+      "provider_key": "cloudns",
+      "provider_type": "external_dns",
+      "priority": 54,
+      "ns_suffixes": [
+        "cloudns.net"
+      ]
+    },
+    {
+      "provider_key": "desec",
+      "provider_type": "external_dns",
+      "priority": 55,
+      "ns_suffixes": [
+        "desec.io"
+      ]
+    },
+    {
       "provider_key": "direct-ip/private",
       "provider_type": "direct_ip_cluster",
-      "priority": 50,
+      "priority": 80,
       "ip_prefixes": [
         "10.0.0.0/8",
         "172.16.0.0/12",
@@ -46,4 +168,3 @@
     }
   ]
 }
-

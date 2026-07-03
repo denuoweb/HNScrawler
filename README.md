@@ -2,7 +2,7 @@
 
 Generated static reports for the current Handshake namespace topology.
 
-This project is intentionally not a live explorer, a full DNS warehouse, or a web crawler. It builds periodic snapshots from HSD-derived name state, classifies compact on-chain resource summaries, runs rate-limited live checks only for promising names, and publishes static JSON/CSV/SQLite artifacts plus a report dashboard.
+This project is intentionally not a live explorer, a full DNS warehouse, or a web crawler. It builds periodic snapshots from HSD-derived name state, classifies compact on-chain resource summaries, runs rate-limited live checks only for promising names, and publishes the live static report.
 
 ## What It Answers
 
@@ -49,11 +49,11 @@ See `docs/PERFORMANCE.md` for the HSD data-structure audit and bootstrap tuning 
 
 ## Production Shape
 
-Use a temporary or dedicated indexer VM with a large persistent disk for HSD and the working database. Publish only generated `public/` artifacts to the existing production web VM, backed by its attached artifact disk rather than its boot disk.
+Use a temporary or dedicated indexer VM with a persistent disk for HSD and the working database. Publish only generated `public/` artifacts to the existing production web VM, backed by its attached artifact disk rather than its boot disk. The production defaults keep no release archives or downloadable database backups; validation runs before publish, and only the live site tree remains.
 
-Every generated snapshot includes source provenance, provider-rule provenance, and live-check run settings in `data/summary.json`, including source type/hash, crawler version, provider rule version, provider rule hash, live-check rate limits, candidate counts, and checked counts. `data/manifest.json` records the export format version plus SHA-256 and byte-size entries for the public data files.
+Every generated snapshot includes source provenance, provider-rule provenance, provider/class/failure summaries, and live-check run settings in `data/summary.json`, including source type/hash, crawler version, provider rule version, provider rule hash, live-check rate limits, candidate counts, and checked counts. `data/manifest.json` records the export format version plus SHA-256 and byte-size entries for the public data files.
 
-`data/names.json` and `data/names.csv` follow `--names-limit`; `0` means the generated browse data covers the full snapshot. The complete compact database is available as `data/topology.sqlite.gz` when downloads are included. The manifest records the total name count, exported row count, and whether the table exports are truncated.
+The Names page is backed by paginated `data/names-pages/` JSON. `--names-limit=0` means the generated browse data covers the full snapshot. Optional download artifacts (`data/names.json`, `data/names.csv`, and `data/topology.sqlite.gz`) can still be generated explicitly with `--include-downloads`, but are not part of the production default.
 
 Generated site files:
 
@@ -63,13 +63,10 @@ Generated site files:
 - `data/summary.json`
 - `data/manifest.json`
 - `data/faq_answers.json`
-- `data/classes.json`
-- `data/providers.json`
-- `data/broken.json`
 - `data/names-pages.json`
-- `data/names.json`
-- `data/names.csv`
-- `data/topology.sqlite.gz`
+- `data/names-pages/...`
+
+Default production storage sizes are intentionally modest: 150 GB for the indexer data disk and 50 GB for the web artifact disk. The indexer pipeline starts HSD for update phases and stops it before live checks/site generation by default.
 
 ## Commands
 

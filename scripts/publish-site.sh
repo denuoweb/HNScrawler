@@ -14,9 +14,12 @@ log() {
   printf '[publish] %s\n' "$*" >&2
 }
 
-test -f "$PUBLIC_DIR/index.html"
+if [[ -z "$PUBLISH_ARCHIVE" ]]; then
+  test -f "$PUBLIC_DIR/index.html"
+fi
 
 if [ "$VALIDATE_BEFORE_PUBLISH" = "1" ]; then
+  test -f "$PUBLIC_DIR/index.html"
   log "validating public site at $PUBLIC_DIR"
   validate_args=(validate-public --public-dir "$PUBLIC_DIR")
   if [ "$MIN_INDEXED_HEIGHT" != "0" ]; then

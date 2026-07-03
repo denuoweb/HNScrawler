@@ -5,6 +5,7 @@ GCP_PROJECT="${GCP_PROJECT:-denuo-web-site}"
 GCP_ZONE="${GCP_ZONE:-us-west1-b}"
 INDEXER_VM="${INDEXER_VM:-hns-topology-indexer}"
 INDEXER_MOUNT="${INDEXER_MOUNT:-/mnt/hnscrawler}"
+INDEXER_REPO_DIR="${INDEXER_REPO_DIR:-/mnt/hnscrawler/HNScrawler}"
 INDEXER_PUBLIC_DIR="${INDEXER_PUBLIC_DIR:-/mnt/hnscrawler/public}"
 INDEXER_ARCHIVE="${INDEXER_ARCHIVE:-/mnt/hnscrawler/hns-topology-public.tar.gz}"
 MIN_INDEXED_HEIGHT="${MIN_INDEXED_HEIGHT:-${HSD_MIN_BLOCK_HEIGHT:-300000}}"
@@ -28,7 +29,19 @@ if [[ -z "$LOCAL_TMP" ]]; then
   LOCAL_TMP="$CREATED_TMP"
 fi
 
-mkdir -p "$LOCAL_TMP/public"
+log "validating public site on $INDEXER_VM"
+gcloud compute ssh "$INDEXER_VM" \
+  --project "$GCP_PROJECT" \
+  --zone "$GCP_ZONE" \
+  --quiet \
+  --command "set -euo pipefail
+cd '$INDEXER_REPO_DIR'
+. .venv/bin/activate
+validate_args=(validate-public --public-dir '$INDEXER_PUBLIC_DIR')
+if [ '$MIN_INDEXED_HEIGHT' != '0' ]; then
+  validate_args+=(--min-indexed-height '$MIN_INDEXED_HEIGHT')
+fi
+hns-topology \"\${validate_args[@]}\""
 
 log "creating compressed public archive on $INDEXER_VM from $INDEXER_PUBLIC_DIR"
 gcloud compute ssh "$INDEXER_VM" \
@@ -59,7 +72,5 @@ gcloud compute ssh "$INDEXER_VM" \
   --quiet \
   --command "rm -f '$INDEXER_ARCHIVE'"
 
-log "extracting public archive locally for validation"
-tar -C "$LOCAL_TMP/public" -xzf "$LOCAL_TMP/hns-topology-public.tar.gz"
 log "publishing validated archive to web VM"
-TMPDIR="$LOCAL_TMP" MIN_INDEXED_HEIGHT="$MIN_INDEXED_HEIGHT" PUBLIC_DIR="$LOCAL_TMP/public" PUBLISH_ARCHIVE="$LOCAL_TMP/hns-topology-public.tar.gz" scripts/publish-site.sh
+TMPDIR="$LOCAL_TMP" VALIDATE_BEFORE_PUBLISH=0 MIN_INDEXED_HEIGHT="$MIN_INDEXED_HEIGHT" PUBLISH_ARCHIVE="$LOCAL_TMP/hns-topology-public.tar.gz" scripts/publish-site.sh

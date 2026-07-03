@@ -14,12 +14,14 @@ PIPELINE_MODE="${PIPELINE_MODE:-incremental}"
 CHECK_HSD_READY="${CHECK_HSD_READY:-1}"
 RUN_LIVE_CHECKS="${RUN_LIVE_CHECKS:-1}"
 REQUIRE_LIVE_CHECKS="${REQUIRE_LIVE_CHECKS:-$RUN_LIVE_CHECKS}"
-RUN_ARCHIVE="${RUN_ARCHIVE:-1}"
+RUN_ARCHIVE="${RUN_ARCHIVE:-0}"
 ARCHIVE_DIR="${ARCHIVE_DIR:-/mnt/hnscrawler/archives}"
 ARCHIVE_KEEP="${ARCHIVE_KEEP:-10}"
 BACKUP_BUCKET_URI="${BACKUP_BUCKET_URI:-}"
-LIVE_LIMIT="${LIVE_LIMIT:-1000}"
+LIVE_LIMIT="${LIVE_LIMIT:-10}"
 NAMES_LIMIT="${NAMES_LIMIT:-0}"
+START_HSD_FOR_UPDATES="${START_HSD_FOR_UPDATES:-1}"
+STOP_HSD_AFTER_UPDATES="${STOP_HSD_AFTER_UPDATES:-1}"
 HSD_MAX_BLOCK_LAG="${HSD_MAX_BLOCK_LAG:-2}"
 HSD_MIN_BLOCK_HEIGHT="${HSD_MIN_BLOCK_HEIGHT:-300000}"
 MIN_INDEXED_HEIGHT="${MIN_INDEXED_HEIGHT:-$HSD_MIN_BLOCK_HEIGHT}"
@@ -35,7 +37,7 @@ EXPORT_LIMIT="${EXPORT_LIMIT:-}"
 EXPORT_FORMAT="${EXPORT_FORMAT:-compact}"
 JSONL_BOOTSTRAP_BATCH_SIZE="${JSONL_BOOTSTRAP_BATCH_SIZE:-5000}"
 STOP_HSD_FOR_EXPORT="${STOP_HSD_FOR_EXPORT:-1}"
-RESTART_HSD_AFTER_EXPORT="${RESTART_HSD_AFTER_EXPORT:-1}"
+RESTART_HSD_AFTER_EXPORT="${RESTART_HSD_AFTER_EXPORT:-0}"
 ALLOW_RUNNING_HSD_EXPORT="${ALLOW_RUNNING_HSD_EXPORT:-0}"
 HSD_NETWORK="${HSD_NETWORK:-main}"
 HSD_MODULE_ROOT="${HSD_MODULE_ROOT:-}"
@@ -64,6 +66,8 @@ export PROVIDER_RULES='$PROVIDER_RULES'
 export INDEXER_HSD_PREFIX='$INDEXER_HSD_PREFIX'
 export CHECK_HSD_READY='$CHECK_HSD_READY'
 export LIVE_LIMIT='$LIVE_LIMIT'
+export START_HSD_FOR_UPDATES='$START_HSD_FOR_UPDATES'
+export STOP_HSD_AFTER_UPDATES='$STOP_HSD_AFTER_UPDATES'
 export NAMES_LIMIT='$NAMES_LIMIT'
 export REQUIRE_LIVE_CHECKS='$REQUIRE_LIVE_CHECKS'
 export ARCHIVE_DIR='$ARCHIVE_DIR'
@@ -96,7 +100,33 @@ fi
 log_step() {
   printf '[pipeline] %s %s\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"\$1\"
 }
+update_needs_hsd() {
+  case '$PIPELINE_MODE' in
+    bootstrap|incremental|extract-jsonl) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+hsd_started_for_update=0
+start_hsd_for_update() {
+  if update_needs_hsd && [ \"\$START_HSD_FOR_UPDATES\" = '1' ]; then
+    log_step 'hsd start for update'
+    sudo systemctl start hsd
+    hsd_started_for_update=1
+  fi
+}
+stop_hsd_after_update() {
+  if [ \"\$hsd_started_for_update\" = '1' ] && [ \"\$STOP_HSD_AFTER_UPDATES\" = '1' ]; then
+    log_step 'hsd stop after update'
+    sudo systemctl stop hsd
+    hsd_started_for_update=0
+  fi
+}
+cleanup_hsd() {
+  stop_hsd_after_update || true
+}
+trap cleanup_hsd EXIT
 log_step 'start mode=$PIPELINE_MODE live_checks=$RUN_LIVE_CHECKS names_limit=$NAMES_LIMIT'
+start_hsd_for_update
 case '$PIPELINE_MODE' in
   bootstrap)
     log_step 'bootstrap start'
@@ -125,6 +155,7 @@ case '$PIPELINE_MODE' in
     log_step 'extract-jsonl done'
     ;;
 esac
+stop_hsd_after_update
 if [ '$RUN_LIVE_CHECKS' = '1' ]; then
   log_step 'live checks start'
   scripts/run-live-checks.sh

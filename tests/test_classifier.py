@@ -66,3 +66,44 @@ def test_provider_rules_detect_self_hosted_and_default():
         rules.provider_patterns["namebase/default"]["ns_pattern"]
         == "suffix:namebase.io,suffix:parking.namebase.io"
     )
+
+
+def test_provider_rules_match_common_dns_providers():
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    cases = [
+        ("cloudflare", "alice", "mona.ns.cloudflare.com", "cloudflare"),
+        ("route53", "alice", "ns-123.awsdns-45.com", "aws/route53"),
+        ("digitalocean", "alice", "ns1.digitalocean.com", "digitalocean"),
+        ("namecheap", "alice", "dns1.registrar-servers.com", "namecheap"),
+        ("godaddy", "alice", "ns01.domaincontrol.com", "godaddy"),
+        ("porkbun", "alice", "curitiba.ns.porkbun.com", "porkbun"),
+        ("dynadot", "alice", "ns1.dynadot.com", "dynadot"),
+        ("dnsimple", "alice", "ns1.dnsimple.com", "dnsimple"),
+        ("gandi", "alice", "ns-1-a.gandi.net", "gandi"),
+        ("ovh", "alice", "dns10.ovh.net", "ovh"),
+        ("he", "alice", "ns1.he.net", "hurricane-electric"),
+        ("linode", "alice", "ns1.linode.com", "akamai/linode"),
+        ("akamai", "alice", "a1-1.akam.net", "akamai/linode"),
+        ("ns1", "alice", "dns1.p01.nsone.net", "ns1"),
+        ("vercel", "alice", "ns1.vercel-dns.com", "vercel"),
+        ("cloudns", "alice", "pns1.cloudns.net", "cloudns"),
+        ("desec", "alice", "ns1.desec.io", "desec"),
+    ]
+
+    for label, name, ns, expected in cases:
+        summary = summarize_resource(label, {"records": [{"type": "NS", "ns": f"{ns}."}]})
+        assert rules.match(name, summary) == expected
+
+
+def test_provider_rules_keep_self_hosted_priority_over_suffix_rules():
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    summary = summarize_resource("cloudflare", {"records": [{"type": "NS", "ns": "ns1.cloudflare."}]})
+
+    assert rules.match("cloudflare", summary) == "self-hosted"
+
+
+def test_provider_rules_match_private_direct_ip_clusters():
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    summary = summarize_resource("private", {"records": [{"type": "SYNTH4", "address": "10.8.0.1"}]})
+
+    assert rules.match("private", summary) == "direct-ip/private"

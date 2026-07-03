@@ -44,10 +44,7 @@ REQUIRED_PUBLIC_FILES = (
     "app.js",
     "data/summary.json",
     "data/manifest.json",
-    "data/providers.json",
-    "data/classes.json",
     "data/faq_answers.json",
-    "data/broken.json",
     "data/names-pages.json",
 )
 
@@ -56,9 +53,6 @@ FORBIDDEN_PUBLIC_SUFFIXES = (".key", ".pem")
 REQUIRED_MANIFEST_ARTIFACTS = (
     "summary.json",
     "faq_answers.json",
-    "classes.json",
-    "providers.json",
-    "broken.json",
     "names-pages.json",
 )
 OPTIONAL_MANIFEST_ARTIFACTS = (

@@ -479,12 +479,10 @@ function wireAutoSubmitFilter() {
 }
 
 async function renderOverview(app) {
-  const [summary, providers, classes, broken] = await Promise.all([
-    loadJson("data/summary.json"),
-    loadJson("data/providers.json"),
-    loadJson("data/classes.json"),
-    loadJson("data/broken.json")
-  ]);
+  const summary = await loadJson("data/summary.json");
+  const providers = summary.providers || [];
+  const classes = summary.classes || [];
+  const broken = summary.broken || {reasons: []};
   app.innerHTML = `${snapshot(summary)}
     <section class="grid">
       <article class="panel"><h2>Provider Dominance</h2>${bars(providers, "provider_key", "names_count")}</article>
@@ -501,6 +499,20 @@ async function renderOverview(app) {
       <p class="meta">Source ${escapeHtml(summary.source_type || "unknown")} - rules v${summary.provider_rules_version ?? ""} ${escapeHtml((summary.provider_rules_hash || "").slice(0, 12))}</p>
       ${liveCheckMeta(summary)}</article>
     </section>`;
+}
+
+function namesFaqPanel(answers) {
+  const items = (answers || []).slice(0, 6);
+  if (!items.length) return "";
+  return `<aside class="names-faq panel">
+    <h2>FAQ</h2>
+    ${items.map((item) => `
+      <article class="names-faq-item">
+        <h3>${escapeHtml(item.question)}</h3>
+        <p class="meta">${fmt.format(item.count)} names - ${escapeHtml(item.definition)}</p>
+        <a href="${escapeHtml(sitePath(item.filter_link))}">Filtered table</a>
+      </article>`).join("")}
+  </aside>`;
 }
 
 async function renderFaq(app) {
@@ -604,32 +616,36 @@ function namesColumns(rowDetail) {
 }
 
 async function renderNames(app) {
-  const [summary, providers, broken, loadedPageData] = await Promise.all([
+  const [summary, answers, loadedPageData] = await Promise.all([
     loadJson("data/summary.json"),
-    loadJson("data/providers.json"),
-    loadJson("data/broken.json"),
+    loadJson("data/faq_answers.json"),
     loadPaginatedRows("data/names-pages.json", activeFilter())
   ]);
+  const providers = summary.providers || [];
+  const broken = summary.broken || {reasons: []};
   const filter = activeFilter();
   const query = activeSearch();
   const pageData = await applySearchToPageData(loadedPageData, query);
   const columns = namesColumns(pageData.collection.row_detail);
   app.innerHTML = `${filterNotice(filter, pageData.index.collections.all.row_count, loadedPageData.collection.row_count)}
-    <section class="panel full">
-      <div class="panel-heading">
-        <div><h2>Names</h2><p class="meta">${pageRangeMeta(pageData.collection, pageData.page, pageData.rows)} - height ${summary.last_indexed_height ?? ""}</p></div>
+    <section class="names-layout">
+      <div class="panel names-main">
+        <div class="panel-heading">
+          <div><h2>Names</h2><p class="meta">${pageRangeMeta(pageData.collection, pageData.page, pageData.rows)} - height ${summary.last_indexed_height ?? ""}</p></div>
+        </div>
+        ${namesFilterControls({providers, broken, active: filter})}
+        ${searchControls({
+          id: "names-search",
+          label: "Search Names",
+          placeholder: "Name, provider, records, status",
+          query,
+          search: pageData.search
+        })}
+        ${lookupNotice(pageData, "names")}
+        ${table(pageData.rows, columns, query ? "No names match this search." : "No rows in this page.", {tbodyId: "names-tbody"})}
+        ${namesScrollControls(pageData.collection, pageData.page, pageData.rows, Boolean(query))}
       </div>
-      ${namesFilterControls({providers, broken, active: filter})}
-      ${searchControls({
-        id: "names-search",
-        label: "Search Names",
-        placeholder: "Name, provider, records, status",
-        query,
-        search: pageData.search
-      })}
-      ${lookupNotice(pageData, "names")}
-      ${table(pageData.rows, columns, query ? "No names match this search." : "No rows in this page.", {tbodyId: "names-tbody"})}
-      ${namesScrollControls(pageData.collection, pageData.page, pageData.rows, Boolean(query))}
+      ${namesFaqPanel(answers)}
     </section>`;
   wireAutoSubmitFilter();
   wireNamesInfiniteScroll(pageData.collection, pageData.page, columns);

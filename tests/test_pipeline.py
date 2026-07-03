@@ -100,7 +100,7 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     assert summary["ds_records"] == 1
     assert summary["source_type"] == "fixture"
     assert summary["source_file_hash"]
-    assert summary["provider_rules_version"] == 1
+    assert summary["provider_rules_version"] == 2
     assert summary["provider_rules_hash"]
     assert any(item["key"] == "direct_ip_records" for item in answers)
     assert namebase_provider["ns_pattern"] == "suffix:namebase.io,suffix:parking.namebase.io"
@@ -121,9 +121,6 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
         "names.html",
         "data/summary.json",
         "data/manifest.json",
-        "data/providers.json",
-        "data/broken.json",
-        "data/classes.json",
         "data/names-pages.json",
     ]:
         assert (out / relative).exists()
@@ -131,6 +128,9 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
         "providers.html",
         "broken.html",
         "dane.html",
+        "data/providers.json",
+        "data/broken.json",
+        "data/classes.json",
         "data/names.json",
         "data/names.csv",
         "data/topology.sqlite.gz",
@@ -143,7 +143,8 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
 
     manifest = json.loads((out / "data/manifest.json").read_text(encoding="utf-8"))
     manifest_artifacts = {item["path"]: item for item in manifest["artifacts"]}
-    providers = json.loads((out / "data/providers.json").read_text(encoding="utf-8"))
+    summary = json.loads((out / "data/summary.json").read_text(encoding="utf-8"))
+    providers = summary["providers"]
     names_pages = json.loads((out / "data/names-pages.json").read_text(encoding="utf-8"))
     names_page_rows = json.loads((out / "data/names-pages/all/page-1.json").read_text(encoding="utf-8"))["rows"]
     namebase_provider = next(item for item in providers if item["provider_key"] == "namebase/default")
@@ -156,6 +157,9 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert manifest["export"]["names_truncated"] is False
     assert manifest["export"]["download_artifacts_included"] is False
     assert "summary.json" in manifest_artifacts
+    assert "providers.json" not in manifest_artifacts
+    assert "classes.json" not in manifest_artifacts
+    assert "broken.json" not in manifest_artifacts
     assert "names-pages.json" in manifest_artifacts
     assert "names-pages/all/page-1.json" in manifest_artifacts
     assert "dane-pages.json" not in manifest_artifacts
@@ -168,6 +172,8 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert names_pages["collections"]["ds_records"]["row_count"] == 1
     assert "tlsa_status" in names_page_rows[0]
     assert "provider_type" in names_page_rows[0]
+    assert "classes" in summary
+    assert "broken" in summary
     assert namebase_provider["ns_pattern"] == "suffix:namebase.io,suffix:parking.namebase.io"
 
     checks = validate_release(db_path=db_path, public_dir=out)
@@ -249,13 +255,13 @@ def test_release_validator_catches_manifest_checksum_mismatch(tmp_path):
         bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
         generate_site(conn, db_path=db_path, out_dir=out)
 
-    (out / "data/providers.json").write_text("[]\n", encoding="utf-8")
+    (out / "data/faq_answers.json").write_text("[]\n", encoding="utf-8")
     checks = validate_release(db_path=db_path, public_dir=out)
 
     assert not release_is_valid(checks)
     failed = {check.name: check.detail for check in checks if not check.ok}
     assert "manifest_artifacts" in failed
-    assert "providers.json" in failed["manifest_artifacts"]
+    assert "faq_answers.json" in failed["manifest_artifacts"]
 
 
 def test_release_validator_catches_manifest_export_count_mismatch(tmp_path):

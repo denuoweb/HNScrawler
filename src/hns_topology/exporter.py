@@ -21,9 +21,6 @@ from .timeutil import utc_now
 DATA_ARTIFACTS = (
     "summary.json",
     "faq_answers.json",
-    "classes.json",
-    "providers.json",
-    "broken.json",
     "names-pages.json",
 )
 
@@ -116,12 +113,6 @@ def export_all(
     _log_export("wrote summary.json")
     write_json(out / "faq_answers.json", build_faq_answers(conn, summary))
     _log_export("wrote faq_answers.json")
-    write_json(out / "classes.json", build_classes(conn))
-    _log_export("wrote classes.json")
-    write_json(out / "providers.json", build_providers(conn))
-    _log_export("wrote providers.json")
-    write_json(out / "broken.json", build_broken(conn))
-    _log_export("wrote broken.json")
     _remove_obsolete_data(out)
     write_json(out / "names-pages.json", write_names_pages(conn, out, limit=effective_names_limit, page_size=PAGE_SIZE))
     _log_export("wrote names-pages.json")
@@ -201,7 +192,7 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
         FROM live_status
         """
     ).fetchone()
-    return {
+    summary = {
         "generated_at": get_meta(conn, "generated_at", utc_now()),
         "last_indexed_height": _meta_int(conn, "last_indexed_height"),
         "last_indexed_tip_hash": get_meta(conn, "last_indexed_tip_hash", ""),
@@ -243,6 +234,10 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
         "live_check_recheck_seconds": _meta_int(conn, "live_check_recheck_seconds"),
         "live_check_resolver": get_meta(conn, "live_check_resolver", ""),
     }
+    summary["classes"] = build_classes(conn)
+    summary["providers"] = build_providers(conn)
+    summary["broken"] = build_broken(conn)
+    return summary
 
 
 def build_faq_answers(conn: sqlite3.Connection, summary: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1085,7 +1080,7 @@ def _effective_names_limit(summary: dict[str, Any], names_limit: int) -> int:
 
 
 def _remove_obsolete_data(out: Path) -> None:
-    for relative in ("dane.json", "dane-pages.json"):
+    for relative in ("classes.json", "providers.json", "broken.json", "dane.json", "dane-pages.json"):
         (out / relative).unlink(missing_ok=True)
     _remove_tree(out / "dane-pages", missing_ok=True)
 
