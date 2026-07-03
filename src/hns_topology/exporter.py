@@ -543,7 +543,6 @@ def _collect_dane_rows(conn: sqlite3.Connection, *, limit: int) -> list[dict[str
         LEFT JOIN live_status ls ON ls.name = n.name
         WHERE COALESCE(n.expired, 0) = 0
           AND n.onchain_class IN ({class_placeholders})
-        ORDER BY n.updated_at DESC, n.name
         LIMIT ?
         """,
         (*DANE_CANDIDATE_CLASSES, limit),
