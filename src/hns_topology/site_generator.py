@@ -10,10 +10,18 @@ PAGES = {
     "index.html": ("overview", "HNS Topology"),
     "faq.html": ("faq", "Topology FAQ"),
     "providers.html": ("providers", "Provider Dominance"),
-    "classes.html": ("classes", "On-Chain Classes"),
     "names.html": ("names", "Names"),
     "broken.html": ("broken", "Broken Paths"),
     "dane.html": ("dane", "DANE"),
+}
+GENERATED_HTML_FILES = {
+    "index.html",
+    "faq.html",
+    "providers.html",
+    "classes.html",
+    "names.html",
+    "broken.html",
+    "dane.html",
 }
 
 
@@ -37,6 +45,8 @@ def generate_site(
         include_downloads=include_downloads,
     )
     _copy_assets(out)
+    for filename in GENERATED_HTML_FILES - set(PAGES):
+        (out / filename).unlink(missing_ok=True)
     for filename, (page, title) in PAGES.items():
         (out / filename).write_text(_html(page=page, title=title), encoding="utf-8")
 
@@ -55,7 +65,6 @@ def _html(*, page: str, title: str) -> str:
             ("index.html", ("overview", "Overview")),
             ("faq.html", ("faq", "FAQ")),
             ("providers.html", ("providers", "Providers")),
-            ("classes.html", ("classes", "Classes")),
             ("names.html", ("names", "Names")),
             ("broken.html", ("broken", "Broken")),
             ("dane.html", ("dane", "DANE")),

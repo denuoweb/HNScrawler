@@ -27,6 +27,7 @@ from .indexer import (
     rollback_reorg,
 )
 from .livecheck import LiveCheckConfig, count_live_check_candidates, run_live_checks
+from .lookup_api import run_server
 from .provider_rules import ProviderRules
 from .site_generator import generate_site
 from .timeutil import utc_now
@@ -138,6 +139,12 @@ def build_parser() -> argparse.ArgumentParser:
     site.add_argument("--names-limit", type=int, default=5000)
     site.add_argument("--include-downloads", action="store_true")
     site.set_defaults(func=cmd_generate_site)
+
+    lookup_api = sub.add_parser("serve-lookup", help="Serve exact-name lookup API.")
+    lookup_api.add_argument("--db", required=True)
+    lookup_api.add_argument("--host", default="127.0.0.1")
+    lookup_api.add_argument("--port", type=int, default=8787)
+    lookup_api.set_defaults(func=cmd_serve_lookup)
 
     validate = sub.add_parser("validate-release", help="Validate DB and static artifacts before publishing.")
     validate.add_argument("--db", required=True)
@@ -505,6 +512,11 @@ def cmd_generate_site(args: argparse.Namespace) -> int:
             include_downloads=args.include_downloads,
         )
     print(f"generated site at {args.out}")
+    return 0
+
+
+def cmd_serve_lookup(args: argparse.Namespace) -> int:
+    run_server(db_path=args.db, host=args.host, port=args.port)
     return 0
 
 

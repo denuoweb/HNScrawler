@@ -40,7 +40,6 @@ REQUIRED_PUBLIC_FILES = (
     "index.html",
     "faq.html",
     "providers.html",
-    "classes.html",
     "names.html",
     "broken.html",
     "dane.html",

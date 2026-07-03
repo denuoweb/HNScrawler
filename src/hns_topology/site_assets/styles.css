@@ -331,6 +331,35 @@ th {
   margin-top: 12px;
 }
 
+.filter-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.filter-chip {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: var(--text);
+  background: var(--panel);
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+  text-transform: capitalize;
+}
+
+.filter-chip:hover,
+.filter-chip.active {
+  border-color: var(--blue);
+  color: var(--blue);
+  background: var(--surface);
+}
+
 .stat-list {
   display: grid;
   gap: 14px;

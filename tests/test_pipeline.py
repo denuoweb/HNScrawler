@@ -119,7 +119,6 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
         "index.html",
         "faq.html",
         "providers.html",
-        "classes.html",
         "names.html",
         "broken.html",
         "dane.html",
@@ -135,6 +134,7 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
         "data/names.json",
         "data/names.csv",
         "data/topology.sqlite.gz",
+        "classes.html",
     ]:
         assert not (out / relative).exists()
 

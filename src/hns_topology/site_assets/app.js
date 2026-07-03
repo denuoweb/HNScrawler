@@ -44,6 +44,10 @@ function activeSearch() {
   return (new URLSearchParams(window.location.search).get("q") || "").trim();
 }
 
+function activeProviderFilter() {
+  return new URLSearchParams(window.location.search).get("provider_filter") || activeFilter();
+}
+
 function hasItems(value) {
   return Array.isArray(value) && value.length > 0;
 }
@@ -66,7 +70,10 @@ function filterName(filter) {
     missing_glue: "missing GLUE",
     missing_glue_only: "missing GLUE only",
     stale_tlsa: "stale TLSA",
-    stale_tlsa_only: "stale TLSA only"
+    stale_tlsa_only: "stale TLSA only",
+    provider_has_working: "working providers",
+    provider_has_dane: "DANE providers",
+    provider_has_likely_websites: "likely website providers"
   })[filter] || filter;
 }
 
@@ -90,6 +97,10 @@ function rowMatchesFilter(row, filter) {
 
 function providerMatchesFilter(row, filter) {
   if (filter === "default_provider_names") return row.provider_type === "default_parking";
+  if (filter === "provider_has_working") return Number(row.working_count || 0) > 0;
+  if (filter === "provider_has_dane") return Number(row.dane_count || 0) > 0;
+  if (filter === "provider_has_likely_websites") return Number(row.likely_website_count || 0) > 0;
+  if (filter.startsWith("provider_type:")) return row.provider_type === filter.slice("provider_type:".length);
   return true;
 }
 
@@ -194,6 +205,35 @@ function hrefWithoutParams(keys) {
   return query ? `${path}?${query}` : path;
 }
 
+function hrefWithParams(values) {
+  const params = new URLSearchParams(window.location.search);
+  Object.entries(values).forEach(([key, value]) => {
+    if (value === null || value === "") {
+      params.delete(key);
+    } else {
+      params.set(key, value);
+    }
+  });
+  const query = params.toString();
+  const path = currentPageName();
+  return query ? `${path}?${query}` : path;
+}
+
+function providerFilterControls(providers, active) {
+  const types = Array.from(new Set(providers.map((row) => row.provider_type).filter(Boolean))).sort();
+  const options = [
+    {value: "", label: "All"},
+    ...types.map((type) => ({value: `provider_type:${type}`, label: type.replaceAll("_", " ")})),
+    {value: "provider_has_likely_websites", label: "Likely websites"},
+    {value: "provider_has_working", label: "Working"},
+    {value: "provider_has_dane", label: "DANE"}
+  ];
+  return `<div class="filter-controls" aria-label="Provider filters">${options.map((item) => {
+    const selected = item.value === active;
+    return `<a class="filter-chip${selected ? " active" : ""}" href="${escapeHtml(hrefWithParams({provider_filter: item.value || null, filter: null, page: null}))}">${escapeHtml(item.label)}</a>`;
+  }).join("")}</div>`;
+}
+
 function pagination(collection, page) {
   const pageCount = Number(collection.page_count || 0);
   if (pageCount <= 1) return "";
@@ -279,8 +319,75 @@ function rowMatchesSearch(row, tokens) {
   return tokens.every((token) => searchable.includes(token));
 }
 
-async function applySearchToPageData(pageData, query) {
-  if (!query) return {...pageData, search: null};
+function normalizeLookupQuery(query) {
+  let name = query.trim().toLowerCase();
+  for (const prefix of ["hns://", "https://", "http://"]) {
+    if (name.startsWith(prefix)) {
+      name = name.slice(prefix.length);
+      break;
+    }
+  }
+  name = name.split("/", 1)[0].split(".", 1)[0].trim();
+  return /^[a-z0-9-]{1,63}$/.test(name) ? name : "";
+}
+
+function isDaneRow(row) {
+  return hasDs(row) || Boolean(row.tlsa_status) || Boolean(row.dane_status);
+}
+
+async function lookupExactName(query) {
+  const name = normalizeLookupQuery(query);
+  if (!name) return null;
+  try {
+    const response = await fetch(`api/name?name=${encodeURIComponent(name)}`);
+    if (!response.ok && response.status !== 404) return null;
+    return response.json();
+  } catch (_error) {
+    return null;
+  }
+}
+
+async function applySearchToPageData(pageData, query, options = {}) {
+  if (!query) return {...pageData, search: null, lookup: null};
+  const lookup = await lookupExactName(query);
+  if (lookup && lookup.found && (!options.daneOnly || isDaneRow(lookup.row))) {
+    return {
+      ...pageData,
+      collection: {
+        ...pageData.collection,
+        row_count: 1,
+        page_count: 1
+      },
+      page: 1,
+      rows: [lookup.row],
+      search: {
+        query,
+        matchedCount: 1,
+        totalCount: "snapshot",
+        exact: true
+      },
+      lookup
+    };
+  }
+  if (lookup && lookup.found && options.daneOnly) {
+    return {
+      ...pageData,
+      collection: {
+        ...pageData.collection,
+        row_count: 0,
+        page_count: 0
+      },
+      page: 1,
+      rows: [],
+      search: {
+        query,
+        matchedCount: 0,
+        totalCount: "snapshot",
+        exact: true
+      },
+      lookup
+    };
+  }
   const allRows = await loadCollectionRows(pageData.collection);
   const tokens = searchTokens(query);
   const matchedRows = allRows.filter((row) => rowMatchesSearch(row, tokens));
@@ -300,8 +407,10 @@ async function applySearchToPageData(pageData, query) {
     search: {
       query,
       matchedCount: matchedRows.length,
-      totalCount: allRows.length
-    }
+      totalCount: allRows.length,
+      exact: false
+    },
+    lookup
   };
 }
 
@@ -319,7 +428,9 @@ function searchControls({id, label, placeholder, query, search}) {
     ? `<a class="search-clear" href="${escapeHtml(hrefWithoutParams(["q", "page"]))}">Clear</a>`
     : "";
   const searchMeta = search
-    ? `<p class="meta search-meta">Search "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} of ${fmt.format(search.totalCount)} exported rows.</p>`
+    ? `<p class="meta search-meta">${search.exact
+      ? `Exact lookup "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} full-snapshot row.`
+      : `Search "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} of ${fmt.format(search.totalCount)} exported rows.`}</p>`
     : "";
   return `<form class="search-form" role="search" action="${escapeHtml(currentPageName())}" method="get">
     ${searchHiddenInputs()}
@@ -331,6 +442,17 @@ function searchControls({id, label, placeholder, query, search}) {
     </div>
     ${searchMeta}
   </form>`;
+}
+
+function lookupNotice(pageData, pageName) {
+  if (!pageData.lookup || !activeSearch()) return "";
+  if (pageData.lookup.found && pageName === "dane" && !isDaneRow(pageData.lookup.row)) {
+    return `<p class="meta search-meta">Exact lookup found ${escapeHtml(pageData.lookup.row.name)} in the full snapshot, but it is not a DANE candidate in the current data.</p>`;
+  }
+  if (pageData.lookup.found) {
+    return `<p class="meta search-meta">Exact lookup uses the full snapshot. Browse pagination remains capped for bandwidth.</p>`;
+  }
+  return `<p class="meta search-meta">Exact lookup did not find ${escapeHtml(pageData.lookup.normalized || activeSearch())} in the full snapshot. The table search below only scans the exported browse sample.</p>`;
 }
 
 async function renderOverview(app) {
@@ -370,9 +492,9 @@ async function renderFaq(app) {
 
 async function renderProviders(app) {
   const providers = await loadJson("data/providers.json");
-  const filter = activeFilter();
+  const filter = activeProviderFilter();
   const rows = applyFilter(providers, filter, providerMatchesFilter);
-  app.innerHTML = `${filterNotice(filter, providers.length, rows.length)}<section class="panel full"><h2>Providers</h2>${bars(rows, "provider_key", "names_count", 20)}</section>
+  app.innerHTML = `${filterNotice(filter, providers.length, rows.length)}<section class="panel full"><div class="panel-heading"><h2>Providers</h2>${providerFilterControls(providers, filter)}</div>${bars(rows, "provider_key", "names_count", 20)}</section>
     <section class="panel full">${table(rows, [
       {key: "provider_key", label: "Provider"},
       {key: "provider_type", label: "Type"},
@@ -411,6 +533,7 @@ async function renderNames(app) {
         query,
         search: pageData.search
       })}
+      ${lookupNotice(pageData, "names")}
       ${table(pageData.rows, [
         {key: "name", label: "Name"},
         {key: "onchain_class", label: "Class"},
@@ -453,7 +576,7 @@ async function renderDane(app) {
   ]);
   const filter = activeFilter();
   const query = activeSearch();
-  const pageData = await applySearchToPageData(loadedPageData, query);
+  const pageData = await applySearchToPageData(loadedPageData, query, {daneOnly: true});
   app.innerHTML = `<section class="grid">
     <article class="panel"><h2>DANE Summary</h2>
       <div class="stat-list">
@@ -473,6 +596,7 @@ async function renderDane(app) {
       query,
       search: pageData.search
     })}
+    ${lookupNotice(pageData, "dane")}
     ${table(pageData.rows, [
       {key: "name", label: "Name"},
       {key: "has_ds", label: "DS"},
