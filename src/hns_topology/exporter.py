@@ -522,8 +522,8 @@ def _collect_dane_rows(conn: sqlite3.Connection, *, limit: int) -> list[dict[str
           n.name, rs.has_ds, rs.ns_names, ls.dnssec_status, ls.tlsa_status,
           ls.dane_status, ls.failure_reason, ls.checked_at
         FROM live_status ls
-        JOIN names n ON n.name = ls.name
-        JOIN resource_summary rs ON rs.name = n.name
+        CROSS JOIN names n ON n.name = ls.name
+        CROSS JOIN resource_summary rs ON rs.name = n.name
         WHERE COALESCE(n.expired, 0) = 0
           AND (ls.tlsa_status IS NOT NULL OR ls.dane_status IS NOT NULL)
         ORDER BY ls.checked_at DESC, n.name
@@ -540,8 +540,8 @@ def _collect_dane_rows(conn: sqlite3.Connection, *, limit: int) -> list[dict[str
         SELECT
           n.name, rs.has_ds, rs.ns_names, ls.dnssec_status, ls.tlsa_status,
           ls.dane_status, ls.failure_reason, ls.checked_at
-        FROM names n
-        JOIN resource_summary rs ON rs.name = n.name
+        FROM names n INDEXED BY idx_names_class
+        CROSS JOIN resource_summary rs ON rs.name = n.name
         LEFT JOIN live_status ls ON ls.name = n.name
         WHERE COALESCE(n.expired, 0) = 0
           AND n.onchain_class IN ({class_placeholders})
@@ -596,20 +596,26 @@ def _build_name_page_rows(conn: sqlite3.Connection, key: str, *, limit: int) -> 
     if key in NAME_LIVE_FILTERS:
         from_sql = """
         FROM live_status ls
-        JOIN names n ON n.name = ls.name
-        JOIN resource_summary rs ON rs.name = n.name
+        CROSS JOIN names n ON n.name = ls.name
+        CROSS JOIN resource_summary rs ON rs.name = n.name
         """
         where = f"COALESCE(n.expired, 0) = 0 AND {NAME_LIVE_FILTERS[key]}"
     else:
-        from_sql = """
-        FROM names n
-        JOIN resource_summary rs ON rs.name = n.name
-        LEFT JOIN live_status ls ON ls.name = n.name
-        """
         where = "1=1"
         if key != "all":
+            from_sql = """
+            FROM names n INDEXED BY idx_names_class
+            CROSS JOIN resource_summary rs ON rs.name = n.name
+            LEFT JOIN live_status ls ON ls.name = n.name
+            """
             where = "COALESCE(n.expired, 0) = 0"
             where = f"{where} AND {NAME_CLASS_FILTERS.get(key, '1=1')}"
+        else:
+            from_sql = """
+            FROM names n
+            CROSS JOIN resource_summary rs ON rs.name = n.name
+            LEFT JOIN live_status ls ON ls.name = n.name
+            """
     rows = conn.execute(
         f"""
         SELECT {row_columns}
