@@ -26,7 +26,7 @@ DATA_ARTIFACTS = (
     "names-pages.json",
 )
 
-PAGE_SIZE = 100
+PAGE_SIZE = 1000
 FAILURE_REASON_FILTER_PREFIX = "failure_reason:"
 PROVIDER_TYPE_FILTER_PREFIX = "provider_type:"
 
