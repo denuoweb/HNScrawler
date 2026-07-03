@@ -15,6 +15,21 @@ This project is intentionally not a live explorer, a full DNS warehouse, or a we
 - Which providers dominate HNS?
 - Which names are broken by missing glue or stale TLSA?
 
+## Adoption Flow
+
+HNScrawler is the status and opportunity report. The DANE Record Generator is the handoff for turning an opportunity into HNS wallet/registrar records, authoritative DNS records, TLSA `3 1 1`, verification commands, and integrator JSON.
+
+The Overview is shaped as an adoption funnel:
+
+- Can become a site: likely website candidates.
+- Strict HNS ready: SYNTH nameserver bootstrap or delegated names with GLUE.
+- DNSSEC ready: names with DS plus delegated nameserver data.
+- Needs DANE: DS or live-valid DNSSEC exists, but valid TLSA/DANE is not proven.
+- Valid DANE: latest live check matched DNSSEC, TLSA, and HTTPS certificate/SPKI.
+- Needs fix: missing GLUE or a live-check failure reason.
+
+The Names page is the main work surface. Each row shows the next action and links to `/dane-generator/` with query parameters such as `domain`, `intent`, `mode`, `ns4`, and `ns6` so the generator can prefill the relevant setup path.
+
 ## Quick Start With Fixture Data
 
 ```bash

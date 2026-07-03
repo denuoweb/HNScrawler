@@ -4,7 +4,9 @@ const PAGE_FETCH_MIN_DELAY_MS = 350;
 const COLLECTION_FETCH_BATCH_SIZE = 8;
 const SEARCH_FULL_SCAN_MAX_ROWS = 5000;
 const FAILURE_REASON_FILTER_PREFIX = "failure_reason:";
+const PROVIDER_FILTER_PREFIX = "provider:";
 const PROVIDER_TYPE_FILTER_PREFIX = "provider_type:";
+const DANE_GENERATOR_BASE = window.__DANE_GENERATOR_BASE__ || "/dane-generator/";
 let nextPageFetchAt = 0;
 const collectionRowsCache = new Map();
 
@@ -59,8 +61,30 @@ function hasDs(row) {
   return row.has_ds === true || Number(row.has_ds || 0) === 1;
 }
 
+function recordTypes(row) {
+  return Array.isArray(row.record_types) ? row.record_types : [];
+}
+
+function hasRecordType(row, type) {
+  return recordTypes(row).includes(type);
+}
+
+function firstValue(value) {
+  if (Array.isArray(value)) return value.find(Boolean) || "";
+  return value || "";
+}
+
+function hasSynth(row) {
+  return Boolean(firstValue(row.synth4) || firstValue(row.synth6) || hasRecordType(row, "SYNTH4") || hasRecordType(row, "SYNTH6"));
+}
+
+function hasGlue(row) {
+  return Boolean(firstValue(row.glue4) || firstValue(row.glue6) || hasRecordType(row, "GLUE4") || hasRecordType(row, "GLUE6"));
+}
+
 function filterName(filter) {
   if (filter.startsWith(FAILURE_REASON_FILTER_PREFIX)) return prettyToken(filter.slice(FAILURE_REASON_FILTER_PREFIX.length));
+  if (filter.startsWith(PROVIDER_FILTER_PREFIX)) return `provider ${filter.slice(PROVIDER_FILTER_PREFIX.length)}`;
   if (filter.startsWith(PROVIDER_TYPE_FILTER_PREFIX)) return `provider ${prettyToken(filter.slice(PROVIDER_TYPE_FILTER_PREFIX.length))}`;
   return ({
     direct_ip_records: "SYNTH nameservers",
@@ -69,10 +93,13 @@ function filterName(filter) {
     ds_records: "DS records",
     dnssec_candidates: "DNSSEC candidates",
     dane_rows: "DANE rows",
+    strict_hns_ready: "strict HNS ready",
     likely_websites: "likely websites",
     strict_hns_working: "strict HNS working",
     doh_fallback_required: "resolver fallback required",
+    needs_dane: "needs DANE",
     dane_working: "valid DANE",
+    needs_fix: "needs fix",
     missing_glue: "missing GLUE",
     missing_glue_only: "missing GLUE only",
     stale_tlsa: "stale TLSA",
@@ -95,13 +122,13 @@ function bars(rows, labelKey, valueKey, limit = 12, labelFormatter = (value) => 
 }
 
 function tableRows(rows, columns) {
-  return rows.map((row) => `<tr>${columns.map((column) => `<td>${formatCell(row[column.key])}</td>`).join("")}</tr>`).join("");
+  return rows.map((row) => `<tr>${columns.map((column) => `<td>${column.render ? column.render(row) : formatCell(row[column.key])}</td>`).join("")}</tr>`).join("");
 }
 
 function table(rows, columns, emptyMessage = "No rows in this page.", options = {}) {
   if (!rows.length) return `<p class="empty-state">${escapeHtml(emptyMessage)}</p>`;
   const tbodyId = options.tbodyId ? ` id="${escapeHtml(options.tbodyId)}"` : "";
-  return `<div class="table-wrap"><table><thead><tr>${columns.map((column) => `<th>${column.label}</th>`).join("")}</tr></thead><tbody${tbodyId}>${tableRows(rows, columns)}</tbody></table></div>`;
+  return `<div class="table-wrap"><table><thead><tr>${columns.map((column) => `<th>${escapeHtml(column.label)}</th>`).join("")}</tr></thead><tbody${tbodyId}>${tableRows(rows, columns)}</tbody></table></div>`;
 }
 
 function formatCell(value) {
@@ -145,6 +172,95 @@ function classLabel(value) {
     MALFORMED_RESOURCE: "Malformed resource",
     UNKNOWN_OTHER: "Unknown other"
   })[value] || prettyToken(value);
+}
+
+function daneGeneratorUrl(row, intent) {
+  const params = new URLSearchParams();
+  params.set("domain", row.name || "");
+  params.set("domain_type", "hns");
+  params.set("intent", intent);
+  params.set("mode", hasSynth(row) && row.onchain_class === "DIRECT_SYNTH" ? "synth" : "delegated");
+  const nameserver = firstValue(row.ns_names);
+  const ns4 = firstValue(row.synth4) || firstValue(row.glue4);
+  const ns6 = firstValue(row.synth6) || firstValue(row.glue6);
+  if (nameserver) params.set("nameserver", nameserver);
+  if (ns4) params.set("ns4", ns4);
+  if (ns6) params.set("ns6", ns6);
+  return `${DANE_GENERATOR_BASE}?${params.toString()}`;
+}
+
+function rowAction(row) {
+  const failure = row.failure_reason || "";
+  if (row.dane_status === "valid") {
+    return {
+      type: "badge",
+      label: "Verified DANE",
+      detail: "DNSSEC, TLSA, and HTTPS matched in the latest live check.",
+      href: sitePath(`names.html?filter=dane_working&q=${encodeURIComponent(row.name || "")}`)
+    };
+  }
+  if (failure === "missing_glue" || row.onchain_class === "DELEGATED_NO_GLUE") {
+    return {
+      label: "Generate NS/GLUE setup",
+      detail: "Delegation needs nameserver bootstrap records before strict HNS can work.",
+      href: daneGeneratorUrl(row, "missing_glue")
+    };
+  }
+  if (failure === "ds_dnskey_mismatch" || row.dnssec_status === "ds_dnskey_mismatch") {
+    return {
+      label: "Regenerate/check DS",
+      detail: "Parent DS and delegated DNSKEY do not match.",
+      href: daneGeneratorUrl(row, "ds_dnskey_mismatch")
+    };
+  }
+  if (failure === "rrsig_expired" || failure === "dnssec_bogus" || row.dnssec_status === "rrsig_expired" || row.dnssec_status === "bogus") {
+    return {
+      label: "Regenerate/check DS",
+      detail: "DNSSEC signing needs review before DANE can validate.",
+      href: daneGeneratorUrl(row, "dnssec_fix")
+    };
+  }
+  if (failure === "stale_tlsa_spki_mismatch" || failure === "tlsa_wrong_owner" || (row.tlsa_status === "present" && row.dane_status === "invalid")) {
+    return {
+      label: "Generate current TLSA",
+      detail: "TLSA data should match the current HTTPS certificate public key.",
+      href: daneGeneratorUrl(row, "stale_tlsa")
+    };
+  }
+  if (hasDs(row) && row.dane_status !== "valid") {
+    return {
+      label: "Generate TLSA",
+      detail: "DS exists; add or verify TLSA 3 1 1 next.",
+      href: daneGeneratorUrl(row, "generate_tlsa")
+    };
+  }
+  if (hasSynth(row)) {
+    return {
+      label: "Generate SYNTH DNS setup",
+      detail: "SYNTH points to nameserver IPs; the zone still serves A, AAAA, DNSSEC, and TLSA.",
+      href: daneGeneratorUrl(row, "synth_setup")
+    };
+  }
+  if (hasGlue(row) || row.onchain_class === "DELEGATED_WITH_GLUE") {
+    return {
+      label: "Plan DNSSEC/DANE",
+      detail: "Strict-HNS bootstrap exists; sign the zone and publish DS/TLSA when ready.",
+      href: daneGeneratorUrl(row, "dnssec_dane")
+    };
+  }
+  return {
+    label: "Review setup",
+    detail: "Open the generator with this name filled in.",
+    href: daneGeneratorUrl(row, "review")
+  };
+}
+
+function actionCell(row) {
+  const action = rowAction(row);
+  if (action.type === "badge") {
+    return `<div class="action-cell"><a class="verified-badge" href="${escapeHtml(action.href)}">${escapeHtml(action.label)}</a><span>${escapeHtml(action.detail)}</span></div>`;
+  }
+  return `<div class="action-cell"><a class="action-link" href="${escapeHtml(action.href)}">${escapeHtml(action.label)}</a><span>${escapeHtml(action.detail)}</span></div>`;
 }
 
 function snapshot(summary) {
@@ -445,7 +561,14 @@ function namesFilterControls({providers, broken, active}) {
     const type = row.provider_type || "unknown";
     providerCounts.set(type, (providerCounts.get(type) || 0) + Number(row.names_count || 0));
   });
-  const providerOptions = Array.from(providerCounts.entries())
+  const providerOptions = providers
+    .filter((row) => row.provider_key)
+    .sort((a, b) => Number(b.names_count || 0) - Number(a.names_count || 0) || String(a.provider_key).localeCompare(String(b.provider_key)))
+    .map((row) => ({
+      value: `${PROVIDER_FILTER_PREFIX}${row.provider_key}`,
+      label: `${row.provider_key} (${fmt.format(row.names_count || 0)})`
+    }));
+  const providerTypeOptions = Array.from(providerCounts.entries())
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .map(([type, count]) => ({
       value: `${PROVIDER_TYPE_FILTER_PREFIX}${type}`,
@@ -463,13 +586,15 @@ function namesFilterControls({providers, broken, active}) {
     {value: "delegated_names", label: "Delegated names"},
     {value: "default_provider_names", label: "Default providers"},
     {value: "likely_websites", label: "Likely websites"},
+    {value: "strict_hns_ready", label: "Strict HNS ready"},
     {value: "strict_hns_working", label: "Strict HNS working"},
+    {value: "needs_fix", label: "Needs fix"},
     {value: "doh_fallback_required", label: "Resolver fallback required"}
   ];
   const daneOptions = [
-    {value: "dane_rows", label: "DANE rows"},
     {value: "ds_records", label: "DS records"},
     {value: "dnssec_candidates", label: "DNSSEC candidates"},
+    {value: "needs_dane", label: "Needs DANE"},
     {value: "dane_working", label: "Valid DANE"},
     {value: "stale_tlsa_only", label: "Stale TLSA"}
   ];
@@ -484,7 +609,8 @@ function namesFilterControls({providers, broken, active}) {
         ${filterOptgroup("General", generalOptions, active)}
         ${filterOptgroup("DANE and DNSSEC", daneOptions, active)}
         ${filterOptgroup("Failure Reasons", failureOptions, active)}
-        ${filterOptgroup("Provider Types", providerOptions, active)}
+        ${filterOptgroup("Providers", providerOptions, active)}
+        ${filterOptgroup("Provider Types", providerTypeOptions, active)}
       </select>
     </label>
     ${clearLink}
@@ -505,37 +631,37 @@ function adoptionFunnel(summary) {
       label: "Likely websites",
       value: summary.likely_websites,
       filter: "likely_websites",
-      note: "Have on-chain data worth checking."
+      note: "Have on-chain data worth turning into a site."
     },
     {
-      label: "Strict HNS working",
-      value: summary.strict_hns_working,
-      filter: "strict_hns_working",
-      note: "Loaded without resolver fallback."
+      label: "Strict HNS ready",
+      value: summary.strict_hns_ready,
+      filter: "strict_hns_ready",
+      note: "SYNTH or GLUE bootstrap exists on chain."
     },
     {
-      label: "DS records",
-      value: summary.ds_records,
-      filter: "ds_records",
-      note: "Parent-side DNSSEC material exists."
-    },
-    {
-      label: "DNSSEC candidates",
+      label: "DNSSEC ready",
       value: summary.dnssec_candidates,
       filter: "dnssec_candidates",
       note: "DS plus delegated nameserver data."
     },
     {
+      label: "Needs DANE",
+      value: summary.needs_dane,
+      filter: "needs_dane",
+      note: "DS exists but valid TLSA is not proven."
+    },
+    {
       label: "Valid DANE",
       value: summary.dane_working,
       filter: "dane_working",
-      note: "TLSA matches HTTPS certificate/SPKI."
+      note: "DNSSEC, TLSA, and HTTPS matched."
     },
     {
-      label: "Needs glue fix",
-      value: summary.missing_glue_only,
-      filter: "missing_glue_only",
-      note: "Delegated but missing bootstrap glue."
+      label: "Needs fix",
+      value: summary.needs_fix,
+      filter: "needs_fix",
+      note: "Missing glue or live-check failure."
     }
   ];
   return `<section class="panel adoption-funnel">
@@ -558,7 +684,6 @@ async function renderOverview(app) {
   const summary = await loadJson("data/summary.json");
   const providers = summary.providers || [];
   const classes = summary.classes || [];
-  const broken = summary.broken || {reasons: []};
   app.innerHTML = `${snapshot(summary)}
     ${adoptionFunnel(summary)}
     <section class="grid">
@@ -567,10 +692,17 @@ async function renderOverview(app) {
       <article class="panel"><h2>DANE</h2>
         <div class="stat-list">
           <a class="stat-line stat-link" href="${escapeHtml(sitePath("names.html?filter=ds_records"))}"><span>DS records</span><strong>${fmt.format(summary.ds_records)}</strong></a>
+          <a class="stat-line stat-link" href="${escapeHtml(sitePath("names.html?filter=needs_dane"))}"><span>Needs DANE</span><strong>${fmt.format(summary.needs_dane)}</strong></a>
           <a class="stat-line stat-link" href="${escapeHtml(sitePath("names.html?filter=dane_working"))}"><span>Valid DANE</span><strong>${fmt.format(summary.dane_working)}</strong></a>
         </div>
       </article>
-      <article class="panel"><h2>Failure Reasons</h2>${bars(broken.reasons, "failure_reason", "count", 10)}</article>
+      <article class="panel"><h2>Fix Queues</h2>
+        <div class="stat-list">
+          <a class="stat-line stat-link" href="${escapeHtml(sitePath("names.html?filter=needs_fix"))}"><span>Needs fix</span><strong>${fmt.format(summary.needs_fix)}</strong></a>
+          <a class="stat-line stat-link" href="${escapeHtml(sitePath("names.html?filter=missing_glue_only"))}"><span>Missing GLUE</span><strong>${fmt.format(summary.missing_glue_only)}</strong></a>
+          <a class="stat-line stat-link" href="${escapeHtml(sitePath("names.html?filter=stale_tlsa_only"))}"><span>Stale TLSA</span><strong>${fmt.format(summary.stale_tlsa_only)}</strong></a>
+        </div>
+      </article>
       <article class="panel"><h2>Snapshot</h2>
       <p class="meta">Height ${summary.last_indexed_height ?? ""} generated ${summary.generated_at ?? ""}</p>
       <p class="meta">Source ${escapeHtml(summary.source_type || "unknown")} - rules v${summary.provider_rules_version ?? ""} ${escapeHtml((summary.provider_rules_hash || "").slice(0, 12))}</p>
@@ -672,6 +804,7 @@ function wireNamesInfiniteScroll(collection, page, columns) {
 function namesColumns(rowDetail) {
   const compactColumns = [
     {key: "name", label: "Name"},
+    {key: "next_step", label: "Next step", render: actionCell},
     {key: "onchain_class", label: "Class"},
     {key: "provider_guess", label: "Provider"},
     {key: "provider_type", label: "Provider type"},
@@ -684,11 +817,11 @@ function namesColumns(rowDetail) {
   ];
   if (rowDetail === "compact") return compactColumns;
   return [
-    ...compactColumns.slice(0, 5),
+    ...compactColumns.slice(0, 6),
     {key: "ns_names", label: "NS"},
     {key: "synth4", label: "SYNTH4"},
     {key: "synth6", label: "SYNTH6"},
-    ...compactColumns.slice(5)
+    ...compactColumns.slice(6)
   ];
 }
 

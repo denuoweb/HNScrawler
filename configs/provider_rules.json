@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "default_provider_key": "unknown/custom",
   "rules": [
     {
@@ -153,6 +153,67 @@
       "priority": 55,
       "ns_suffixes": [
         "desec.io"
+      ]
+    },
+    {
+      "provider_key": "google/cloud-dns",
+      "provider_type": "external_dns",
+      "priority": 56,
+      "ns_suffixes": [
+        "googledomains.com",
+        "googlehosted.com"
+      ]
+    },
+    {
+      "provider_key": "azure-dns",
+      "provider_type": "external_dns",
+      "priority": 57,
+      "ns_suffixes": [
+        "azure-dns.com",
+        "azure-dns.net",
+        "azure-dns.org",
+        "azure-dns.info"
+      ]
+    },
+    {
+      "provider_key": "dns-made-easy",
+      "provider_type": "external_dns",
+      "priority": 58,
+      "ns_suffixes": [
+        "dnsmadeeasy.com"
+      ]
+    },
+    {
+      "provider_key": "hetzner",
+      "provider_type": "external_dns",
+      "priority": 59,
+      "ns_suffixes": [
+        "hetzner.com",
+        "hetzner.de"
+      ]
+    },
+    {
+      "provider_key": "bunny",
+      "provider_type": "external_dns",
+      "priority": 60,
+      "ns_suffixes": [
+        "bunny.net"
+      ]
+    },
+    {
+      "provider_key": "easydns",
+      "provider_type": "external_dns",
+      "priority": 61,
+      "ns_suffixes": [
+        "easydns.com"
+      ]
+    },
+    {
+      "provider_key": "spaceship",
+      "provider_type": "external_dns",
+      "priority": 62,
+      "ns_suffixes": [
+        "spaceship.net"
       ]
     },
     {

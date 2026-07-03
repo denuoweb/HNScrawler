@@ -99,11 +99,16 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     assert summary["delegated_no_glue"] == 2
     assert summary["default_provider_names"] == 1
     assert summary["ds_records"] == 1
+    assert summary["strict_hns_ready"] == 3
+    assert summary["needs_dane"] == 1
+    assert summary["needs_fix"] == 2
     assert summary["source_type"] == "fixture"
     assert summary["source_file_hash"]
-    assert summary["provider_rules_version"] == 2
+    assert summary["provider_rules_version"] == 3
     assert summary["provider_rules_hash"]
     assert any(item["key"] == "direct_ip_records" for item in answers)
+    assert any(item["key"] == "needs_dane" for item in answers)
+    assert any(item["key"] == "needs_fix" for item in answers)
     assert namebase_provider["ns_pattern"] == "suffix:namebase.io,suffix:parking.namebase.io"
     assert namebase_provider["ip_pattern"] == ""
 
@@ -171,6 +176,12 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert names_pages["collections"]["all"]["page_count"] == 1
     assert names_pages["collections"]["dane_rows"]["row_count"] == 1
     assert names_pages["collections"]["ds_records"]["row_count"] == 1
+    assert names_pages["collections"]["strict_hns_ready"]["row_count"] == 3
+    assert names_pages["collections"]["needs_dane"]["row_count"] == 1
+    assert names_pages["collections"]["needs_fix"]["row_count"] == 2
+    assert names_pages["collections"]["provider:namebase/default"]["row_count"] == 1
+    assert "namebase__slash__default" in names_pages["collections"]["provider:namebase/default"]["path_template"]
+    assert (out / "data" / names_pages["collections"]["provider:namebase/default"]["path_template"].replace("{page}", "1")).exists()
     assert "tlsa_status" in names_page_rows[0]
     assert "provider_type" in names_page_rows[0]
     assert "classes" in summary

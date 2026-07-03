@@ -88,6 +88,13 @@ def test_provider_rules_match_common_dns_providers():
         ("vercel", "alice", "ns1.vercel-dns.com", "vercel"),
         ("cloudns", "alice", "pns1.cloudns.net", "cloudns"),
         ("desec", "alice", "ns1.desec.io", "desec"),
+        ("google", "alice", "ns-cloud-a1.googledomains.com", "google/cloud-dns"),
+        ("azure", "alice", "ns1-01.azure-dns.com", "azure-dns"),
+        ("dns-made-easy", "alice", "ns10.dnsmadeeasy.com", "dns-made-easy"),
+        ("hetzner", "alice", "hydrogen.ns.hetzner.com", "hetzner"),
+        ("bunny", "alice", "kiki.bunny.net", "bunny"),
+        ("easydns", "alice", "dns1.easydns.com", "easydns"),
+        ("spaceship", "alice", "launch1.spaceship.net", "spaceship"),
     ]
 
     for label, name, ns, expected in cases:

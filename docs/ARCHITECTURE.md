@@ -82,6 +82,20 @@ Live checks are intentionally limited to promising names:
 
 Checks are rate-limited and store only status metadata. Each live-check run records its candidate count, checked count, concurrency, minimum inter-check delay, timeout, recheck window, resolver setting, and start/finish timestamps in `snapshot_meta`.
 
+## Adoption Funnel
+
+The public report is organized around next action, not just raw classification. On-chain data produces opportunity buckets such as likely websites, strict-HNS-ready names, DS records, DNSSEC candidates, missing-GLUE names, and provider groups. Live checks add status buckets such as strict HNS working, resolver fallback required, stale TLSA, DNSSEC mismatch, and valid DANE.
+
+Names is the canonical search surface. Rows carry enough status to derive one next step:
+
+- DS present but no valid TLSA/DANE: generate TLSA.
+- Missing GLUE: generate or review NS/GLUE setup.
+- DS/DNSKEY mismatch or DNSSEC failure: regenerate/check DS.
+- Stale TLSA: generate current TLSA from the served certificate/public key.
+- Valid DANE: show the verified badge.
+
+The DANE Record Generator is the record-production surface. Report action links use `/dane-generator/` query parameters such as `domain`, `intent`, `mode`, `nameserver`, `ns4`, and `ns6` to prefill that workflow.
+
 ## Provider Rules
 
 Provider classification is intentionally rule-based for the first production release. The committed JSON rules are sorted by priority and can match:
