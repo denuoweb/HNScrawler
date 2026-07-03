@@ -153,6 +153,13 @@ function pagePath(pathTemplate, page) {
   return `data/${pathTemplate.replace("{page}", String(page))}`;
 }
 
+function rowsFromPage(data, collection = {}) {
+  const rows = Array.isArray(data.rows) ? data.rows : [];
+  const columns = Array.isArray(data.columns) ? data.columns : collection.columns;
+  if (!Array.isArray(columns) || !rows.some((row) => Array.isArray(row))) return rows;
+  return rows.map((row) => Object.fromEntries(columns.map((key, index) => [key, row[index]])));
+}
+
 function clampedPage(collection) {
   const pageCount = Number(collection.page_count || 0);
   if (pageCount <= 0) return 1;
@@ -191,7 +198,7 @@ async function loadPaginatedRows(indexPath, filter) {
     index,
     collection,
     page,
-    rows: Array.isArray(data.rows) ? data.rows : []
+    rows: rowsFromPage(data, collection)
   };
 }
 
@@ -211,7 +218,7 @@ async function loadCollectionRows(collection) {
       }
       const pageResults = await Promise.all(pages);
       pageResults.forEach((data) => {
-        if (Array.isArray(data.rows)) rows.push(...data.rows);
+        rows.push(...rowsFromPage(data, collection));
       });
     }
     return rows;
@@ -546,7 +553,7 @@ function wireNamesInfiniteScroll(collection, page, columns) {
     button.textContent = "Loading";
     try {
       const data = await loadPageJson(pagePath(collection.path_template, nextPage));
-      const rows = Array.isArray(data.rows) ? data.rows : [];
+      const rows = rowsFromPage(data, collection);
       tbody.insertAdjacentHTML("beforeend", tableRows(rows, columns));
       loadedRows += rows.length;
       nextPage += 1;

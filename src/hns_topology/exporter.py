@@ -670,8 +670,12 @@ def _write_name_collection(
     )
     row_columns = _name_row_columns(row_detail=row_detail)
     json_columns = _name_json_columns(row_detail=row_detail)
+    output_keys = _name_output_keys(row_detail=row_detail)
     if count == 0:
-        write_json(collection_dir / "page-1.json", {"page": 1, "rows": []})
+        page_payload: dict[str, Any] = {"page": 1, "rows": []}
+        if row_detail == "compact":
+            page_payload["columns"] = output_keys
+        write_json(collection_dir / "page-1.json", page_payload)
     else:
         cursor = conn.execute(
             f"""
@@ -695,7 +699,11 @@ def _write_name_collection(
                 )
                 for row in page_rows
             ]
-            write_json(collection_dir / f"page-{page}.json", {"page": page, "rows": rows})
+            page_payload = {"page": page, "rows": rows}
+            if row_detail == "compact":
+                page_payload["columns"] = output_keys
+                page_payload["rows"] = [[row.get(key) for key in output_keys] for row in rows]
+            write_json(collection_dir / f"page-{page}.json", page_payload)
             page += 1
     _log_export(f"finished names-pages/{key}")
     return {
@@ -706,6 +714,7 @@ def _write_name_collection(
         "path_template": f"{base_dir.name}/{key}/page-{{page}}.json",
         "truncated": total_count > count,
         "row_detail": row_detail,
+        "columns": output_keys if row_detail == "compact" else None,
     }
 
 
@@ -732,10 +741,9 @@ def _name_collection_keys(conn: sqlite3.Connection) -> list[str]:
 def _name_row_columns(*, row_detail: str = "full") -> str:
     if row_detail == "compact":
         return """
-      n.name, n.state, n.expired, n.onchain_class, n.provider_guess,
+      n.name, n.onchain_class, n.provider_guess,
       COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types, rs.has_ds,
-      ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.https_status,
-      ls.strict_hns_status, ls.doh_fallback_status, ls.failure_reason, ls.checked_at
+      ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.failure_reason
     """
     return """
       n.name, n.state, n.expired, n.onchain_class, n.provider_guess,
@@ -750,6 +758,23 @@ def _name_json_columns(*, row_detail: str = "full") -> list[str]:
     if row_detail == "compact":
         return ["record_types"]
     return ["record_types", "ns_names", "glue4", "glue6", "synth4", "synth6", "ds_records"]
+
+
+def _name_output_keys(*, row_detail: str = "full") -> list[str]:
+    if row_detail == "compact":
+        return [
+            "name",
+            "onchain_class",
+            "provider_guess",
+            "provider_type",
+            "record_types",
+            "has_ds",
+            "dnssec_status",
+            "tlsa_status",
+            "dane_status",
+            "failure_reason",
+        ]
+    return []
 
 
 def _name_rows_from_sql() -> str:
