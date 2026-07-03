@@ -18,3 +18,16 @@ def test_full_nightly_stops_hsd_before_live_checks():
     assert "trap cleanup_hsd EXIT" in script
     assert '\nstart_hsd_for_update\nif [ "$CHECK_HSD_READY" = "1" ]; then' in script
     assert '\nscripts/run-incremental.sh\nstop_hsd_after_update\nif [ "$RUN_LIVE_CHECKS" = "1" ]; then' in script
+
+
+def test_exporter_has_no_standalone_dane_page_builders():
+    exporter = Path("src/hns_topology/exporter.py").read_text(encoding="utf-8")
+
+    for obsolete in [
+        "def build_dane(",
+        "def build_dane_rows(",
+        "def write_dane_pages(",
+        "def _write_dane_pages_streamed(",
+        "DANE_FILTERS =",
+    ]:
+        assert obsolete not in exporter
