@@ -5,6 +5,7 @@ import gzip
 import math
 import shutil
 import sqlite3
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -108,17 +109,27 @@ def export_all(
     out.mkdir(parents=True, exist_ok=True)
     summary = build_summary(conn)
     effective_names_limit = _effective_names_limit(summary, names_limit)
+    _log_export(f"export start out={out} names_limit={names_limit} effective_names_limit={effective_names_limit}")
     write_json(out / "summary.json", summary)
+    _log_export("wrote summary.json")
     write_json(out / "faq_answers.json", build_faq_answers(conn, summary))
+    _log_export("wrote faq_answers.json")
     write_json(out / "classes.json", build_classes(conn))
+    _log_export("wrote classes.json")
     write_json(out / "providers.json", build_providers(conn))
+    _log_export("wrote providers.json")
     write_json(out / "broken.json", build_broken(conn))
+    _log_export("wrote broken.json")
     _remove_obsolete_data(out)
     write_json(out / "names-pages.json", write_names_pages(conn, out, limit=effective_names_limit, page_size=PAGE_SIZE))
+    _log_export("wrote names-pages.json")
     if include_downloads:
         write_json(out / "names.json", build_names(conn, limit=effective_names_limit))
+        _log_export("wrote names.json")
         write_names_csv(conn, out / "names.csv", limit=effective_names_limit)
+        _log_export("wrote names.csv")
         gzip_sqlite(db_path, out / "topology.sqlite.gz")
+        _log_export("wrote topology.sqlite.gz")
     else:
         for relative in ("names.json", "names.csv", "topology.sqlite.gz"):
             (out / relative).unlink(missing_ok=True)
@@ -126,6 +137,7 @@ def export_all(
         out / "manifest.json",
         build_manifest(out, summary=summary, names_limit=names_limit, include_downloads=include_downloads),
     )
+    _log_export("wrote manifest.json")
 
 
 def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -588,8 +600,11 @@ def _write_names_pages_streamed(
     base_dir.mkdir(parents=True, exist_ok=True)
 
     collections: dict[str, Any] = {}
-    for key in _name_collection_keys(conn):
+    keys = _name_collection_keys(conn)
+    _log_export(f"writing names-pages collections={len(keys)} page_size={page_size} limit={limit}")
+    for key in keys:
         collections[key] = _write_name_collection(conn, base_dir, key, limit=limit, page_size=page_size)
+    _log_export("finished names-pages collections")
     return {
         "page_size": page_size,
         "limit": limit,
@@ -646,6 +661,10 @@ def _write_name_collection(
     )
     count = min(total_count, max(0, limit))
     page_count = max(1, math.ceil(count / page_size)) if count else 0
+    _log_export(
+        f"writing names-pages/{key} rows={count} total={total_count} pages={page_count} "
+        f"truncated={total_count > count}"
+    )
     if count == 0:
         write_json(collection_dir / "page-1.json", {"page": 1, "rows": []})
     else:
@@ -673,6 +692,7 @@ def _write_name_collection(
             ]
             write_json(collection_dir / f"page-{page}.json", {"page": page, "rows": rows})
             page += 1
+    _log_export(f"finished names-pages/{key}")
     return {
         "row_count": count,
         "total_count": total_count,
@@ -1024,6 +1044,10 @@ def _remove_obsolete_data(out: Path) -> None:
     for relative in ("dane.json", "dane-pages.json"):
         (out / relative).unlink(missing_ok=True)
     shutil.rmtree(out / "dane-pages", ignore_errors=True)
+
+
+def _log_export(message: str) -> None:
+    print(f"[export] {utc_now()} {message}", file=sys.stderr, flush=True)
 
 
 def _artifact_entry(path: Path, relative: str) -> dict[str, Any]:

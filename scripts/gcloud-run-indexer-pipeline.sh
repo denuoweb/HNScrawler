@@ -93,31 +93,53 @@ if [ -f '$INDEXER_MOUNT/secrets/hsd.env' ]; then
   . '$INDEXER_MOUNT/secrets/hsd.env'
   set +a
 fi
+log_step() {
+  printf '[pipeline] %s %s\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"\$1\"
+}
+log_step 'start mode=$PIPELINE_MODE live_checks=$RUN_LIVE_CHECKS names_limit=$NAMES_LIMIT'
 case '$PIPELINE_MODE' in
   bootstrap)
+    log_step 'bootstrap start'
     scripts/run-bootstrap.sh
+    log_step 'bootstrap done'
     ;;
   incremental)
+    log_step 'incremental start'
     scripts/run-incremental.sh
+    log_step 'incremental done'
     ;;
   jsonl)
     [ -n \"\$JSONL_PATH\" ] || { echo 'JSONL_PATH is required for PIPELINE_MODE=jsonl' >&2; exit 2; }
+    log_step 'jsonl bootstrap start'
     hns-topology bootstrap-jsonl --jsonl \"\$JSONL_PATH\" --db '$TOPOLOGY_DB' --rules '$PROVIDER_RULES' --batch-size \"\$JSONL_BOOTSTRAP_BATCH_SIZE\"
+    log_step 'jsonl bootstrap done'
     ;;
   extract-jsonl)
     if [ -z \"\$JSONL_PATH\" ]; then
       export JSONL_PATH='$INDEXER_MOUNT/data/extracted_names.jsonl'
     fi
+    log_step 'extract-jsonl start'
     scripts/export-hsd-jsonl.sh
+    log_step 'jsonl bootstrap start'
     hns-topology bootstrap-jsonl --jsonl \"\$JSONL_PATH\" --db '$TOPOLOGY_DB' --rules '$PROVIDER_RULES' --batch-size \"\$JSONL_BOOTSTRAP_BATCH_SIZE\"
+    log_step 'extract-jsonl done'
     ;;
 esac
 if [ '$RUN_LIVE_CHECKS' = '1' ]; then
+  log_step 'live checks start'
   scripts/run-live-checks.sh
+  log_step 'live checks done'
 fi
+log_step 'generate site start'
 scripts/generate-site.sh
+log_step 'generate site done'
+log_step 'verify release start'
 scripts/verify-release.sh
+log_step 'verify release done'
 if [ '$RUN_ARCHIVE' = '1' ]; then
+  log_step 'archive start'
   scripts/archive-release.sh
+  log_step 'archive done'
 fi
+log_step 'public file listing start'
 find '$PUBLIC_DIR' -maxdepth 2 -type f | sort | sed -n '1,80p'"

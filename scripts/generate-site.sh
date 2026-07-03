@@ -11,4 +11,6 @@ if [ -d "$INDEXER_MOUNT" ] && ! mountpoint -q "$INDEXER_MOUNT"; then
   echo "$INDEXER_MOUNT exists but is not mounted; refusing to write generated site to boot disk" >&2
   exit 2
 fi
+echo "[generate-site] $(date -u +%Y-%m-%dT%H:%M:%SZ) db=$TOPOLOGY_DB out=$PUBLIC_DIR names_limit=$NAMES_LIMIT" >&2
 hns-topology generate-site --db "$TOPOLOGY_DB" --out "$PUBLIC_DIR" --names-limit "$NAMES_LIMIT"
+echo "[generate-site] $(date -u +%Y-%m-%dT%H:%M:%SZ) done" >&2
