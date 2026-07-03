@@ -17,12 +17,25 @@ PAGES = {
 }
 
 
-def generate_site(conn, *, db_path: str | Path, out_dir: str | Path, names_limit: int = 5000) -> None:
+def generate_site(
+    conn,
+    *,
+    db_path: str | Path,
+    out_dir: str | Path,
+    names_limit: int = 5000,
+    include_downloads: bool = False,
+) -> None:
     out = Path(out_dir)
     data_dir = out / "data"
     out.mkdir(parents=True, exist_ok=True)
     data_dir.mkdir(parents=True, exist_ok=True)
-    export_all(conn, db_path=db_path, out_dir=data_dir, names_limit=names_limit)
+    export_all(
+        conn,
+        db_path=db_path,
+        out_dir=data_dir,
+        names_limit=names_limit,
+        include_downloads=include_downloads,
+    )
     _copy_assets(out)
     for filename, (page, title) in PAGES.items():
         (out / filename).write_text(_html(page=page, title=title), encoding="utf-8")

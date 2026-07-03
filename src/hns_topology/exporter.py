@@ -24,10 +24,7 @@ DATA_ARTIFACTS = (
     "broken.json",
     "dane.json",
     "dane-pages.json",
-    "names.json",
     "names-pages.json",
-    "names.csv",
-    "topology.sqlite.gz",
 )
 
 PAGE_SIZE = 100
@@ -65,7 +62,14 @@ DANE_FILTERS = {
 }
 
 
-def export_all(conn: sqlite3.Connection, *, db_path: str | Path, out_dir: str | Path, names_limit: int = 5000) -> None:
+def export_all(
+    conn: sqlite3.Connection,
+    *,
+    db_path: str | Path,
+    out_dir: str | Path,
+    names_limit: int = 5000,
+    include_downloads: bool = False,
+) -> None:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     summary = build_summary(conn)
@@ -75,12 +79,19 @@ def export_all(conn: sqlite3.Connection, *, db_path: str | Path, out_dir: str | 
     write_json(out / "providers.json", build_providers(conn))
     write_json(out / "broken.json", build_broken(conn))
     write_json(out / "dane.json", build_dane(conn))
-    write_json(out / "names.json", build_names(conn, limit=names_limit))
     write_json(out / "names-pages.json", write_names_pages(conn, out, limit=names_limit, page_size=PAGE_SIZE))
     write_json(out / "dane-pages.json", write_dane_pages(conn, out, limit=names_limit, page_size=PAGE_SIZE))
-    write_names_csv(conn, out / "names.csv", limit=names_limit)
-    gzip_sqlite(db_path, out / "topology.sqlite.gz")
-    write_json(out / "manifest.json", build_manifest(out, summary=summary, names_limit=names_limit))
+    if include_downloads:
+        write_json(out / "names.json", build_names(conn, limit=names_limit))
+        write_names_csv(conn, out / "names.csv", limit=names_limit)
+        gzip_sqlite(db_path, out / "topology.sqlite.gz")
+    else:
+        for relative in ("names.json", "names.csv", "topology.sqlite.gz"):
+            (out / relative).unlink(missing_ok=True)
+    write_json(
+        out / "manifest.json",
+        build_manifest(out, summary=summary, names_limit=names_limit, include_downloads=include_downloads),
+    )
 
 
 def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -587,7 +598,13 @@ def write_json(path: Path, value: Any) -> None:
     path.write_text(dumps_pretty(value), encoding="utf-8")
 
 
-def build_manifest(out_dir: str | Path, *, summary: dict[str, Any], names_limit: int) -> dict[str, Any]:
+def build_manifest(
+    out_dir: str | Path,
+    *,
+    summary: dict[str, Any],
+    names_limit: int,
+    include_downloads: bool = False,
+) -> dict[str, Any]:
     out = Path(out_dir)
     return {
         "manifest_version": 1,
@@ -599,6 +616,7 @@ def build_manifest(out_dir: str | Path, *, summary: dict[str, Any], names_limit:
             "names_total_count": summary["total_names"],
             "names_exported_count": min(int(summary["total_names"]), names_limit),
             "names_truncated": int(summary["total_names"]) > names_limit,
+            "download_artifacts_included": include_downloads,
         },
         "snapshot": {
             "height": summary["last_indexed_height"],
@@ -615,12 +633,17 @@ def build_manifest(out_dir: str | Path, *, summary: dict[str, Any], names_limit:
             "provider_rules_path": summary["provider_rules_path"],
         },
         "summary": summary,
-        "artifacts": [_artifact_entry(out / relative, relative) for relative in _manifest_artifact_paths(out)],
+        "artifacts": [
+            _artifact_entry(out / relative, relative)
+            for relative in _manifest_artifact_paths(out, include_downloads=include_downloads)
+        ],
     }
 
 
-def _manifest_artifact_paths(out: Path) -> list[str]:
+def _manifest_artifact_paths(out: Path, *, include_downloads: bool) -> list[str]:
     paths = list(DATA_ARTIFACTS)
+    if include_downloads:
+        paths.extend(("names.json", "names.csv", "topology.sqlite.gz"))
     for directory in ("names-pages", "dane-pages"):
         paths.extend(
             path.relative_to(out).as_posix()

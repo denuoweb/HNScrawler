@@ -227,7 +227,6 @@ def _validate_site_tarball(path: Path) -> ArchiveCheck:
     required = {
         "public/index.html",
         "public/data/manifest.json",
-        "public/data/topology.sqlite.gz",
     }
     try:
         with tarfile.open(path, "r:gz") as archive:

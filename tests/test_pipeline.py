@@ -129,9 +129,14 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
         "data/classes.json",
         "data/names-pages.json",
         "data/dane-pages.json",
-        "data/topology.sqlite.gz",
     ]:
         assert (out / relative).exists()
+    for relative in [
+        "data/names.json",
+        "data/names.csv",
+        "data/topology.sqlite.gz",
+    ]:
+        assert not (out / relative).exists()
 
     manifest = json.loads((out / "data/manifest.json").read_text(encoding="utf-8"))
     manifest_artifacts = {item["path"]: item for item in manifest["artifacts"]}
@@ -146,11 +151,14 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert manifest["export"]["names_total_count"] == 9
     assert manifest["export"]["names_exported_count"] == 9
     assert manifest["export"]["names_truncated"] is False
+    assert manifest["export"]["download_artifacts_included"] is False
     assert "summary.json" in manifest_artifacts
     assert "names-pages.json" in manifest_artifacts
     assert "names-pages/all/page-1.json" in manifest_artifacts
     assert "dane-pages.json" in manifest_artifacts
-    assert "topology.sqlite.gz" in manifest_artifacts
+    assert "names.json" not in manifest_artifacts
+    assert "names.csv" not in manifest_artifacts
+    assert "topology.sqlite.gz" not in manifest_artifacts
     assert names_pages["collections"]["all"]["row_count"] == 9
     assert names_pages["collections"]["all"]["page_count"] == 1
     assert dane_pages["collections"]["all"]["row_count"] == 1
@@ -163,6 +171,29 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert release_is_valid(public_checks), [check for check in public_checks if not check.ok]
 
 
+def test_generate_site_can_include_download_artifacts(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    out = tmp_path / "public"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+        generate_site(conn, db_path=db_path, out_dir=out, include_downloads=True)
+
+    manifest = json.loads((out / "data/manifest.json").read_text(encoding="utf-8"))
+    manifest_artifacts = {item["path"]: item for item in manifest["artifacts"]}
+
+    assert manifest["export"]["download_artifacts_included"] is True
+    assert (out / "data/names.json").exists()
+    assert (out / "data/names.csv").exists()
+    assert (out / "data/topology.sqlite.gz").exists()
+    assert "names.json" in manifest_artifacts
+    assert "names.csv" in manifest_artifacts
+    assert "topology.sqlite.gz" in manifest_artifacts
+
+    checks = validate_release(db_path=db_path, public_dir=out)
+    assert release_is_valid(checks), [check for check in checks if not check.ok]
+
+
 def test_generate_site_records_limited_names_export_counts(tmp_path):
     db_path = tmp_path / "topology.sqlite"
     out = tmp_path / "public"
@@ -172,19 +203,17 @@ def test_generate_site_records_limited_names_export_counts(tmp_path):
         generate_site(conn, db_path=db_path, out_dir=out, names_limit=3)
 
     manifest = json.loads((out / "data/manifest.json").read_text(encoding="utf-8"))
-    names_json = json.loads((out / "data/names.json").read_text(encoding="utf-8"))
     names_pages = json.loads((out / "data/names-pages.json").read_text(encoding="utf-8"))
     names_page_rows = json.loads((out / "data/names-pages/all/page-1.json").read_text(encoding="utf-8"))["rows"]
-    csv_rows = (out / "data/names.csv").read_text(encoding="utf-8").splitlines()
 
     assert manifest["export"]["names_limit"] == 3
     assert manifest["export"]["names_total_count"] == 9
     assert manifest["export"]["names_exported_count"] == 3
     assert manifest["export"]["names_truncated"] is True
-    assert len(names_json) == 3
     assert names_pages["collections"]["all"]["row_count"] == 3
     assert len(names_page_rows) == 3
-    assert len(csv_rows) == 4
+    assert not (out / "data/names.json").exists()
+    assert not (out / "data/names.csv").exists()
 
     checks = validate_release(db_path=db_path, public_dir=out)
     assert release_is_valid(checks), [check for check in checks if not check.ok]
@@ -244,7 +273,7 @@ def test_release_validator_catches_manifest_export_count_mismatch(tmp_path):
     assert "names_exported_count=2!=3" in failed["manifest_export_counts"]
 
 
-def test_public_validator_requires_embedded_sqlite(tmp_path):
+def test_public_validator_uses_summary_metadata(tmp_path):
     db_path = tmp_path / "topology.sqlite"
     out = tmp_path / "public"
     rules = ProviderRules.from_file("configs/provider_rules.json")
@@ -252,13 +281,16 @@ def test_public_validator_requires_embedded_sqlite(tmp_path):
         bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
         generate_site(conn, db_path=db_path, out_dir=out)
 
-    (out / "data/topology.sqlite.gz").unlink()
+    summary_path = out / "data/summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["last_indexed_height"] = 1
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
     checks = validate_public_release(public_dir=out)
 
     assert not release_is_valid(checks)
     failed = {check.name: check.detail for check in checks if not check.ok}
-    assert "public_topology_sqlite_gz_present" in failed
-    assert "required_public_files" in failed
+    assert "manifest_artifacts" in failed
+    assert "manifest_snapshot" in failed
 
 
 def test_release_validator_enforces_live_check_gate(tmp_path):

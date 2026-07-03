@@ -129,12 +129,14 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--db", required=True)
     export.add_argument("--out", required=True)
     export.add_argument("--names-limit", type=int, default=5000)
+    export.add_argument("--include-downloads", action="store_true")
     export.set_defaults(func=cmd_export)
 
     site = sub.add_parser("generate-site", help="Generate static report site.")
     site.add_argument("--db", required=True)
     site.add_argument("--out", required=True)
     site.add_argument("--names-limit", type=int, default=5000)
+    site.add_argument("--include-downloads", action="store_true")
     site.set_defaults(func=cmd_generate_site)
 
     validate = sub.add_parser("validate-release", help="Validate DB and static artifacts before publishing.")
@@ -481,7 +483,13 @@ def cmd_live_check(args: argparse.Namespace) -> int:
 def cmd_export(args: argparse.Namespace) -> int:
     with connect(args.db) as conn:
         init_db(conn)
-        export_all(conn, db_path=args.db, out_dir=args.out, names_limit=args.names_limit)
+        export_all(
+            conn,
+            db_path=args.db,
+            out_dir=args.out,
+            names_limit=args.names_limit,
+            include_downloads=args.include_downloads,
+        )
     print(f"exported data to {args.out}")
     return 0
 
@@ -489,7 +497,13 @@ def cmd_export(args: argparse.Namespace) -> int:
 def cmd_generate_site(args: argparse.Namespace) -> int:
     with connect(args.db) as conn:
         init_db(conn)
-        generate_site(conn, db_path=args.db, out_dir=args.out, names_limit=args.names_limit)
+        generate_site(
+            conn,
+            db_path=args.db,
+            out_dir=args.out,
+            names_limit=args.names_limit,
+            include_downloads=args.include_downloads,
+        )
     print(f"generated site at {args.out}")
     return 0
 

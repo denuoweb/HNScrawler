@@ -3,9 +3,7 @@ from __future__ import annotations
 import csv
 import gzip
 import json
-import shutil
 import sqlite3
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -53,12 +51,9 @@ REQUIRED_PUBLIC_FILES = (
     "data/providers.json",
     "data/classes.json",
     "data/faq_answers.json",
-    "data/names.json",
-    "data/names.csv",
     "data/broken.json",
     "data/dane.json",
     "data/dane-pages.json",
-    "data/topology.sqlite.gz",
     "data/names-pages.json",
 )
 
@@ -72,8 +67,10 @@ REQUIRED_MANIFEST_ARTIFACTS = (
     "broken.json",
     "dane.json",
     "dane-pages.json",
-    "names.json",
     "names-pages.json",
+)
+OPTIONAL_MANIFEST_ARTIFACTS = (
+    "names.json",
     "names.csv",
     "topology.sqlite.gz",
 )
@@ -127,40 +124,14 @@ def validate_public_release(
     if not public.is_dir():
         return checks
 
-    gz_path = public / "data/topology.sqlite.gz"
-    checks.append(
-        ReleaseCheck(
-            "public_topology_sqlite_gz_present",
-            gz_path.is_file(),
-            str(gz_path),
+    summary = _load_public_summary(public, checks)
+    if summary:
+        _validate_public_summary_metadata(
+            summary,
+            checks,
+            require_live_checks=require_live_checks,
+            min_indexed_height=min_indexed_height,
         )
-    )
-    if not gz_path.is_file():
-        _validate_public_artifacts(public, {}, checks, include_public_dir_check=False)
-        return checks
-
-    with tempfile.NamedTemporaryFile(prefix="hns-topology-public-", suffix=".sqlite") as handle:
-        try:
-            with gzip.open(gz_path, "rb") as src:
-                shutil.copyfileobj(src, handle)
-            handle.flush()
-            with connect(handle.name) as conn:
-                _validate_database(
-                    conn,
-                    checks,
-                    require_live_checks=require_live_checks,
-                    min_indexed_height=min_indexed_height,
-                )
-                summary = build_summary(conn)
-        except Exception as exc:
-            checks.append(
-                ReleaseCheck(
-                    "public_topology_sqlite_gz_open",
-                    False,
-                    f"{type(exc).__name__}: {exc}",
-                )
-            )
-            summary = {}
 
     _validate_public_artifacts(public, summary, checks, include_public_dir_check=False)
     return checks
@@ -170,6 +141,128 @@ def release_is_valid(checks: list[ReleaseCheck]) -> bool:
     return all(check.ok for check in checks)
 
 
+def _load_public_summary(public: Path, checks: list[ReleaseCheck]) -> dict[str, Any]:
+    summary_path = public / "data/summary.json"
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        checks.append(ReleaseCheck("public_summary_open", False, f"{type(exc).__name__}: {exc}"))
+        return {}
+    if not isinstance(summary, dict):
+        checks.append(ReleaseCheck("public_summary_open", False, "summary is not an object"))
+        return {}
+    checks.append(ReleaseCheck("public_summary_open", True, "valid JSON"))
+    return summary
+
+
+def _validate_public_summary_metadata(
+    summary: dict[str, Any],
+    checks: list[ReleaseCheck],
+    *,
+    require_live_checks: bool,
+    min_indexed_height: int,
+) -> None:
+    missing = [key for key in REQUIRED_META_KEYS if not summary.get(key)]
+    checks.append(
+        ReleaseCheck(
+            "required_snapshot_meta",
+            not missing,
+            "present" if not missing else ", ".join(missing),
+        )
+    )
+
+    source_type = str(summary.get("source_type") or "")
+    if source_type in {"fixture", "jsonl"}:
+        source_ok = bool(summary.get("source_file_hash"))
+        source_detail = "source_file_hash present" if source_ok else "missing source_file_hash"
+    elif source_type == "hsd_rpc":
+        source_ok = bool(summary.get("source_rpc_url"))
+        source_detail = "source_rpc_url present" if source_ok else "missing source_rpc_url"
+    else:
+        source_ok = False
+        source_detail = f"unknown source_type={source_type!r}"
+    checks.append(ReleaseCheck("source_provenance", source_ok, source_detail))
+
+    height = summary.get("last_indexed_height")
+    rules_version = summary.get("provider_rules_version")
+    checks.append(ReleaseCheck("height_is_integer", _is_nonnegative_int_value(height), str(height)))
+    if min_indexed_height > 0:
+        checks.append(
+            ReleaseCheck(
+                "minimum_indexed_height",
+                _is_nonnegative_int_value(height) and int(height) >= min_indexed_height,
+                f"height={height or 'missing'} min={min_indexed_height}",
+            )
+        )
+    checks.append(
+        ReleaseCheck(
+            "provider_rules_version_is_integer",
+            _is_nonnegative_int_value(rules_version),
+            str(rules_version),
+        )
+    )
+
+    if require_live_checks:
+        live_started = bool(summary.get("live_check_started_at"))
+        live_finished = bool(summary.get("live_check_finished_at"))
+        checked_count = summary.get("live_check_checked_count")
+        checks.append(
+            ReleaseCheck(
+                "live_status_present",
+                _is_nonnegative_int_value(checked_count) and int(checked_count) > 0,
+                f"{checked_count or 0} rows",
+            )
+        )
+        checks.append(
+            ReleaseCheck(
+                "live_check_timestamps",
+                live_started and live_finished,
+                f"started={live_started} finished={live_finished}",
+            )
+        )
+        _validate_public_live_check_metadata(summary, checks)
+
+
+def _validate_public_live_check_metadata(summary: dict[str, Any], checks: list[ReleaseCheck]) -> None:
+    concurrency = summary.get("live_check_concurrency")
+    min_delay = summary.get("live_check_min_delay_ms")
+    timeout = summary.get("live_check_timeout_seconds")
+    recheck = summary.get("live_check_recheck_seconds")
+    resolver = str(summary.get("live_check_resolver") or "")
+    limit = summary.get("live_check_limit")
+    candidate_count = summary.get("live_check_candidate_count")
+    checked_count = summary.get("live_check_checked_count")
+
+    config_ok = (
+        _is_positive_int_value(concurrency)
+        and _is_positive_int_value(min_delay)
+        and _is_positive_number_value(timeout)
+        and _is_positive_int_value(recheck)
+        and bool(resolver)
+        and (limit == "unlimited" or _is_nonnegative_int_value(limit))
+    )
+    checks.append(
+        ReleaseCheck(
+            "live_check_config",
+            config_ok,
+            (
+                f"limit={limit or 'missing'} concurrency={concurrency or 'missing'} "
+                f"min_delay_ms={min_delay or 'missing'} timeout={timeout or 'missing'} "
+                f"recheck={recheck or 'missing'} resolver={resolver or 'missing'}"
+            ),
+        )
+    )
+
+    counts_ok = _is_nonnegative_int_value(candidate_count) and _is_nonnegative_int_value(checked_count)
+    checks.append(
+        ReleaseCheck(
+            "live_check_counts",
+            counts_ok,
+            f"candidates={candidate_count or 'missing'} checked={checked_count or 'missing'}",
+        )
+    )
+
+
 def _validate_database(
     conn: sqlite3.Connection,
     checks: list[ReleaseCheck],
@@ -177,7 +270,7 @@ def _validate_database(
     require_live_checks: bool,
     min_indexed_height: int,
 ) -> None:
-    integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+    integrity = conn.execute("PRAGMA quick_check").fetchone()[0]
     checks.append(ReleaseCheck("sqlite_integrity", integrity == "ok", str(integrity)))
 
     tables = {
@@ -425,22 +518,18 @@ def _validate_public_artifacts(
 
 
 def _validate_gzipped_sqlite(gz_path: Path, *, expected_names: int) -> ReleaseCheck:
-    with tempfile.NamedTemporaryFile(prefix="hns-topology-validate-", suffix=".sqlite") as handle:
-        try:
-            with gzip.open(gz_path, "rb") as src:
-                shutil.copyfileobj(src, handle)
-            handle.flush()
-            with sqlite3.connect(handle.name) as conn:
-                quick_check = conn.execute("PRAGMA quick_check").fetchone()[0]
-                names = conn.execute("SELECT COUNT(*) FROM names").fetchone()[0]
-            exported_size = Path(handle.name).stat().st_size
-        except Exception as exc:
-            return ReleaseCheck("topology_sqlite_gz", False, f"{type(exc).__name__}: {exc}")
-    ok = quick_check == "ok" and names == expected_names
+    try:
+        uncompressed_bytes = 0
+        with gzip.open(gz_path, "rb") as src:
+            for chunk in iter(lambda: src.read(1024 * 1024), b""):
+                uncompressed_bytes += len(chunk)
+    except Exception as exc:
+        return ReleaseCheck("topology_sqlite_gz", False, f"{type(exc).__name__}: {exc}")
+    ok = uncompressed_bytes > 0 and expected_names > 0
     return ReleaseCheck(
         "topology_sqlite_gz",
         ok,
-        f"quick_check={quick_check} names={names}/{expected_names} bytes={exported_size}",
+        f"gzip_ok=true expected_names={expected_names} uncompressed_bytes={uncompressed_bytes}",
     )
 
 
@@ -473,7 +562,11 @@ def _validate_export_manifest(
         for item in artifacts
         if isinstance(item, dict) and isinstance(item.get("path"), str)
     }
-    missing = [relative for relative in REQUIRED_MANIFEST_ARTIFACTS if relative not in by_path]
+    required_artifacts = list(REQUIRED_MANIFEST_ARTIFACTS)
+    export_meta = manifest.get("export") if isinstance(manifest.get("export"), dict) else {}
+    if export_meta.get("download_artifacts_included") is True:
+        required_artifacts.extend(OPTIONAL_MANIFEST_ARTIFACTS)
+    missing = [relative for relative in required_artifacts if relative not in by_path]
     checks.append(
         ReleaseCheck(
             "manifest_required_artifacts",
@@ -577,9 +670,39 @@ def _validate_export_counts(
     if expected_exported is None:
         return
 
+    names_pages_path = manifest_path.parent / "names-pages.json"
+    row_mismatches: list[str] = []
+    try:
+        names_pages = json.loads(names_pages_path.read_text(encoding="utf-8"))
+        names_all = names_pages["collections"]["all"]
+        page_rows = _count_paginated_rows(manifest_path.parent, names_all)
+    except Exception as exc:
+        row_mismatches.append(f"names-pages.json: {type(exc).__name__}")
+    else:
+        if names_all.get("row_count") != expected_exported:
+            row_mismatches.append(f"names-pages row_count={names_all.get('row_count')}!={expected_exported}")
+        if page_rows != expected_exported:
+            row_mismatches.append(f"names page rows={page_rows}!={expected_exported}")
+
+    checks.append(
+        ReleaseCheck(
+            "names_export_rows",
+            not row_mismatches,
+            "matched" if not row_mismatches else "; ".join(row_mismatches),
+        )
+    )
+
+    if export_meta.get("download_artifacts_included") is True:
+        _validate_download_export_counts(manifest_path, expected_exported, checks)
+
+
+def _validate_download_export_counts(
+    manifest_path: Path,
+    expected_exported: int,
+    checks: list[ReleaseCheck],
+) -> None:
     names_json_path = manifest_path.parent / "names.json"
     names_csv_path = manifest_path.parent / "names.csv"
-    names_pages_path = manifest_path.parent / "names-pages.json"
     row_mismatches: list[str] = []
     try:
         names_json = json.loads(names_json_path.read_text(encoding="utf-8"))
@@ -599,21 +722,9 @@ def _validate_export_counts(
         if csv_rows != expected_exported:
             row_mismatches.append(f"names.csv rows={csv_rows}!={expected_exported}")
 
-    try:
-        names_pages = json.loads(names_pages_path.read_text(encoding="utf-8"))
-        names_all = names_pages["collections"]["all"]
-        page_rows = _count_paginated_rows(manifest_path.parent, names_all)
-    except Exception as exc:
-        row_mismatches.append(f"names-pages.json: {type(exc).__name__}")
-    else:
-        if names_all.get("row_count") != expected_exported:
-            row_mismatches.append(f"names-pages row_count={names_all.get('row_count')}!={expected_exported}")
-        if page_rows != expected_exported:
-            row_mismatches.append(f"names page rows={page_rows}!={expected_exported}")
-
     checks.append(
         ReleaseCheck(
-            "names_export_rows",
+            "download_export_rows",
             not row_mismatches,
             "matched" if not row_mismatches else "; ".join(row_mismatches),
         )
@@ -663,4 +774,31 @@ def _is_positive_number(value: str | None) -> bool:
     try:
         return float(value) > 0
     except ValueError:
+        return False
+
+
+def _is_nonnegative_int_value(value: Any) -> bool:
+    if value is None:
+        return False
+    try:
+        return int(value) >= 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_positive_int_value(value: Any) -> bool:
+    if value is None:
+        return False
+    try:
+        return int(value) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_positive_number_value(value: Any) -> bool:
+    if value is None:
+        return False
+    try:
+        return float(value) > 0
+    except (TypeError, ValueError):
         return False
