@@ -10,6 +10,10 @@ INDEXER_ARCHIVE="${INDEXER_ARCHIVE:-/mnt/hnscrawler/hns-topology-public.tar.gz}"
 MIN_INDEXED_HEIGHT="${MIN_INDEXED_HEIGHT:-${HSD_MIN_BLOCK_HEIGHT:-300000}}"
 LOCAL_TMP="${LOCAL_TMP:-}"
 
+log() {
+  printf '[publish-indexer] %s\n' "$*" >&2
+}
+
 cleanup() {
   if [[ -n "${CREATED_TMP:-}" && -d "$CREATED_TMP" ]]; then
     rm -rf "$CREATED_TMP"
@@ -26,6 +30,7 @@ fi
 
 mkdir -p "$LOCAL_TMP/public"
 
+log "creating compressed public archive on $INDEXER_VM from $INDEXER_PUBLIC_DIR"
 gcloud compute ssh "$INDEXER_VM" \
   --project "$GCP_PROJECT" \
   --zone "$GCP_ZONE" \
@@ -39,6 +44,7 @@ esac
 test -f '$INDEXER_PUBLIC_DIR/index.html'
 tar -C '$INDEXER_PUBLIC_DIR' -czf '$INDEXER_ARCHIVE' ."
 
+log "downloading public archive to $LOCAL_TMP"
 gcloud compute scp \
   --project "$GCP_PROJECT" \
   --zone "$GCP_ZONE" \
@@ -46,11 +52,14 @@ gcloud compute scp \
   "$INDEXER_VM:$INDEXER_ARCHIVE" \
   "$LOCAL_TMP/hns-topology-public.tar.gz"
 
+log "removing temporary archive from $INDEXER_VM"
 gcloud compute ssh "$INDEXER_VM" \
   --project "$GCP_PROJECT" \
   --zone "$GCP_ZONE" \
   --quiet \
   --command "rm -f '$INDEXER_ARCHIVE'"
 
+log "extracting public archive locally for validation"
 tar -C "$LOCAL_TMP/public" -xzf "$LOCAL_TMP/hns-topology-public.tar.gz"
-TMPDIR="$LOCAL_TMP" MIN_INDEXED_HEIGHT="$MIN_INDEXED_HEIGHT" PUBLIC_DIR="$LOCAL_TMP/public" scripts/publish-site.sh
+log "publishing validated archive to web VM"
+TMPDIR="$LOCAL_TMP" MIN_INDEXED_HEIGHT="$MIN_INDEXED_HEIGHT" PUBLIC_DIR="$LOCAL_TMP/public" PUBLISH_ARCHIVE="$LOCAL_TMP/hns-topology-public.tar.gz" scripts/publish-site.sh

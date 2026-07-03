@@ -8,10 +8,16 @@ PROD_ARTIFACT_MOUNT="${PROD_ARTIFACT_MOUNT:-/mnt/hns-topology}"
 ALLOW_BOOT_DISK_PUBLISH="${ALLOW_BOOT_DISK_PUBLISH:-0}"
 VALIDATE_BEFORE_PUBLISH="${VALIDATE_BEFORE_PUBLISH:-1}"
 MIN_INDEXED_HEIGHT="${MIN_INDEXED_HEIGHT:-0}"
+PUBLISH_ARCHIVE="${PUBLISH_ARCHIVE:-}"
+
+log() {
+  printf '[publish] %s\n' "$*" >&2
+}
 
 test -f "$PUBLIC_DIR/index.html"
 
 if [ "$VALIDATE_BEFORE_PUBLISH" = "1" ]; then
+  log "validating public site at $PUBLIC_DIR"
   validate_args=(validate-public --public-dir "$PUBLIC_DIR")
   if [ "$MIN_INDEXED_HEIGHT" != "0" ]; then
     validate_args+=(--min-indexed-height "$MIN_INDEXED_HEIGHT")
@@ -28,7 +34,28 @@ if [[ "$PUBLISH_VIA_GCLOUD" == "1" ]]; then
   GCP_ZONE="${GCP_ZONE:-us-west1-b}"
   DENUO_WEB_VM="${DENUO_WEB_VM:-denuoweb-vm}"
   REMOTE_TMP="${REMOTE_TMP:-$PROD_ARTIFACT_MOUNT/.incoming/hns-topology-public}"
+  REMOTE_ARCHIVE="${REMOTE_ARCHIVE:-$PROD_ARTIFACT_MOUNT/.incoming/hns-topology-public.tar.gz}"
+  REMOTE_ARCHIVE_DIR="${REMOTE_ARCHIVE%/*}"
 
+  if [[ -n "$PUBLISH_ARCHIVE" ]]; then
+    test -f "$PUBLISH_ARCHIVE"
+    ARCHIVE_PATH="$PUBLISH_ARCHIVE"
+    CLEAN_ARCHIVE=0
+    log "using existing public archive $ARCHIVE_PATH"
+  else
+    ARCHIVE_PATH="$(mktemp "${TMPDIR:-/tmp}/hns-topology-public.XXXXXX.tar.gz")"
+    CLEAN_ARCHIVE=1
+    log "creating compressed public archive $ARCHIVE_PATH"
+    tar -C "$PUBLIC_DIR" -czf "$ARCHIVE_PATH" .
+  fi
+  cleanup_archive() {
+    if [[ "${CLEAN_ARCHIVE:-0}" == "1" ]]; then
+      rm -f "$ARCHIVE_PATH"
+    fi
+  }
+  trap cleanup_archive EXIT
+
+  log "preparing remote staging directory $REMOTE_TMP"
   gcloud compute ssh "$DENUO_WEB_VM" \
     --project "$GCP_PROJECT" \
     --zone "$GCP_ZONE" \
@@ -44,19 +71,29 @@ case '$REMOTE_TMP/' in
     fi
     ;;
 esac
+case '$REMOTE_ARCHIVE/' in
+  '$PROD_ARTIFACT_MOUNT'/*) ;;
+  *)
+    if [ '$ALLOW_BOOT_DISK_PUBLISH' != '1' ]; then
+      echo 'refusing to stage archive at $REMOTE_ARCHIVE; expected a path under $PROD_ARTIFACT_MOUNT' >&2
+      exit 2
+    fi
+    ;;
+esac
 REMOTE_USER=\$(id -un)
-sudo rm -rf '$REMOTE_TMP'
-sudo mkdir -p '$REMOTE_TMP'
-sudo chown \"\$REMOTE_USER:\$REMOTE_USER\" '$REMOTE_TMP'"
+sudo rm -rf '$REMOTE_TMP' '$REMOTE_ARCHIVE'
+sudo mkdir -p '$REMOTE_TMP' '$REMOTE_ARCHIVE_DIR'
+sudo chown \"\$REMOTE_USER:\$REMOTE_USER\" '$REMOTE_TMP' '$REMOTE_ARCHIVE_DIR'"
 
+  log "uploading compressed archive to $DENUO_WEB_VM:$REMOTE_ARCHIVE"
   gcloud compute scp \
     --project "$GCP_PROJECT" \
     --zone "$GCP_ZONE" \
     --quiet \
-    --recurse \
-    "$PUBLIC_DIR"/* \
-    "$DENUO_WEB_VM:$REMOTE_TMP/"
+    "$ARCHIVE_PATH" \
+    "$DENUO_WEB_VM:$REMOTE_ARCHIVE"
 
+  log "extracting archive and syncing live site"
   gcloud compute ssh "$DENUO_WEB_VM" \
     --project "$GCP_PROJECT" \
     --zone "$GCP_ZONE" \
@@ -77,11 +114,16 @@ case \"\$PUBLISH_TARGET/\" in
     fi
     ;;
 esac
+tar -C '$REMOTE_TMP' -xzf '$REMOTE_ARCHIVE'
 sudo mkdir -p \"\$PUBLISH_TARGET\"
 sudo rsync -a --delete '$REMOTE_TMP/' \"\$PUBLISH_TARGET/\"
 sudo chown -R www-data:www-data \"\$PUBLISH_TARGET\"
-rm -rf '$REMOTE_TMP'"
+rm -rf '$REMOTE_TMP' '$REMOTE_ARCHIVE'
+echo '[publish] remote sync complete'"
 else
   DENUO_WEB_HOST="${DENUO_WEB_HOST:?set DENUO_WEB_HOST}"
+  log "syncing site to $DENUO_WEB_HOST:$DENUO_WEB_PATH"
   rsync -az --delete "$PUBLIC_DIR"/ "$DENUO_WEB_HOST":"$DENUO_WEB_PATH"/
 fi
+
+log "publish complete"
