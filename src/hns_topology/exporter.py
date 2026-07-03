@@ -210,6 +210,7 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
         "active_names": _row_int(resource_counts, "active_names"),
         "expired_names": _row_int(resource_counts, "expired_names"),
         "direct_ip_records": _row_int(resource_counts, "direct_ip_records"),
+        "synth_nameserver_records": _row_int(resource_counts, "direct_ip_records"),
         "delegated_names": _row_int(resource_counts, "delegated_names"),
         "delegated_with_glue": _row_int(resource_counts, "delegated_with_glue"),
         "delegated_no_glue": _row_int(resource_counts, "delegated_no_glue"),
@@ -220,6 +221,7 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
         "likely_websites": _row_int(resource_counts, "likely_websites"),
         "strict_hns_working": _row_int(live_counts, "strict_hns_working"),
         "doh_fallback_required": _row_int(live_counts, "doh_fallback_required"),
+        "resolver_fallback_required": _row_int(live_counts, "doh_fallback_required"),
         "dane_working": _row_int(live_counts, "dane_working"),
         "missing_glue_only": _row_int(resource_counts, "missing_glue_only"),
         "stale_tlsa_only": _row_int(live_counts, "stale_tlsa_only"),
@@ -261,9 +263,9 @@ def build_faq_answers(conn: sqlite3.Connection, summary: dict[str, Any]) -> list
     return [
         answer(
             "direct_ip_records",
-            "How many HNS names have usable direct IP records?",
+            "How many HNS names use SYNTH nameserver bootstrap?",
             "direct_ip_records",
-            "Current HNS resource data contains SYNTH4 or SYNTH6.",
+            "Current HNS resource data contains SYNTH4 or SYNTH6 nameserver bootstrap addresses. The authoritative DNS server still publishes website A, AAAA, and TLSA records.",
             "names.html?filter=direct_ip_records",
         ),
         answer(
@@ -298,7 +300,7 @@ def build_faq_answers(conn: sqlite3.Connection, summary: dict[str, Any]) -> list
             "likely_websites",
             "How many are likely websites?",
             "likely_websites",
-            "Active names with direct IP, GLUE-backed delegation, or DS-backed delegation.",
+            "Active names with SYNTH nameserver bootstrap, GLUE-backed delegation, or DS-backed delegation.",
             "names.html?filter=likely_websites",
         ),
         answer(
@@ -310,9 +312,9 @@ def build_faq_answers(conn: sqlite3.Connection, summary: dict[str, Any]) -> list
         ),
         answer(
             "doh_fallback_required",
-            "How many require DoH fallback?",
+            "How many require resolver fallback?",
             "doh_fallback_required",
-            "Latest live check could only find a website address through the configured fallback resolver, not through strict HNS bootstrap.",
+            "Latest live check could only find a website address through the configured fallback resolver, not through strict HNS bootstrap. This does not prove a specific DoH transport by itself.",
             "names.html?filter=doh_fallback_required",
         ),
         answer(

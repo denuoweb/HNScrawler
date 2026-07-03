@@ -36,8 +36,10 @@ function pct(value, total) {
   return `${((value / total) * 100).toFixed(2)}%`;
 }
 
-function metric(label, value, sub = "") {
-  return `<article class="metric"><span class="label">${label}</span><span class="value">${fmt.format(value ?? 0)}</span><span class="sub">${sub}</span></article>`;
+function metric(label, value, sub = "", href = "") {
+  const content = `<span class="label">${escapeHtml(label)}</span><span class="value">${fmt.format(value ?? 0)}</span><span class="sub">${escapeHtml(sub)}</span>`;
+  if (href) return `<a class="metric metric-link" href="${escapeHtml(sitePath(href))}">${content}</a>`;
+  return `<article class="metric">${content}</article>`;
 }
 
 function activeFilter() {
@@ -61,7 +63,7 @@ function filterName(filter) {
   if (filter.startsWith(FAILURE_REASON_FILTER_PREFIX)) return prettyToken(filter.slice(FAILURE_REASON_FILTER_PREFIX.length));
   if (filter.startsWith(PROVIDER_TYPE_FILTER_PREFIX)) return `provider ${prettyToken(filter.slice(PROVIDER_TYPE_FILTER_PREFIX.length))}`;
   return ({
-    direct_ip_records: "direct IP records",
+    direct_ip_records: "SYNTH nameservers",
     delegated_names: "delegated names",
     default_provider_names: "default providers",
     ds_records: "DS records",
@@ -69,7 +71,7 @@ function filterName(filter) {
     dane_rows: "DANE rows",
     likely_websites: "likely websites",
     strict_hns_working: "strict HNS working",
-    doh_fallback_required: "fallback required",
+    doh_fallback_required: "resolver fallback required",
     dane_working: "valid DANE",
     missing_glue: "missing GLUE",
     missing_glue_only: "missing GLUE only",
@@ -83,11 +85,12 @@ function filterNotice(filter, before, after) {
   return `<p class="meta">Filter: ${escapeHtml(filterName(filter))}. Showing ${fmt.format(after)} of ${fmt.format(before)} exported rows.</p>`;
 }
 
-function bars(rows, labelKey, valueKey, limit = 12) {
+function bars(rows, labelKey, valueKey, limit = 12, labelFormatter = (value) => value) {
   const max = Math.max(1, ...rows.map((row) => Number(row[valueKey] || 0)));
   return `<div class="bar-list">${rows.slice(0, limit).map((row) => {
     const value = Number(row[valueKey] || 0);
-    return `<div class="bar-row"><span class="bar-label" title="${escapeHtml(row[labelKey])}">${escapeHtml(row[labelKey])}</span><span class="bar-track"><span class="bar-fill" style="width:${(value / max) * 100}%"></span></span><strong>${fmt.format(value)}</strong></div>`;
+    const label = labelFormatter(row[labelKey]);
+    return `<div class="bar-row"><span class="bar-label" title="${escapeHtml(label)}">${escapeHtml(label)}</span><span class="bar-track"><span class="bar-fill" style="width:${(value / max) * 100}%"></span></span><strong>${fmt.format(value)}</strong></div>`;
   }).join("")}</div>`;
 }
 
@@ -128,12 +131,28 @@ function setActiveNav(page) {
   });
 }
 
+function classLabel(value) {
+  return ({
+    EXPIRED: "Expired",
+    EMPTY: "Empty",
+    TXT_ONLY: "TXT only",
+    DIRECT_SYNTH: "SYNTH nameserver",
+    DELEGATED_WITH_GLUE: "Delegated with glue",
+    DELEGATED_NO_GLUE: "Delegated missing glue",
+    DNSSEC_CANDIDATE: "DNSSEC candidate",
+    DANE_CANDIDATE: "DANE candidate",
+    PARKED_OR_DEFAULT: "Parked/default",
+    MALFORMED_RESOURCE: "Malformed resource",
+    UNKNOWN_OTHER: "Unknown other"
+  })[value] || prettyToken(value);
+}
+
 function snapshot(summary) {
   return `<section class="snapshot">
-    ${metric("Active names", summary.active_names, `${fmt.format(summary.expired_names)} expired`)}
-    ${metric("Direct IP", summary.direct_ip_records, pct(summary.direct_ip_records, summary.active_names))}
-    ${metric("DS records", summary.ds_records, pct(summary.ds_records, summary.active_names))}
-    ${metric("Valid DANE", summary.dane_working, `${fmt.format(summary.strict_hns_working)} strict HNS working`)}
+    ${metric("Active names", summary.active_names, `${fmt.format(summary.expired_names)} expired`, "names.html")}
+    ${metric("SYNTH NS", summary.synth_nameserver_records ?? summary.direct_ip_records, pct(summary.synth_nameserver_records ?? summary.direct_ip_records, summary.active_names), "names.html?filter=direct_ip_records")}
+    ${metric("DS records", summary.ds_records, pct(summary.ds_records, summary.active_names), "names.html?filter=ds_records")}
+    ${metric("Valid DANE", summary.dane_working, `${fmt.format(summary.strict_hns_working)} strict HNS working`, "names.html?filter=dane_working")}
   </section>`;
 }
 
@@ -440,12 +459,12 @@ function namesFilterControls({providers, broken, active}) {
     }));
   const generalOptions = [
     {value: "", label: "All names"},
-    {value: "direct_ip_records", label: "Direct IP records"},
+    {value: "direct_ip_records", label: "SYNTH nameservers"},
     {value: "delegated_names", label: "Delegated names"},
     {value: "default_provider_names", label: "Default providers"},
     {value: "likely_websites", label: "Likely websites"},
     {value: "strict_hns_working", label: "Strict HNS working"},
-    {value: "doh_fallback_required", label: "Fallback required"}
+    {value: "doh_fallback_required", label: "Resolver fallback required"}
   ];
   const daneOptions = [
     {value: "dane_rows", label: "DANE rows"},
@@ -478,19 +497,77 @@ function wireAutoSubmitFilter() {
   select.addEventListener("change", () => select.form.submit());
 }
 
+function adoptionFunnel(summary) {
+  const active = Number(summary.active_names || 0);
+  const checked = Number(summary.live_check_checked_count || 0);
+  const stages = [
+    {
+      label: "Likely websites",
+      value: summary.likely_websites,
+      filter: "likely_websites",
+      note: "Have on-chain data worth checking."
+    },
+    {
+      label: "Strict HNS working",
+      value: summary.strict_hns_working,
+      filter: "strict_hns_working",
+      note: "Loaded without resolver fallback."
+    },
+    {
+      label: "DS records",
+      value: summary.ds_records,
+      filter: "ds_records",
+      note: "Parent-side DNSSEC material exists."
+    },
+    {
+      label: "DNSSEC candidates",
+      value: summary.dnssec_candidates,
+      filter: "dnssec_candidates",
+      note: "DS plus delegated nameserver data."
+    },
+    {
+      label: "Valid DANE",
+      value: summary.dane_working,
+      filter: "dane_working",
+      note: "TLSA matches HTTPS certificate/SPKI."
+    },
+    {
+      label: "Needs glue fix",
+      value: summary.missing_glue_only,
+      filter: "missing_glue_only",
+      note: "Delegated but missing bootstrap glue."
+    }
+  ];
+  return `<section class="panel adoption-funnel">
+    <div class="panel-heading">
+      <div>
+        <h2>Adoption Funnel</h2>
+        <p class="meta">${fmt.format(checked)} live checks sampled from ${fmt.format(summary.live_check_candidate_count ?? 0)} candidates.</p>
+      </div>
+    </div>
+    <div class="funnel-grid">${stages.map((stage) => `
+      <a class="funnel-stage" href="${escapeHtml(sitePath(`names.html?filter=${stage.filter}`))}">
+        <span>${escapeHtml(stage.label)}</span>
+        <strong>${fmt.format(stage.value ?? 0)}</strong>
+        <small>${pct(stage.value ?? 0, active)} of active. ${escapeHtml(stage.note)}</small>
+      </a>`).join("")}</div>
+  </section>`;
+}
+
 async function renderOverview(app) {
   const summary = await loadJson("data/summary.json");
   const providers = summary.providers || [];
   const classes = summary.classes || [];
   const broken = summary.broken || {reasons: []};
   app.innerHTML = `${snapshot(summary)}
+    ${adoptionFunnel(summary)}
     <section class="grid">
       <article class="panel"><h2>Provider Dominance</h2>${bars(providers, "provider_key", "names_count")}</article>
-      <article class="panel"><h2>On-Chain Classes</h2>${bars(classes, "class", "count")}</article>
+      <article class="panel"><h2>On-Chain Classes</h2>${bars(classes, "class", "count", 12, classLabel)}</article>
       <article class="panel"><h2>DANE</h2>
         <div class="stat-list">
-          <div class="stat-line"><span>DS records</span><strong>${fmt.format(summary.ds_records)}</strong></div>
-          <div class="stat-line"><span>Valid DANE</span><strong>${fmt.format(summary.dane_working)}</strong></div>
+          <a class="stat-line stat-link" href="${escapeHtml(sitePath("names.html?filter=ds_records"))}"><span>DS records</span><strong>${fmt.format(summary.ds_records)}</strong></a>
+          <a class="stat-line stat-link" href="${escapeHtml(sitePath("names.html?filter=dane_working"))}"><span>Valid DANE</span><strong>${fmt.format(summary.dane_working)}</strong></a>
         </div>
       </article>
       <article class="panel"><h2>Failure Reasons</h2>${bars(broken.reasons, "failure_reason", "count", 10)}</article>

@@ -6,7 +6,7 @@ This project is intentionally not a live explorer, a full DNS warehouse, or a we
 
 ## What It Answers
 
-- How many HNS names have direct `SYNTH4` or `SYNTH6` IP records?
+- How many HNS names use `SYNTH4` or `SYNTH6` nameserver bootstrap records?
 - How many delegate to nameservers, with or without glue?
 - How many use default provider infrastructure?
 - How many have DS records and are DNSSEC candidates?

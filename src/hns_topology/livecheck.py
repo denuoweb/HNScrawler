@@ -176,7 +176,7 @@ def check_name(row: dict, config: LiveCheckConfig, limiter: RateLimiter) -> Live
         if strict_addresses:
             doh_fallback_status = "not_required"
         else:
-            if row.get("ns_names") and not _glue_addresses(row):
+            if row.get("ns_names") and not _strict_bootstrap_addresses(row):
                 dns_reachable = "missing_glue"
                 failure_reason = "missing_glue"
             fallback_addresses = _resolve_addresses(fallback_resolver, name)
@@ -259,14 +259,15 @@ def _glue_addresses(row: dict) -> list[str]:
     return [*row.get("glue4", []), *row.get("glue6", [])]
 
 
+def _strict_bootstrap_addresses(row: dict) -> list[str]:
+    return [*_glue_addresses(row), *_synth_addresses(row)]
+
+
 def _strict_addresses(
     row: dict,
     strict_resolver: dns.resolver.Resolver | None,
     name: str,
 ) -> list[str]:
-    synth = _synth_addresses(row)
-    if synth:
-        return sorted(set(synth))
     if strict_resolver is None:
         return []
     return _resolve_addresses(strict_resolver, name)
@@ -288,10 +289,10 @@ def _make_resolver(
 
 
 def _make_strict_resolver(row: dict, config: LiveCheckConfig) -> dns.resolver.Resolver | None:
-    glue = _glue_addresses(row)
-    if not glue:
+    bootstrap_addresses = sorted(set(_strict_bootstrap_addresses(row)))
+    if not bootstrap_addresses:
         return None
-    return _make_resolver(config, glue)
+    return _make_resolver(config, bootstrap_addresses)
 
 
 @dataclass(frozen=True)
@@ -309,7 +310,7 @@ def _validate_dnssec_for_row(
     if not ds_records:
         return DnssecResult("not_delegated")
     if strict_resolver is None:
-        if row.get("ns_names") and not _glue_addresses(row):
+        if row.get("ns_names") and not _strict_bootstrap_addresses(row):
             return DnssecResult("missing_glue", "missing_glue")
         return DnssecResult("dnssec_missing", "dnssec_missing")
     return _validate_dnssec_delegation(strict_resolver, name, ds_records)

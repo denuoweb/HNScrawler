@@ -95,11 +95,11 @@ Generated `provider_summary` rows expose the matching criteria as stable strings
 
 Strict HNS address discovery uses only addresses that can be bootstrapped from the HNS resource:
 
-- `SYNTH4` / `SYNTH6` are treated as website addresses.
+- `SYNTH4` / `SYNTH6` are treated as compact authoritative nameserver bootstrap addresses, not website addresses.
 - `GLUE4` / `GLUE6` are treated as authoritative nameserver bootstrap addresses, not website addresses.
-- Delegated names without GLUE cannot pass strict HNS address discovery unless a future resolver path can prove in-bailiwick glue another way.
+- Delegated names without GLUE or SYNTH bootstrap cannot pass strict HNS address discovery unless a future resolver path can prove in-bailiwick glue another way.
 
-The `doh_fallback_status` field records whether the checker had to use the configured fallback resolver path after strict HNS discovery failed. In production that resolver can be DoH-backed, but the status means fallback resolution was required; it is not proof of a specific transport by itself.
+The `doh_fallback_status` field records whether the checker had to use the configured fallback resolver path after strict HNS discovery failed. The historical field name is retained for export stability; the status means resolver fallback was required and is not proof of a specific DoH transport by itself.
 
 HTTPS certificate capture is independent from WebPKI validation. The checker first tries a normal verified TLS connection. If WebPKI validation fails, it retries with certificate verification disabled only to capture the peer certificate/SPKI for TLSA matching. A matching TLSA record can therefore produce `dane_status = valid` even when `https_status = tls_unverified`.
 

@@ -93,6 +93,7 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     assert summary["total_names"] == 9
     assert summary["active_names"] == 8
     assert summary["direct_ip_records"] == 1
+    assert summary["synth_nameserver_records"] == 1
     assert summary["delegated_names"] == 4
     assert summary["delegated_with_glue"] == 2
     assert summary["delegated_no_glue"] == 2
@@ -390,6 +391,7 @@ def test_jsonl_bootstrap_streams_names_and_records_provenance(tmp_path):
     assert count == 2
     assert summary["active_names"] == 2
     assert summary["direct_ip_records"] == 1
+    assert summary["synth_nameserver_records"] == 1
     assert summary["delegated_no_glue"] == 1
     assert summary["source_type"] == "jsonl"
     assert summary["source_file_hash"]
@@ -475,6 +477,7 @@ def test_compact_jsonl_bootstrap_uses_summarized_rows(tmp_path):
     assert summary["active_names"] == 2
     assert summary["expired_names"] == 1
     assert summary["direct_ip_records"] == 1
+    assert summary["synth_nameserver_records"] == 1
     assert summary["delegated_no_glue"] == 1
     assert summary["last_indexed_height"] == 222222
     assert summary["hsd_version"] == "fixture-compact"
