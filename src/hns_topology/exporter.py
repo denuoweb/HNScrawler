@@ -62,6 +62,22 @@ DANE_FILTERS = {
 }
 
 DANE_CANDIDATE_CLASSES = ("DNSSEC_CANDIDATE", "DANE_CANDIDATE")
+NAME_CLASS_FILTERS = {
+    "direct_ip_records": "n.onchain_class = 'DIRECT_SYNTH'",
+    "delegated_names": "n.onchain_class IN ('DELEGATED_WITH_GLUE', 'DELEGATED_NO_GLUE', 'DNSSEC_CANDIDATE', 'DANE_CANDIDATE', 'PARKED_OR_DEFAULT')",
+    "ds_records": "n.onchain_class IN ('DNSSEC_CANDIDATE', 'DANE_CANDIDATE')",
+    "dnssec_candidates": "n.onchain_class IN ('DNSSEC_CANDIDATE', 'DANE_CANDIDATE')",
+    "likely_websites": "n.onchain_class IN ('DIRECT_SYNTH', 'DELEGATED_WITH_GLUE', 'DNSSEC_CANDIDATE', 'DANE_CANDIDATE')",
+    "missing_glue_only": "n.onchain_class = 'DELEGATED_NO_GLUE'",
+}
+NAME_LIVE_FILTERS = {
+    "strict_hns_working": "ls.strict_hns_status = 'working'",
+    "doh_fallback_required": "ls.doh_fallback_status IN ('required', 'doh_fallback_only')",
+    "dane_working": "ls.dane_status = 'valid'",
+    "missing_glue": "ls.failure_reason = 'missing_glue'",
+    "stale_tlsa": "ls.failure_reason = 'stale_tlsa_spki_mismatch'",
+    "stale_tlsa_only": "ls.failure_reason = 'stale_tlsa_spki_mismatch'",
+}
 
 FAQ_KEYS = (
     "direct_ip_records",
@@ -564,34 +580,52 @@ def _write_names_pages_streamed(
     page_size: int,
 ) -> dict[str, Any]:
     keys = ["all", *NAME_FILTERS]
-    rows_by_key: dict[str, list[dict[str, Any]]] = {key: [] for key in keys}
-    if limit > 0:
-        remaining = set(keys)
-        for row in conn.execute(
-            """
-            SELECT
-              n.name, n.state, n.expired, n.onchain_class, n.provider_guess, n.record_types,
-              rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.ds_records, rs.has_ds,
-              ls.dns_reachable, ls.dnssec_status, ls.dane_status, ls.https_status,
-              ls.strict_hns_status, ls.doh_fallback_status, ls.failure_reason, ls.checked_at
-            FROM names n
-            JOIN resource_summary rs ON rs.name = n.name
-            LEFT JOIN live_status ls ON ls.name = n.name
-            ORDER BY n.updated_at DESC, n.name
-            """
-        ):
-            item = parse_json_columns(
-                dict(row),
-                ["record_types", "ns_names", "glue4", "glue6", "synth4", "synth6", "ds_records"],
-            )
-            for key in list(remaining):
-                if key == "all" or _name_row_matches_filter(item, key):
-                    rows_by_key[key].append(item)
-                    if len(rows_by_key[key]) >= limit:
-                        remaining.remove(key)
-            if not remaining:
-                break
+    rows_by_key = {key: _build_name_page_rows(conn, key, limit=limit) for key in keys}
     return _write_paginated_row_sets(base_dir, rows_by_key, limit=limit, page_size=page_size)
+
+
+def _build_name_page_rows(conn: sqlite3.Connection, key: str, *, limit: int) -> list[dict[str, Any]]:
+    if limit <= 0:
+        return []
+    row_columns = """
+      n.name, n.state, n.expired, n.onchain_class, n.provider_guess, n.record_types,
+      rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.ds_records, rs.has_ds,
+      ls.dns_reachable, ls.dnssec_status, ls.dane_status, ls.https_status,
+      ls.strict_hns_status, ls.doh_fallback_status, ls.failure_reason, ls.checked_at
+    """
+    if key in NAME_LIVE_FILTERS:
+        from_sql = """
+        FROM live_status ls
+        JOIN names n ON n.name = ls.name
+        JOIN resource_summary rs ON rs.name = n.name
+        """
+        where = f"COALESCE(n.expired, 0) = 0 AND {NAME_LIVE_FILTERS[key]}"
+    else:
+        from_sql = """
+        FROM names n
+        JOIN resource_summary rs ON rs.name = n.name
+        LEFT JOIN live_status ls ON ls.name = n.name
+        """
+        where = "1=1"
+        if key != "all":
+            where = "COALESCE(n.expired, 0) = 0"
+            where = f"{where} AND {NAME_CLASS_FILTERS.get(key, '1=1')}"
+    rows = conn.execute(
+        f"""
+        SELECT {row_columns}
+        {from_sql}
+        WHERE {where}
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [
+        parse_json_columns(
+            dict(row),
+            ["record_types", "ns_names", "glue4", "glue6", "synth4", "synth6", "ds_records"],
+        )
+        for row in rows
+    ]
 
 
 def _write_dane_pages_streamed(
