@@ -102,6 +102,11 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     assert summary["strict_hns_ready"] == 3
     assert summary["needs_dane"] == 1
     assert summary["needs_fix"] == 2
+    next_actions = {item["key"]: item for item in summary["next_actions"]}
+    assert next_actions["generate_tlsa"]["count"] == 1
+    assert next_actions["generate_tlsa"]["filter_link"] == "names.html?filter=needs_dane"
+    assert next_actions["fix_ns_glue"]["count"] == 2
+    assert next_actions["plan_dnssec_dane"]["count"] == 3
     assert summary["source_type"] == "fixture"
     assert summary["source_file_hash"]
     assert summary["provider_rules_version"] == 3
@@ -188,6 +193,7 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert "provider_type" in names_page_rows[0]
     assert "classes" in summary
     assert "broken" in summary
+    assert "next_actions" in summary
     assert namebase_provider["ns_pattern"] == "suffix:namebase.io,suffix:parking.namebase.io"
 
     checks = validate_release(db_path=db_path, public_dir=out)

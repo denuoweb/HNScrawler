@@ -291,7 +291,53 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
     summary["classes"] = build_classes(conn)
     summary["providers"] = build_providers(conn)
     summary["broken"] = build_broken(conn)
+    summary["next_actions"] = build_next_actions(summary)
     return summary
+
+
+def build_next_actions(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "key": "generate_tlsa",
+            "label": "Generate TLSA",
+            "count": int(summary["needs_dane"]),
+            "filter_link": "names.html?filter=needs_dane",
+            "generator_intent": "generate_tlsa",
+            "definition": "DS or live-valid DNSSEC exists, but valid TLSA/DANE is not proven.",
+        },
+        {
+            "key": "fix_ns_glue",
+            "label": "Fix NS/GLUE",
+            "count": int(summary["missing_glue_only"]),
+            "filter_link": "names.html?filter=missing_glue_only",
+            "generator_intent": "missing_glue",
+            "definition": "Delegated names need parent-side nameserver bootstrap before strict HNS can work.",
+        },
+        {
+            "key": "replace_tlsa",
+            "label": "Replace TLSA",
+            "count": int(summary["stale_tlsa_only"]),
+            "filter_link": "names.html?filter=stale_tlsa_only",
+            "generator_intent": "stale_tlsa",
+            "definition": "TLSA data did not match the current HTTPS certificate public key.",
+        },
+        {
+            "key": "plan_dnssec_dane",
+            "label": "Plan DNSSEC/DANE",
+            "count": int(summary["strict_hns_ready"]),
+            "filter_link": "names.html?filter=strict_hns_ready",
+            "generator_intent": "dnssec_dane",
+            "definition": "Strict-HNS bootstrap material exists; sign the zone, publish DS, and add TLSA.",
+        },
+        {
+            "key": "verified_dane",
+            "label": "Verified DANE",
+            "count": int(summary["dane_working"]),
+            "filter_link": "names.html?filter=dane_working",
+            "generator_intent": "",
+            "definition": "Latest live check matched DNSSEC, TLSA, and HTTPS certificate/SPKI.",
+        },
+    ]
 
 
 def build_faq_answers(conn: sqlite3.Connection, summary: dict[str, Any]) -> list[dict[str, Any]]:

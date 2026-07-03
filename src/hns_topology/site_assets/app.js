@@ -790,6 +790,19 @@ function adoptionFunnel(summary) {
   </section>`;
 }
 
+function nextActionsPanel(actions = []) {
+  if (!actions.length) return "";
+  return `<article class="panel next-actions-panel">
+    <h2>Next Actions</h2>
+    <div class="next-action-list">${actions.map((action) => `
+      <a class="next-action" href="${escapeHtml(sitePath(action.filter_link || "names.html"))}">
+        <span>${escapeHtml(action.label)}</span>
+        <strong>${fmt.format(action.count ?? 0)}</strong>
+        <small>${escapeHtml(action.definition || "")}</small>
+      </a>`).join("")}</div>
+  </article>`;
+}
+
 async function renderOverview(app) {
   const summary = await loadJson("data/summary.json");
   const providers = summary.providers || [];
@@ -797,6 +810,7 @@ async function renderOverview(app) {
   app.innerHTML = `${snapshot(summary)}
     ${adoptionFunnel(summary)}
     <section class="grid">
+      ${nextActionsPanel(summary.next_actions || [])}
       <article class="panel"><h2>Provider Dominance</h2>${bars(providers, "provider_key", "names_count", 12, (value) => value, providerFilterHref)}</article>
       <article class="panel"><h2>On-Chain Classes</h2>${bars(classes, "class", "count", 12, classLabel, (row) => classFilterHref(row.class))}</article>
       <article class="panel"><h2>DANE</h2>
