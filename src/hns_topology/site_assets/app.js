@@ -1,11 +1,17 @@
 const fmt = new Intl.NumberFormat("en-US");
+const SITE_BASE_PATH = window.__HNS_TOPOLOGY_BASE__ || "/hns-topology/";
 const PAGE_FETCH_MIN_DELAY_MS = 350;
 const COLLECTION_FETCH_BATCH_SIZE = 8;
 let nextPageFetchAt = 0;
 const collectionRowsCache = new Map();
 
+function sitePath(path) {
+  if (/^(?:[a-z]+:)?\/\//i.test(path) || path.startsWith("/")) return path;
+  return `${SITE_BASE_PATH}${path}`;
+}
+
 async function loadJson(path) {
-  const response = await fetch(path);
+  const response = await fetch(sitePath(path));
   if (!response.ok) throw new Error(`Failed to load ${path}`);
   return response.json();
 }
@@ -182,7 +188,8 @@ function clampedPage(collection) {
 }
 
 function currentPageName() {
-  return window.location.pathname.split("/").pop() || "index.html";
+  const pageName = window.location.pathname.split("/").pop() || "index.html";
+  return pageName.endsWith(".html") ? pageName : "index.html";
 }
 
 function pageHref(page) {
@@ -194,7 +201,7 @@ function pageHref(page) {
   }
   const query = params.toString();
   const path = currentPageName();
-  return query ? `${path}?${query}` : path;
+  return sitePath(query ? `${path}?${query}` : path);
 }
 
 function hrefWithoutParams(keys) {
@@ -202,7 +209,7 @@ function hrefWithoutParams(keys) {
   keys.forEach((key) => params.delete(key));
   const query = params.toString();
   const path = currentPageName();
-  return query ? `${path}?${query}` : path;
+  return sitePath(query ? `${path}?${query}` : path);
 }
 
 function hrefWithParams(values) {
@@ -216,7 +223,7 @@ function hrefWithParams(values) {
   });
   const query = params.toString();
   const path = currentPageName();
-  return query ? `${path}?${query}` : path;
+  return sitePath(query ? `${path}?${query}` : path);
 }
 
 function providerFilterControls(providers, active) {
@@ -339,7 +346,7 @@ async function lookupExactName(query) {
   const name = normalizeLookupQuery(query);
   if (!name) return null;
   try {
-    const response = await fetch(`api/name?name=${encodeURIComponent(name)}`);
+    const response = await fetch(sitePath(`api/name?name=${encodeURIComponent(name)}`));
     if (!response.ok && response.status !== 404) return null;
     return response.json();
   } catch (_error) {
@@ -486,7 +493,7 @@ async function renderFaq(app) {
       <p class="definition">${escapeHtml(item.definition)}</p>
       <p class="examples">Examples: ${escapeHtml((item.examples || []).join(", ") || "none in current export")}</p>
       <p class="meta">${item.percentage_of_active}% of active names. Height ${item.last_checked_height ?? ""}.</p>
-      <a href="${escapeHtml(item.filter_link)}">Filtered table</a>
+      <a href="${escapeHtml(sitePath(item.filter_link))}">Filtered table</a>
     </article>`).join("")}</section>`;
 }
 

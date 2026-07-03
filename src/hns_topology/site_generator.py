@@ -23,6 +23,7 @@ GENERATED_HTML_FILES = {
     "broken.html",
     "dane.html",
 }
+SITE_BASE_PATH = "/hns-topology/"
 
 
 def generate_site(
@@ -60,7 +61,7 @@ def _copy_assets(out: Path) -> None:
 
 def _html(*, page: str, title: str) -> str:
     nav = "\n".join(
-        f'<a href="{filename}" data-nav="{name}">{label}</a>'
+        f'<a href="{SITE_BASE_PATH}{filename}" data-nav="{name}">{label}</a>'
         for filename, (name, label) in [
             ("index.html", ("overview", "Overview")),
             ("faq.html", ("faq", "FAQ")),
@@ -76,7 +77,8 @@ def _html(*, page: str, title: str) -> str:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{title}</title>
-  <link rel="stylesheet" href="styles.css">
+  <base href="{SITE_BASE_PATH}">
+  <link rel="stylesheet" href="{SITE_BASE_PATH}styles.css">
 </head>
 <body data-page="{page}">
   <header class="topbar">
@@ -88,7 +90,7 @@ def _html(*, page: str, title: str) -> str:
   <main id="app">
     <section class="loading">Loading snapshot data...</section>
   </main>
-  <script src="app.js"></script>
+  <script src="{SITE_BASE_PATH}app.js"></script>
 </body>
 </html>
 """
