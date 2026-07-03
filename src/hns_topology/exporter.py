@@ -333,6 +333,27 @@ def build_classes(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
 def build_faq_examples(conn: sqlite3.Connection) -> dict[str, list[str]]:
     examples = {key: [] for key in FAQ_KEYS}
+    class_filters = {
+        "direct_ip_records": "n.onchain_class = 'DIRECT_SYNTH'",
+        "delegated_names": "n.onchain_class IN ('DELEGATED_WITH_GLUE', 'DELEGATED_NO_GLUE', 'DNSSEC_CANDIDATE', 'DANE_CANDIDATE')",
+        "default_provider_names": "n.onchain_class = 'PARKED_OR_DEFAULT'",
+        "ds_records": "n.onchain_class IN ('DNSSEC_CANDIDATE', 'DANE_CANDIDATE')",
+        "dnssec_candidates": "n.onchain_class IN ('DNSSEC_CANDIDATE', 'DANE_CANDIDATE')",
+        "likely_websites": "n.onchain_class IN ('DIRECT_SYNTH', 'DELEGATED_WITH_GLUE', 'DNSSEC_CANDIDATE', 'DANE_CANDIDATE')",
+        "missing_glue_only": "n.onchain_class = 'DELEGATED_NO_GLUE'",
+    }
+    for key, where in class_filters.items():
+        rows = conn.execute(
+            f"""
+            SELECT n.name
+            FROM names n
+            WHERE COALESCE(n.expired, 0) = 0 AND {where}
+            ORDER BY n.name
+            LIMIT 5
+            """
+        ).fetchall()
+        examples[key] = [row["name"] for row in rows]
+
     live_filters = {
         "strict_hns_working": "ls.strict_hns_status = 'working'",
         "doh_fallback_required": "ls.doh_fallback_status IN ('required', 'doh_fallback_only')",
@@ -351,41 +372,6 @@ def build_faq_examples(conn: sqlite3.Connection) -> dict[str, list[str]]:
             """
         ).fetchall()
         examples[key] = [row["name"] for row in rows]
-
-    resource_keys = (
-        "direct_ip_records",
-        "delegated_names",
-        "default_provider_names",
-        "ds_records",
-        "dnssec_candidates",
-        "likely_websites",
-        "missing_glue_only",
-    )
-    for row in conn.execute(
-        """
-        SELECT
-          n.name, n.provider_guess, n.record_types,
-          ls.failure_reason, ps.provider_type
-        FROM names n
-        LEFT JOIN live_status ls ON ls.name = n.name
-        LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
-        WHERE COALESCE(n.expired, 0) = 0
-        ORDER BY n.name
-        """
-    ):
-        item = dict(row)
-        flags = _record_type_flags(item.get("record_types"))
-        for key in resource_keys:
-            if len(examples[key]) >= 5:
-                continue
-            if key == "default_provider_names":
-                matches = item.get("provider_type") == "default_parking"
-            else:
-                matches = _record_type_filter_matches(flags, key, item.get("failure_reason"))
-            if matches:
-                examples[key].append(item["name"])
-        if all(len(examples[key]) >= 5 for key in resource_keys):
-            break
     return examples
 
 
@@ -673,35 +659,6 @@ def _dane_row_matches_filter(row: dict[str, Any], key: str) -> bool:
     if key == "stale_tlsa_only":
         return row.get("failure_reason") == "stale_tlsa_spki_mismatch"
     return True
-
-
-def _record_type_flags(record_types: Any) -> dict[str, bool]:
-    text = record_types if isinstance(record_types, str) else ""
-    has_ns = '"NS"' in text
-    has_glue = '"GLUE4"' in text or '"GLUE6"' in text
-    return {
-        "has_synth": '"SYNTH4"' in text or '"SYNTH6"' in text,
-        "has_ns": has_ns,
-        "has_delegation": has_ns or has_glue,
-        "has_glue": has_glue,
-        "has_ds": '"DS"' in text,
-    }
-
-
-def _record_type_filter_matches(flags: dict[str, bool], key: str, failure_reason: str | None) -> bool:
-    if key == "direct_ip_records":
-        return flags["has_synth"]
-    if key == "delegated_names":
-        return flags["has_delegation"]
-    if key == "ds_records":
-        return flags["has_ds"]
-    if key == "dnssec_candidates":
-        return flags["has_ds"] and flags["has_delegation"]
-    if key == "likely_websites":
-        return flags["has_synth"] or flags["has_glue"] or (flags["has_ds"] and flags["has_delegation"])
-    if key == "missing_glue_only":
-        return flags["has_ns"] and not flags["has_glue"] and (failure_reason or "missing_glue") == "missing_glue"
-    return False
 
 
 def _write_paginated_collections(
