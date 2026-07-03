@@ -18,7 +18,9 @@ cleanup() {
 trap cleanup EXIT
 
 if [[ -z "$LOCAL_TMP" ]]; then
-  CREATED_TMP="$(mktemp -d)"
+  LOCAL_TMP_PARENT="${LOCAL_TMP_PARENT:-$PWD/run-logs}"
+  mkdir -p "$LOCAL_TMP_PARENT"
+  CREATED_TMP="$(mktemp -d "$LOCAL_TMP_PARENT/hns-topology-publish.XXXXXX")"
   LOCAL_TMP="$CREATED_TMP"
 fi
 
@@ -51,4 +53,4 @@ gcloud compute ssh "$INDEXER_VM" \
   --command "rm -f '$INDEXER_ARCHIVE'"
 
 tar -C "$LOCAL_TMP/public" -xzf "$LOCAL_TMP/hns-topology-public.tar.gz"
-MIN_INDEXED_HEIGHT="$MIN_INDEXED_HEIGHT" PUBLIC_DIR="$LOCAL_TMP/public" scripts/publish-site.sh
+TMPDIR="$LOCAL_TMP" MIN_INDEXED_HEIGHT="$MIN_INDEXED_HEIGHT" PUBLIC_DIR="$LOCAL_TMP/public" scripts/publish-site.sh
