@@ -9,6 +9,7 @@ const PROVIDER_TYPE_FILTER_PREFIX = "provider_type:";
 const DANE_GENERATOR_BASE = window.__DANE_GENERATOR_BASE__ || "/dane-generator/";
 let nextPageFetchAt = 0;
 const collectionRowsCache = new Map();
+const collectionPageRowsCache = new Map();
 
 function sitePath(path) {
   if (/^(?:[a-z]+:)?\/\//i.test(path) || path.startsWith("/")) return path;
@@ -376,6 +377,15 @@ async function loadCollectionRows(collection) {
   return rowsPromise;
 }
 
+async function loadCollectionPageRows(collection, page) {
+  const cacheKey = `${collection.path_template}:${page}`;
+  if (collectionPageRowsCache.has(cacheKey)) return collectionPageRowsCache.get(cacheKey);
+  const rowsPromise = loadJson(pagePath(collection.path_template, page))
+    .then((data) => rowsFromPage(data, collection));
+  collectionPageRowsCache.set(cacheKey, rowsPromise);
+  return rowsPromise;
+}
+
 function searchTokens(query) {
   return query.toLowerCase().split(/\s+/).filter(Boolean);
 }
@@ -417,21 +427,72 @@ function isDaneRow(row) {
   return hasDs(row) || Boolean(row.tlsa_status) || Boolean(row.dane_status);
 }
 
-async function lookupExactName(query) {
-  const name = normalizeLookupQuery(query);
-  if (!name) return null;
+async function lookupExactNameFromApi(query, name) {
   try {
     const response = await fetch(sitePath(`api/name?name=${encodeURIComponent(name)}`));
     if (!response.ok && response.status !== 404) return null;
-    return response.json();
+    const result = await response.json();
+    return {...result, source: "api", fullSnapshot: true};
   } catch (_error) {
     return null;
   }
 }
 
+async function lookupExactNameFromStatic(query, name, index) {
+  const collection = index?.collections?.all;
+  const pageCount = Number(collection?.page_count || 0);
+  if (!collection || pageCount <= 0) return null;
+  const rowCount = Number(collection.row_count || 0);
+  const totalCount = Number(collection.total_count || rowCount);
+  const fullSnapshot = rowCount === totalCount;
+  let low = 1;
+  let high = pageCount;
+
+  while (low <= high) {
+    const page = Math.floor((low + high) / 2);
+    const rows = await loadCollectionPageRows(collection, page);
+    if (!rows.length) break;
+    const first = String(rows[0].name || "");
+    const last = String(rows[rows.length - 1].name || "");
+    if (name < first) {
+      high = page - 1;
+      continue;
+    }
+    if (name > last) {
+      low = page + 1;
+      continue;
+    }
+    const row = rows.find((item) => item.name === name);
+    return {
+      found: Boolean(row),
+      query,
+      normalized: name,
+      source: "static",
+      fullSnapshot,
+      row,
+    };
+  }
+
+  return {
+    found: false,
+    query,
+    normalized: name,
+    source: "static",
+    fullSnapshot,
+  };
+}
+
+async function lookupExactName(query, index) {
+  const name = normalizeLookupQuery(query);
+  if (!name) return null;
+  const apiResult = await lookupExactNameFromApi(query, name);
+  if (apiResult) return apiResult;
+  return lookupExactNameFromStatic(query, name, index);
+}
+
 async function applySearchToPageData(pageData, query, options = {}) {
   if (!query) return {...pageData, search: null, lookup: null};
-  const lookup = await lookupExactName(query);
+  const lookup = await lookupExactName(query, pageData.index);
   if (lookup && lookup.found && (!options.daneOnly || isDaneRow(lookup.row))) {
     return {
       ...pageData,
@@ -446,7 +507,9 @@ async function applySearchToPageData(pageData, query, options = {}) {
         query,
         matchedCount: 1,
         totalCount: "snapshot",
-        exact: true
+        exact: true,
+        exactSource: lookup.source || "api",
+        fullSnapshot: lookup.fullSnapshot !== false
       },
       lookup
     };
@@ -465,7 +528,9 @@ async function applySearchToPageData(pageData, query, options = {}) {
         query,
         matchedCount: 0,
         totalCount: "snapshot",
-        exact: true
+        exact: true,
+        exactSource: lookup.source || "api",
+        fullSnapshot: lookup.fullSnapshot !== false
       },
       lookup
     };
@@ -482,7 +547,9 @@ async function applySearchToPageData(pageData, query, options = {}) {
         matchedCount: matchedRows.length,
         totalCount: pageData.rows.length,
         exact: false,
-        scoped: true
+        scoped: true,
+        exactSource: lookup?.source || "api",
+        fullSnapshot: lookup?.fullSnapshot !== false
       },
       lookup
     };
@@ -508,7 +575,9 @@ async function applySearchToPageData(pageData, query, options = {}) {
       matchedCount: matchedRows.length,
       totalCount: allRows.length,
       exact: false,
-      scoped: false
+      scoped: false,
+      exactSource: lookup?.source || "api",
+      fullSnapshot: lookup?.fullSnapshot !== false
     },
     lookup
   };
@@ -530,11 +599,13 @@ function searchControls({id, label, placeholder, query, search}) {
   const clearLink = query
     ? `<a class="search-clear" href="${escapeHtml(hrefWithoutParams(["q", "page"]))}">Clear</a>`
     : "";
+  const exactScope = search?.fullSnapshot === false ? "exported rows" : "full snapshot";
+  const exactSource = search?.exactSource === "static" ? "static exact lookup" : "exact lookup";
   const searchMeta = search
     ? `<p class="meta search-meta">${search.exact
-      ? `Exact lookup "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} full-snapshot row.`
+      ? `${exactSource[0].toUpperCase()}${exactSource.slice(1)} "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} ${exactScope} row.`
       : search.scoped
-        ? `Search "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} of ${fmt.format(search.totalCount)} loaded rows. Exact name lookup still uses the full snapshot.`
+        ? `Search "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} of ${fmt.format(search.totalCount)} loaded rows. Exact name lookup still checks ${exactScope}.`
         : `Search "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} of ${fmt.format(search.totalCount)} exported rows.`}</p>`
     : "";
   return `<form class="search-form" role="search" action="${escapeHtml(currentPageName())}" method="get">
@@ -555,7 +626,14 @@ function lookupNotice(pageData, pageName) {
     return `<p class="meta search-meta">Exact lookup found ${escapeHtml(pageData.lookup.row.name)} in the full snapshot, but it is not a DANE candidate in the current data.</p>`;
   }
   if (pageData.lookup.found) {
+    if (pageData.lookup.source === "static") {
+      const scope = pageData.lookup.fullSnapshot === false ? "the exported Names rows" : "the sorted static Names export";
+      return `<p class="meta search-meta">Exact lookup used ${scope}.</p>`;
+    }
     return `<p class="meta search-meta">Exact lookup uses the full snapshot.</p>`;
+  }
+  if (pageData.lookup.source === "static" && pageData.lookup.fullSnapshot === false) {
+    return `<p class="meta search-meta">Exact lookup did not find ${escapeHtml(pageData.lookup.normalized || activeSearch())} in the exported Names rows. This export is truncated.</p>`;
   }
   return `<p class="meta search-meta">Exact lookup did not find ${escapeHtml(pageData.lookup.normalized || activeSearch())} in the full snapshot.</p>`;
 }

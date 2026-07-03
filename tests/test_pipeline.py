@@ -153,6 +153,7 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     providers = summary["providers"]
     names_pages = json.loads((out / "data/names-pages.json").read_text(encoding="utf-8"))
     names_page_rows = json.loads((out / "data/names-pages/all/page-1.json").read_text(encoding="utf-8"))["rows"]
+    names_page_names = [row["name"] for row in names_page_rows]
     namebase_provider = next(item for item in providers if item["provider_key"] == "namebase/default")
     assert manifest["manifest_version"] == 1
     assert manifest["snapshot"]["height"] == 123456
@@ -174,6 +175,7 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert "topology.sqlite.gz" not in manifest_artifacts
     assert names_pages["collections"]["all"]["row_count"] == 9
     assert names_pages["collections"]["all"]["page_count"] == 1
+    assert names_page_names == sorted(names_page_names)
     assert names_pages["collections"]["dane_rows"]["row_count"] == 1
     assert names_pages["collections"]["ds_records"]["row_count"] == 1
     assert names_pages["collections"]["strict_hns_ready"]["row_count"] == 3

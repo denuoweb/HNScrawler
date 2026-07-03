@@ -70,6 +70,8 @@ Every generated snapshot includes source provenance, provider-rule provenance, p
 
 The Names page is backed by paginated `data/names-pages/` JSON. `--names-limit=0` means the generated browse data covers the full snapshot. Optional download artifacts (`data/names.json`, `data/names.csv`, and `data/topology.sqlite.gz`) can still be generated explicitly with `--include-downloads`, but are not part of the production default.
 
+Exact name search first tries the lightweight lookup API when it is available. On the static site it falls back to binary-searching the sorted `names-pages/all` collection, so a direct name lookup does not require loading the full 12M+ row export or storing an additional lookup index.
+
 Generated site files:
 
 - `index.html`

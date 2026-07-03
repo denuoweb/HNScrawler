@@ -122,13 +122,12 @@ Public exports are generated from SQLite:
 - `summary.json`
 - `manifest.json`
 - `faq_answers.json`
-- `classes.json`
-- `providers.json`
-- `broken.json`
 - `names-pages.json`
-- `names.json`
-- `names.csv`
-- `topology.sqlite.gz`
+- `names-pages/<collection>/page-<n>.json`
+
+The default public export does not write standalone Providers, Classes, Broken, DANE, CSV, SQLite, or full `names.json` artifacts. Provider, class, failure, and DANE summaries live in `summary.json`; rows are searched and filtered through the Names collections. `names.json`, `names.csv`, and `topology.sqlite.gz` are written only when `--include-downloads` is explicitly requested.
+
+Names collections are ordered by normalized name. The browser uses that invariant for static exact-name lookup: if `/api/name` is unavailable, it binary-searches the sorted `all` collection by fetching only a small number of page files. Compact row arrays still include first NS/GLUE/SYNTH scalar fields for DANE generator handoff links.
 
 `manifest.json` is the export contract for the static data directory. It records:
 
