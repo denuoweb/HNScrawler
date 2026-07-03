@@ -87,7 +87,7 @@ Generated site files:
 - `data/names-pages.json`
 - `data/names-pages/...`
 
-Default production storage sizes are intentionally modest: 150 GB for the indexer data disk and 50 GB for the web artifact disk. The indexer pipeline starts HSD for update phases and stops it before live checks/site generation by default.
+Default production storage sizes are intentionally modest: 150 GB for the indexer data disk and 50 GB for the web artifact disk. The GCE pipeline and local nightly wrapper start HSD for update phases and stop it before live checks/site generation by default.
 
 ## Commands
 
