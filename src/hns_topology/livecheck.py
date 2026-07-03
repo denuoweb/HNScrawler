@@ -46,8 +46,14 @@ class RateLimiter:
             self.last = time.monotonic()
 
 
-def run_live_checks(conn, *, limit: int | None, config: LiveCheckConfig) -> int:
-    rows = select_live_check_candidates(conn, limit=limit)
+def run_live_checks(
+    conn,
+    *,
+    limit: int | None,
+    config: LiveCheckConfig,
+    priority_names: Iterable[str] = (),
+) -> int:
+    rows = select_live_check_candidates(conn, limit=limit, priority_names=priority_names)
     limiter = RateLimiter(config.min_delay_ms)
     checked = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=config.concurrency) as executor:
@@ -76,23 +82,68 @@ def count_live_check_candidates(conn) -> int:
     return int(row[0] if row else 0)
 
 
-def select_live_check_candidates(conn, *, limit: int | None) -> list[dict]:
+def select_live_check_candidates(
+    conn,
+    *,
+    limit: int | None,
+    priority_names: Iterable[str] = (),
+) -> list[dict]:
     class_placeholders = ",".join("?" for _ in PROMISING_CLASSES)
+    select_columns = (
+        "n.name, n.onchain_class, rs.ns_names, rs.glue4, rs.glue6, "
+        "rs.synth4, rs.synth6, rs.ds_records, rs.has_ds"
+    )
+    rows = []
+    seen: set[str] = set()
+    normalized_priority_names = [
+        name.strip().lower().rstrip(".")
+        for name in priority_names
+        if name and name.strip()
+    ]
+    if normalized_priority_names:
+        name_placeholders = ",".join("?" for _ in normalized_priority_names)
+        priority_rows = conn.execute(
+            f"""
+            SELECT {select_columns}
+            FROM names n
+            JOIN resource_summary rs ON rs.name = n.name
+            LEFT JOIN live_status ls ON ls.name = n.name
+            WHERE n.expired = 0
+              AND n.onchain_class IN ({class_placeholders})
+              AND (ls.next_check_at IS NULL OR ls.next_check_at <= ?)
+              AND n.name IN ({name_placeholders})
+            ORDER BY n.name
+            """,
+            [*sorted(PROMISING_CLASSES), utc_now(), *normalized_priority_names],
+        ).fetchall()
+        for row in priority_rows:
+            rows.append(row)
+            seen.add(row["name"])
+
+    remaining_limit = None if limit is None else max(0, limit - len(rows))
+    if remaining_limit == 0:
+        return [
+            parse_json_columns(dict(row), ["ns_names", "glue4", "glue6", "synth4", "synth6", "ds_records"])
+            for row in rows
+        ]
+
+    exclusion = f"AND n.name NOT IN ({','.join('?' for _ in seen)})" if seen else ""
     sql = f"""
-      SELECT n.name, n.onchain_class, rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.ds_records, rs.has_ds
+      SELECT {select_columns}
       FROM names n
       JOIN resource_summary rs ON rs.name = n.name
       LEFT JOIN live_status ls ON ls.name = n.name
       WHERE n.expired = 0
         AND n.onchain_class IN ({class_placeholders})
         AND (ls.next_check_at IS NULL OR ls.next_check_at <= ?)
+        {exclusion}
       ORDER BY n.updated_at DESC, n.name
     """
-    params: list = [*sorted(PROMISING_CLASSES), utc_now()]
-    if limit is not None:
+    params: list = [*sorted(PROMISING_CLASSES), utc_now(), *sorted(seen)]
+    if remaining_limit is not None:
         sql += " LIMIT ?"
-        params.append(limit)
-    rows = conn.execute(sql, params).fetchall()
+        params.append(remaining_limit)
+    rows.extend(conn.execute(sql, params).fetchall())
     return [
         parse_json_columns(dict(row), ["ns_names", "glue4", "glue6", "synth4", "synth6", "ds_records"])
         for row in rows
@@ -328,7 +379,9 @@ def _ds_matches_dnskey(
 
 def _find_rrsig(response, owner: dns.name.Name, covered_type: dns.rdatatype.RdataType):
     for rrset in response.answer:
-        if rrset.name == owner and rrset.rdtype == dns.rdatatype.RRSIG and rrset.covers() == covered_type:
+        covers = getattr(rrset, "covers", None)
+        covered = covers() if callable(covers) else covers
+        if rrset.name == owner and rrset.rdtype == dns.rdatatype.RRSIG and covered == covered_type:
             return rrset
     return None
 

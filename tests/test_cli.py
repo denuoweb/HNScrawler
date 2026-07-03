@@ -59,6 +59,7 @@ def live_check_args(db_path, **overrides):
         "min_delay_ms": 1,
         "timeout": 0.1,
         "resolver": "192.0.2.53",
+        "priority_name": [],
     }
     values.update(overrides)
     return argparse.Namespace(**values)

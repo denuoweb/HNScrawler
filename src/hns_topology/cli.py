@@ -124,6 +124,7 @@ def build_parser() -> argparse.ArgumentParser:
     live.add_argument("--min-delay-ms", type=int, default=250)
     live.add_argument("--timeout", type=float, default=5.0)
     live.add_argument("--resolver")
+    live.add_argument("--priority-name", action="append", default=[])
     live.set_defaults(func=cmd_live_check)
 
     export = sub.add_parser("export", help="Write JSON/CSV/SQLite.gz artifacts.")
@@ -477,7 +478,12 @@ def cmd_live_check(args: argparse.Namespace) -> int:
         set_meta(conn, "live_check_timeout_seconds", str(config.timeout))
         set_meta(conn, "live_check_recheck_seconds", str(config.recheck_seconds))
         set_meta(conn, "live_check_resolver", config.resolver or "system")
-        count = run_live_checks(conn, limit=args.limit, config=config)
+        count = run_live_checks(
+            conn,
+            limit=args.limit,
+            config=config,
+            priority_names=getattr(args, "priority_name", []),
+        )
         finished_at = utc_now()
         set_meta(conn, "live_check_checked_count", str(count))
         set_meta(conn, "live_check_finished_at", finished_at)

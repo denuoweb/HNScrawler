@@ -1,4 +1,5 @@
 import hashlib
+from pathlib import Path
 
 import dns.dnssec
 import dns.name
@@ -7,14 +8,21 @@ import dns.rdataclass
 import dns.rdatatype
 import dns.rrset
 
+from hns_topology.db import connect
+from hns_topology.indexer import bootstrap_from_fixture
 from hns_topology.livecheck import (
     DnssecResult,
     HttpsResult,
     LiveCheckConfig,
     _ds_matches_dnskey,
+    _find_rrsig,
     _match_association,
     check_name,
+    select_live_check_candidates,
 )
+from hns_topology.provider_rules import ProviderRules
+
+FIXTURE = Path("tests/fixtures/sample_hsd_names.json")
 
 
 def test_tlsa_association_matching_supports_full_and_hashes():
@@ -48,6 +56,30 @@ def test_ds_record_matches_dnskey():
         ],
         rrset,
     )
+
+
+def test_find_rrsig_accepts_dnspython_covers_property():
+    owner = dns.name.from_text("example.")
+
+    class RrsigLike:
+        name = owner
+        rdtype = dns.rdatatype.RRSIG
+        covers = dns.rdatatype.DNSKEY
+
+    class ResponseLike:
+        answer = [RrsigLike()]
+
+    assert _find_rrsig(ResponseLike(), owner, dns.rdatatype.DNSKEY) is ResponseLike.answer[0]
+
+
+def test_priority_live_check_names_are_selected_before_limit(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+        rows = select_live_check_candidates(conn, limit=1, priority_names=["secure"])
+
+    assert [row["name"] for row in rows] == ["secure"]
 
 
 class DummyLimiter:
