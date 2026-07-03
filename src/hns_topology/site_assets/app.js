@@ -1,6 +1,8 @@
 const fmt = new Intl.NumberFormat("en-US");
 const PAGE_FETCH_MIN_DELAY_MS = 350;
+const COLLECTION_FETCH_BATCH_SIZE = 8;
 let nextPageFetchAt = 0;
+const collectionRowsCache = new Map();
 
 async function loadJson(path) {
   const response = await fetch(path);
@@ -36,6 +38,10 @@ function activeFilter() {
 function activePage() {
   const page = Number.parseInt(new URLSearchParams(window.location.search).get("page") || "1", 10);
   return Number.isFinite(page) && page > 0 ? page : 1;
+}
+
+function activeSearch() {
+  return (new URLSearchParams(window.location.search).get("q") || "").trim();
 }
 
 function hasItems(value) {
@@ -105,8 +111,8 @@ function bars(rows, labelKey, valueKey, limit = 12) {
   }).join("")}</div>`;
 }
 
-function table(rows, columns) {
-  if (!rows.length) return `<p class="empty-state">No rows in this page.</p>`;
+function table(rows, columns, emptyMessage = "No rows in this page.") {
+  if (!rows.length) return `<p class="empty-state">${escapeHtml(emptyMessage)}</p>`;
   return `<div class="table-wrap"><table><thead><tr>${columns.map((column) => `<th>${column.label}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${columns.map((column) => `<td>${formatCell(row[column.key])}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
 }
 
@@ -164,6 +170,10 @@ function clampedPage(collection) {
   return Math.min(activePage(), pageCount);
 }
 
+function currentPageName() {
+  return window.location.pathname.split("/").pop() || "index.html";
+}
+
 function pageHref(page) {
   const params = new URLSearchParams(window.location.search);
   if (page <= 1) {
@@ -172,7 +182,15 @@ function pageHref(page) {
     params.set("page", String(page));
   }
   const query = params.toString();
-  const path = window.location.pathname.split("/").pop() || "index.html";
+  const path = currentPageName();
+  return query ? `${path}?${query}` : path;
+}
+
+function hrefWithoutParams(keys) {
+  const params = new URLSearchParams(window.location.search);
+  keys.forEach((key) => params.delete(key));
+  const query = params.toString();
+  const path = currentPageName();
   return query ? `${path}?${query}` : path;
 }
 
@@ -209,6 +227,110 @@ async function loadPaginatedRows(indexPath, filter) {
     page,
     rows: Array.isArray(data.rows) ? data.rows : []
   };
+}
+
+async function loadCollectionRows(collection) {
+  const pageCount = Number(collection.page_count || 0);
+  if (pageCount <= 0) return [];
+  const cacheKey = collection.path_template;
+  if (collectionRowsCache.has(cacheKey)) return collectionRowsCache.get(cacheKey);
+
+  const rowsPromise = (async () => {
+    const rows = [];
+    for (let start = 1; start <= pageCount; start += COLLECTION_FETCH_BATCH_SIZE) {
+      const end = Math.min(start + COLLECTION_FETCH_BATCH_SIZE - 1, pageCount);
+      const pages = [];
+      for (let page = start; page <= end; page += 1) {
+        pages.push(loadJson(pagePath(collection.path_template, page)));
+      }
+      const pageResults = await Promise.all(pages);
+      pageResults.forEach((data) => {
+        if (Array.isArray(data.rows)) rows.push(...data.rows);
+      });
+    }
+    return rows;
+  })();
+  collectionRowsCache.set(cacheKey, rowsPromise);
+  return rowsPromise;
+}
+
+function searchTokens(query) {
+  return query.toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+function flattenSearchValue(value, parts) {
+  if (value === null || value === undefined) return;
+  if (Array.isArray(value)) {
+    value.forEach((item) => flattenSearchValue(item, parts));
+    return;
+  }
+  if (typeof value === "object") {
+    Object.values(value).forEach((item) => flattenSearchValue(item, parts));
+    return;
+  }
+  parts.push(String(value).toLowerCase());
+}
+
+function rowMatchesSearch(row, tokens) {
+  if (!tokens.length) return true;
+  const parts = [];
+  flattenSearchValue(row, parts);
+  const searchable = parts.join(" ");
+  return tokens.every((token) => searchable.includes(token));
+}
+
+async function applySearchToPageData(pageData, query) {
+  if (!query) return {...pageData, search: null};
+  const allRows = await loadCollectionRows(pageData.collection);
+  const tokens = searchTokens(query);
+  const matchedRows = allRows.filter((row) => rowMatchesSearch(row, tokens));
+  const pageSize = Number(pageData.collection.page_size || 0) || 100;
+  const pageCount = matchedRows.length ? Math.ceil(matchedRows.length / pageSize) : 0;
+  const page = pageCount > 0 ? Math.min(activePage(), pageCount) : 1;
+  const start = (page - 1) * pageSize;
+  return {
+    ...pageData,
+    collection: {
+      ...pageData.collection,
+      row_count: matchedRows.length,
+      page_count: pageCount
+    },
+    page,
+    rows: matchedRows.slice(start, start + pageSize),
+    search: {
+      query,
+      matchedCount: matchedRows.length,
+      totalCount: allRows.length
+    }
+  };
+}
+
+function searchHiddenInputs() {
+  const params = new URLSearchParams(window.location.search);
+  params.delete("q");
+  params.delete("page");
+  return Array.from(params.entries()).map(([key, value]) => (
+    `<input type="hidden" name="${escapeHtml(key)}" value="${escapeHtml(value)}">`
+  )).join("");
+}
+
+function searchControls({id, label, placeholder, query, search}) {
+  const clearLink = query
+    ? `<a class="search-clear" href="${escapeHtml(hrefWithoutParams(["q", "page"]))}">Clear</a>`
+    : "";
+  const searchMeta = search
+    ? `<p class="meta search-meta">Search "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} of ${fmt.format(search.totalCount)} exported rows.</p>`
+    : "";
+  return `<form class="search-form" role="search" action="${escapeHtml(currentPageName())}" method="get">
+    ${searchHiddenInputs()}
+    <label class="search-label" for="${escapeHtml(id)}">${escapeHtml(label)}</label>
+    <div class="search-row">
+      <input id="${escapeHtml(id)}" type="search" name="q" value="${escapeHtml(query)}" placeholder="${escapeHtml(placeholder)}" autocomplete="off">
+      <button class="search-button" type="submit">Search</button>
+      ${clearLink}
+    </div>
+    ${searchMeta}
+  </form>`;
 }
 
 async function renderOverview(app) {
@@ -269,17 +391,26 @@ async function renderClasses(app) {
 }
 
 async function renderNames(app) {
-  const [summary, pageData] = await Promise.all([
+  const [summary, loadedPageData] = await Promise.all([
     loadJson("data/summary.json"),
     loadPaginatedRows("data/names-pages.json", activeFilter())
   ]);
   const filter = activeFilter();
-  app.innerHTML = `${filterNotice(filter, pageData.index.collections.all.row_count, pageData.collection.row_count)}
+  const query = activeSearch();
+  const pageData = await applySearchToPageData(loadedPageData, query);
+  app.innerHTML = `${filterNotice(filter, pageData.index.collections.all.row_count, loadedPageData.collection.row_count)}
     <section class="panel full">
       <div class="panel-heading">
         <div><h2>Names</h2><p class="meta">${pageRangeMeta(pageData.collection, pageData.page, pageData.rows)} - height ${summary.last_indexed_height ?? ""}</p></div>
         ${pagination(pageData.collection, pageData.page)}
       </div>
+      ${searchControls({
+        id: "names-search",
+        label: "Search Names",
+        placeholder: "Name, provider, records, status",
+        query,
+        search: pageData.search
+      })}
       ${table(pageData.rows, [
         {key: "name", label: "Name"},
         {key: "onchain_class", label: "Class"},
@@ -291,7 +422,7 @@ async function renderNames(app) {
         {key: "dnssec_status", label: "DNSSEC"},
         {key: "dane_status", label: "DANE"},
         {key: "failure_reason", label: "Failure"}
-      ])}
+      ], query ? "No names match this search." : "No rows in this page.")}
       ${pagination(pageData.collection, pageData.page)}
     </section>`;
 }
@@ -315,12 +446,14 @@ async function renderBroken(app) {
 }
 
 async function renderDane(app) {
-  const [summary, dane, pageData] = await Promise.all([
+  const [summary, dane, loadedPageData] = await Promise.all([
     loadJson("data/summary.json"),
     loadJson("data/dane.json"),
     loadPaginatedRows("data/dane-pages.json", activeFilter())
   ]);
   const filter = activeFilter();
+  const query = activeSearch();
+  const pageData = await applySearchToPageData(loadedPageData, query);
   app.innerHTML = `<section class="grid">
     <article class="panel"><h2>DANE Summary</h2>
       <div class="stat-list">
@@ -330,9 +463,17 @@ async function renderDane(app) {
       <p class="meta">Height ${summary.last_indexed_height ?? ""}</p>
     </article>
     <article class="panel"><div class="panel-heading">
-      <div><h2>DANE Rows</h2>${filterNotice(filter, pageData.index.collections.all.row_count, pageData.collection.row_count)}<p class="meta">${pageRangeMeta(pageData.collection, pageData.page, pageData.rows)}</p></div>
+      <div><h2>DANE Rows</h2>${filterNotice(filter, pageData.index.collections.all.row_count, loadedPageData.collection.row_count)}<p class="meta">${pageRangeMeta(pageData.collection, pageData.page, pageData.rows)}</p></div>
       ${pagination(pageData.collection, pageData.page)}
-    </div>${table(pageData.rows, [
+    </div>
+    ${searchControls({
+      id: "dane-search",
+      label: "Search DANE Rows",
+      placeholder: "Name, DNSSEC, TLSA, DANE, failure",
+      query,
+      search: pageData.search
+    })}
+    ${table(pageData.rows, [
       {key: "name", label: "Name"},
       {key: "has_ds", label: "DS"},
       {key: "ns_names", label: "NS"},
@@ -341,7 +482,7 @@ async function renderDane(app) {
       {key: "dane_status", label: "DANE"},
       {key: "failure_reason", label: "Failure"},
       {key: "checked_at", label: "Checked"}
-    ])}${pagination(pageData.collection, pageData.page)}</article>
+    ], query ? "No DANE rows match this search." : "No rows in this page.")}${pagination(pageData.collection, pageData.page)}</article>
   </section>`;
 }
 
