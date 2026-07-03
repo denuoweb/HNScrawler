@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -597,7 +598,7 @@ def _write_names_pages_streamed(
     page_size: int,
 ) -> dict[str, Any]:
     if base_dir.exists():
-        shutil.rmtree(base_dir)
+        _remove_tree(base_dir)
     base_dir.mkdir(parents=True, exist_ok=True)
 
     collections: dict[str, Any] = {}
@@ -1061,7 +1062,28 @@ def _effective_names_limit(summary: dict[str, Any], names_limit: int) -> int:
 def _remove_obsolete_data(out: Path) -> None:
     for relative in ("dane.json", "dane-pages.json"):
         (out / relative).unlink(missing_ok=True)
-    shutil.rmtree(out / "dane-pages", ignore_errors=True)
+    _remove_tree(out / "dane-pages", missing_ok=True)
+
+
+def _remove_tree(path: Path, *, missing_ok: bool = False) -> None:
+    if not path.exists():
+        if missing_ok:
+            return
+        raise FileNotFoundError(path)
+    last_error: OSError | None = None
+    for attempt in range(5):
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            if missing_ok:
+                return
+            raise
+        except OSError as exc:
+            last_error = exc
+            time.sleep(0.25 * (attempt + 1))
+    if last_error is not None:
+        raise last_error
 
 
 def _log_export(message: str) -> None:
