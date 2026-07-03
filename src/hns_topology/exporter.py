@@ -61,6 +61,8 @@ DANE_FILTERS = {
     "stale_tlsa_only": "ls.failure_reason = 'stale_tlsa_spki_mismatch'",
 }
 
+DANE_CANDIDATE_CLASSES = ("DNSSEC_CANDIDATE", "DANE_CANDIDATE")
+
 FAQ_KEYS = (
     "direct_ip_records",
     "delegated_names",
@@ -92,7 +94,7 @@ def export_all(
     write_json(out / "classes.json", build_classes(conn))
     write_json(out / "providers.json", build_providers(conn))
     write_json(out / "broken.json", build_broken(conn))
-    write_json(out / "dane.json", build_dane(conn))
+    write_json(out / "dane.json", build_dane(conn, summary=summary))
     write_json(out / "names-pages.json", write_names_pages(conn, out, limit=names_limit, page_size=PAGE_SIZE))
     write_json(out / "dane-pages.json", write_dane_pages(conn, out, limit=names_limit, page_size=PAGE_SIZE))
     if include_downloads:
@@ -422,9 +424,16 @@ def build_broken(conn: sqlite3.Connection) -> dict[str, Any]:
     return {"reasons": reasons, "examples": examples}
 
 
-def build_dane(conn: sqlite3.Connection) -> dict[str, Any]:
+def build_dane(conn: sqlite3.Connection, summary: dict[str, Any] | None = None) -> dict[str, Any]:
+    ds_count = int(summary["ds_records"]) if summary else table_count(
+        conn,
+        """
+        SELECT COUNT(*) FROM names
+        WHERE COALESCE(expired, 0) = 0 AND instr(COALESCE(record_types, ''), '"DS"') > 0
+        """,
+    )
     return {
-        "ds_count": table_count(conn, "SELECT COUNT(*) FROM resource_summary WHERE has_ds = 1"),
+        "ds_count": ds_count,
         "valid_dane_count": table_count(conn, "SELECT COUNT(*) FROM live_status WHERE dane_status = 'valid'"),
         "rows": build_dane_rows(conn, limit=500),
     }
@@ -470,6 +479,9 @@ def build_dane_rows(
     offset: int = 0,
     where: str = DANE_BASE_WHERE,
 ) -> list[dict[str, Any]]:
+    if where == DANE_BASE_WHERE:
+        rows = _collect_dane_rows(conn, limit=max(0, limit + offset))
+        return rows[offset : offset + limit]
     rows = conn.execute(
         f"""
         SELECT n.name, rs.has_ds, rs.ns_names, ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.failure_reason, ls.checked_at
@@ -484,6 +496,59 @@ def build_dane_rows(
         (limit, offset),
     ).fetchall()
     return [parse_json_columns(dict(row), ["ns_names"]) for row in rows]
+
+
+def _collect_dane_rows(conn: sqlite3.Connection, *, limit: int) -> list[dict[str, Any]]:
+    if limit <= 0:
+        return []
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(query: str, params: tuple[Any, ...]) -> None:
+        for row in conn.execute(query, params):
+            name = row["name"]
+            if name in seen:
+                continue
+            seen.add(name)
+            rows.append(parse_json_columns(dict(row), ["ns_names"]))
+            if len(rows) >= limit:
+                break
+
+    add(
+        """
+        SELECT
+          n.name, rs.has_ds, rs.ns_names, ls.dnssec_status, ls.tlsa_status,
+          ls.dane_status, ls.failure_reason, ls.checked_at
+        FROM live_status ls
+        JOIN names n ON n.name = ls.name
+        JOIN resource_summary rs ON rs.name = n.name
+        WHERE COALESCE(n.expired, 0) = 0
+          AND (ls.tlsa_status IS NOT NULL OR ls.dane_status IS NOT NULL)
+        ORDER BY ls.checked_at DESC, n.name
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    if len(rows) >= limit:
+        return rows
+
+    class_placeholders = ",".join("?" for _ in DANE_CANDIDATE_CLASSES)
+    add(
+        f"""
+        SELECT
+          n.name, rs.has_ds, rs.ns_names, ls.dnssec_status, ls.tlsa_status,
+          ls.dane_status, ls.failure_reason, ls.checked_at
+        FROM names n
+        JOIN resource_summary rs ON rs.name = n.name
+        LEFT JOIN live_status ls ON ls.name = n.name
+        WHERE COALESCE(n.expired, 0) = 0
+          AND n.onchain_class IN ({class_placeholders})
+        ORDER BY n.updated_at DESC, n.name
+        LIMIT ?
+        """,
+        (*DANE_CANDIDATE_CLASSES, limit),
+    )
+    return rows
 
 
 def write_names_pages(
@@ -555,19 +620,7 @@ def _write_dane_pages_streamed(
     rows_by_key: dict[str, list[dict[str, Any]]] = {key: [] for key in keys}
     if limit > 0:
         remaining = set(keys)
-        for row in conn.execute(
-            f"""
-            SELECT
-              n.name, rs.has_ds, rs.ns_names, ls.dnssec_status, ls.tlsa_status,
-              ls.dane_status, ls.failure_reason, ls.checked_at
-            FROM names n
-            JOIN resource_summary rs ON rs.name = n.name
-            LEFT JOIN live_status ls ON ls.name = n.name
-            WHERE {DANE_BASE_WHERE}
-            ORDER BY COALESCE(ls.checked_at, n.updated_at) DESC, n.name
-            """
-        ):
-            item = parse_json_columns(dict(row), ["ns_names"])
+        for item in _collect_dane_rows(conn, limit=limit):
             for key in list(remaining):
                 if key == "all" or _dane_row_matches_filter(item, key):
                     rows_by_key[key].append(item)
