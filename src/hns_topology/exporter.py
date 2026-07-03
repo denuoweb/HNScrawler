@@ -805,6 +805,11 @@ def _name_row_columns(*, row_detail: str = "full") -> str:
         return """
       n.name, n.onchain_class, n.provider_guess,
       COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types, rs.has_ds,
+      json_extract(rs.ns_names, '$[0]') AS first_ns,
+      json_extract(rs.glue4, '$[0]') AS first_glue4,
+      json_extract(rs.glue6, '$[0]') AS first_glue6,
+      json_extract(rs.synth4, '$[0]') AS first_synth4,
+      json_extract(rs.synth6, '$[0]') AS first_synth6,
       ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.failure_reason
     """
     return """
@@ -831,6 +836,11 @@ def _name_output_keys(*, row_detail: str = "full") -> list[str]:
             "provider_type",
             "record_types",
             "has_ds",
+            "first_ns",
+            "first_glue4",
+            "first_glue6",
+            "first_synth4",
+            "first_synth6",
             "dnssec_status",
             "tlsa_status",
             "dane_status",

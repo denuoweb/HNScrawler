@@ -75,11 +75,25 @@ function firstValue(value) {
 }
 
 function hasSynth(row) {
-  return Boolean(firstValue(row.synth4) || firstValue(row.synth6) || hasRecordType(row, "SYNTH4") || hasRecordType(row, "SYNTH6"));
+  return Boolean(
+    firstValue(row.synth4)
+    || firstValue(row.synth6)
+    || row.first_synth4
+    || row.first_synth6
+    || hasRecordType(row, "SYNTH4")
+    || hasRecordType(row, "SYNTH6")
+  );
 }
 
 function hasGlue(row) {
-  return Boolean(firstValue(row.glue4) || firstValue(row.glue6) || hasRecordType(row, "GLUE4") || hasRecordType(row, "GLUE6"));
+  return Boolean(
+    firstValue(row.glue4)
+    || firstValue(row.glue6)
+    || row.first_glue4
+    || row.first_glue6
+    || hasRecordType(row, "GLUE4")
+    || hasRecordType(row, "GLUE6")
+  );
 }
 
 function filterName(filter) {
@@ -180,9 +194,9 @@ function daneGeneratorUrl(row, intent) {
   params.set("domain_type", "hns");
   params.set("intent", intent);
   params.set("mode", hasSynth(row) && row.onchain_class === "DIRECT_SYNTH" ? "synth" : "delegated");
-  const nameserver = firstValue(row.ns_names);
-  const ns4 = firstValue(row.synth4) || firstValue(row.glue4);
-  const ns6 = firstValue(row.synth6) || firstValue(row.glue6);
+  const nameserver = firstValue(row.ns_names) || row.first_ns;
+  const ns4 = firstValue(row.synth4) || firstValue(row.glue4) || row.first_synth4 || row.first_glue4;
+  const ns6 = firstValue(row.synth6) || firstValue(row.glue6) || row.first_synth6 || row.first_glue6;
   if (nameserver) params.set("nameserver", nameserver);
   if (ns4) params.set("ns4", ns4);
   if (ns6) params.set("ns6", ns6);

@@ -243,6 +243,31 @@ def test_generate_site_records_limited_names_export_counts(tmp_path):
     assert release_is_valid(checks), [check for check in checks if not check.ok]
 
 
+def test_compact_names_pages_include_generator_handoff_fields(tmp_path, monkeypatch):
+    db_path = tmp_path / "topology.sqlite"
+    out = tmp_path / "public"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    monkeypatch.setattr("hns_topology.exporter.DETAILED_NAME_COLLECTION_ROW_LIMIT", 0)
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+        generate_site(conn, db_path=db_path, out_dir=out)
+
+    names_pages = json.loads((out / "data/names-pages.json").read_text(encoding="utf-8"))
+    collection = names_pages["collections"]["all"]
+    page = json.loads((out / "data" / collection["path_template"].replace("{page}", "1")).read_text(encoding="utf-8"))
+    columns = page["columns"]
+    rows = [dict(zip(columns, row, strict=True)) for row in page["rows"]]
+    delegated = next(row for row in rows if row["name"] == "delegated")
+    direct = next(row for row in rows if row["name"] == "direct")
+
+    assert collection["row_detail"] == "compact"
+    for key in ("first_ns", "first_glue4", "first_glue6", "first_synth4", "first_synth6"):
+        assert key in columns
+    assert delegated["first_ns"] == "ns1.delegated"
+    assert delegated["first_glue4"] == "198.51.100.2"
+    assert direct["first_synth4"] == "203.0.113.10"
+
+
 def test_release_validator_catches_missing_artifacts(tmp_path):
     db_path = tmp_path / "topology.sqlite"
     out = tmp_path / "public"

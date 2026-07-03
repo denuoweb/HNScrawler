@@ -96,6 +96,8 @@ Names is the canonical search surface. Rows carry enough status to derive one ne
 
 The DANE Record Generator is the record-production surface. Report action links use `/dane-generator/` query parameters such as `domain`, `intent`, `mode`, `nameserver`, `ns4`, and `ns6` to prefill that workflow.
 
+Large Names collections use compact row arrays to keep the public artifact set small. Compact rows still include first NS/GLUE/SYNTH scalar fields so generator handoff links can prefill the authoritative nameserver path without reintroducing separate Providers, DANE, or Broken-pages exports.
+
 ## Provider Rules
 
 Provider classification is intentionally rule-based for the first production release. The committed JSON rules are sorted by priority and can match:
