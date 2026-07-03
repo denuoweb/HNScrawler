@@ -455,18 +455,7 @@ def write_names_pages(
     limit: int,
     page_size: int,
 ) -> dict[str, Any]:
-    return _write_paginated_collections(
-        conn,
-        out / "names-pages",
-        page_size=page_size,
-        limit=limit,
-        filters=NAME_FILTERS,
-        collection_rows=lambda where: build_names(
-            conn,
-            limit=limit,
-            where=where,
-        ),
-    )
+    return _write_names_pages_streamed(conn, out / "names-pages", limit=limit, page_size=page_size)
 
 
 def write_dane_pages(
@@ -476,20 +465,162 @@ def write_dane_pages(
     limit: int,
     page_size: int,
 ) -> dict[str, Any]:
-    filters = {key: f"({DANE_BASE_WHERE}) AND ({where})" for key, where in DANE_FILTERS.items()}
-    return _write_paginated_collections(
-        conn,
-        out / "dane-pages",
-        page_size=page_size,
-        limit=limit,
-        filters=filters,
-        base_where=DANE_BASE_WHERE,
-        collection_rows=lambda where: build_dane_rows(
-            conn,
-            limit=limit,
-            where=where,
-        ),
-    )
+    return _write_dane_pages_streamed(conn, out / "dane-pages", limit=limit, page_size=page_size)
+
+
+def _write_names_pages_streamed(
+    conn: sqlite3.Connection,
+    base_dir: Path,
+    *,
+    limit: int,
+    page_size: int,
+) -> dict[str, Any]:
+    keys = ["all", *NAME_FILTERS]
+    rows_by_key: dict[str, list[dict[str, Any]]] = {key: [] for key in keys}
+    if limit > 0:
+        remaining = set(keys)
+        for row in conn.execute(
+            """
+            SELECT
+              n.name, n.state, n.expired, n.onchain_class, n.provider_guess, n.record_types,
+              rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.ds_records, rs.has_ds,
+              ls.dns_reachable, ls.dnssec_status, ls.dane_status, ls.https_status,
+              ls.strict_hns_status, ls.doh_fallback_status, ls.failure_reason, ls.checked_at
+            FROM names n
+            JOIN resource_summary rs ON rs.name = n.name
+            LEFT JOIN live_status ls ON ls.name = n.name
+            ORDER BY n.updated_at DESC, n.name
+            """
+        ):
+            item = parse_json_columns(
+                dict(row),
+                ["record_types", "ns_names", "glue4", "glue6", "synth4", "synth6", "ds_records"],
+            )
+            for key in list(remaining):
+                if key == "all" or _name_row_matches_filter(item, key):
+                    rows_by_key[key].append(item)
+                    if len(rows_by_key[key]) >= limit:
+                        remaining.remove(key)
+            if not remaining:
+                break
+    return _write_paginated_row_sets(base_dir, rows_by_key, limit=limit, page_size=page_size)
+
+
+def _write_dane_pages_streamed(
+    conn: sqlite3.Connection,
+    base_dir: Path,
+    *,
+    limit: int,
+    page_size: int,
+) -> dict[str, Any]:
+    keys = ["all", *DANE_FILTERS]
+    rows_by_key: dict[str, list[dict[str, Any]]] = {key: [] for key in keys}
+    if limit > 0:
+        remaining = set(keys)
+        for row in conn.execute(
+            f"""
+            SELECT
+              n.name, rs.has_ds, rs.ns_names, ls.dnssec_status, ls.tlsa_status,
+              ls.dane_status, ls.failure_reason, ls.checked_at
+            FROM names n
+            JOIN resource_summary rs ON rs.name = n.name
+            LEFT JOIN live_status ls ON ls.name = n.name
+            WHERE {DANE_BASE_WHERE}
+            ORDER BY COALESCE(ls.checked_at, n.updated_at) DESC, n.name
+            """
+        ):
+            item = parse_json_columns(dict(row), ["ns_names"])
+            for key in list(remaining):
+                if key == "all" or _dane_row_matches_filter(item, key):
+                    rows_by_key[key].append(item)
+                    if len(rows_by_key[key]) >= limit:
+                        remaining.remove(key)
+            if not remaining:
+                break
+    return _write_paginated_row_sets(base_dir, rows_by_key, limit=limit, page_size=page_size)
+
+
+def _write_paginated_row_sets(
+    base_dir: Path,
+    rows_by_key: dict[str, list[dict[str, Any]]],
+    *,
+    limit: int,
+    page_size: int,
+) -> dict[str, Any]:
+    if base_dir.exists():
+        shutil.rmtree(base_dir)
+    base_dir.mkdir(parents=True, exist_ok=True)
+    collections: dict[str, Any] = {}
+    for key, rows in rows_by_key.items():
+        collection_dir = base_dir / key
+        collection_dir.mkdir(parents=True, exist_ok=True)
+        count = min(len(rows), limit)
+        page_count = max(1, math.ceil(count / page_size)) if count else 0
+        collections[key] = {
+            "row_count": count,
+            "page_size": page_size,
+            "page_count": page_count,
+            "path_template": f"{base_dir.name}/{key}/page-{{page}}.json",
+        }
+        for page in range(1, page_count + 1):
+            offset = (page - 1) * page_size
+            page_rows = rows[offset : offset + page_size]
+            write_json(collection_dir / f"page-{page}.json", {"page": page, "rows": page_rows})
+        if page_count == 0:
+            write_json(collection_dir / "page-1.json", {"page": 1, "rows": []})
+    return {
+        "page_size": page_size,
+        "limit": limit,
+        "collections": collections,
+    }
+
+
+def _name_row_matches_filter(row: dict[str, Any], key: str) -> bool:
+    has_ns = bool(row.get("ns_names"))
+    has_glue = bool(row.get("glue4") or row.get("glue6"))
+    has_synth = bool(row.get("synth4") or row.get("synth6"))
+    has_ds = bool(row.get("has_ds"))
+    if key == "direct_ip_records":
+        return has_synth
+    if key == "delegated_names":
+        return has_ns
+    if key == "ds_records":
+        return has_ds
+    if key == "dnssec_candidates":
+        return has_ds and has_ns
+    if key == "likely_websites":
+        return has_synth or has_glue or (has_ds and has_ns)
+    if key == "strict_hns_working":
+        return row.get("strict_hns_status") == "working"
+    if key == "doh_fallback_required":
+        return row.get("doh_fallback_status") in {"required", "doh_fallback_only"}
+    if key == "dane_working":
+        return row.get("dane_status") == "valid"
+    if key == "missing_glue":
+        return row.get("failure_reason") == "missing_glue"
+    if key == "missing_glue_only":
+        return has_ns and not has_glue and (row.get("failure_reason") or "missing_glue") == "missing_glue"
+    if key == "stale_tlsa":
+        return row.get("failure_reason") == "stale_tlsa_spki_mismatch"
+    if key == "stale_tlsa_only":
+        return row.get("failure_reason") == "stale_tlsa_spki_mismatch"
+    return True
+
+
+def _dane_row_matches_filter(row: dict[str, Any], key: str) -> bool:
+    has_ds = bool(row.get("has_ds"))
+    has_ns = bool(row.get("ns_names"))
+    if key == "ds_records":
+        return has_ds
+    if key == "dnssec_candidates":
+        return has_ds and has_ns
+    if key == "dane_working":
+        return row.get("dane_status") == "valid"
+    if key == "stale_tlsa":
+        return row.get("failure_reason") == "stale_tlsa_spki_mismatch"
+    if key == "stale_tlsa_only":
+        return row.get("failure_reason") == "stale_tlsa_spki_mismatch"
+    return True
 
 
 def _write_paginated_collections(
