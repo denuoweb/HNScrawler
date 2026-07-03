@@ -139,14 +139,23 @@ function bars(rows, labelKey, valueKey, limit = 12, labelFormatter = (value) => 
   }).join("")}</div>`;
 }
 
+function columnClass(column) {
+  return column.className || `col-${String(column.key || "value").replace(/[^a-z0-9_-]/gi, "-").toLowerCase()}`;
+}
+
 function tableRows(rows, columns) {
-  return rows.map((row) => `<tr>${columns.map((column) => `<td>${column.render ? column.render(row) : formatCell(row[column.key])}</td>`).join("")}</tr>`).join("");
+  return rows.map((row) => `<tr>${columns.map((column) => `<td class="${escapeHtml(columnClass(column))}">${column.render ? column.render(row) : formatCell(row[column.key])}</td>`).join("")}</tr>`).join("");
 }
 
 function table(rows, columns, emptyMessage = "No rows in this page.", options = {}) {
   if (!rows.length) return `<p class="empty-state">${escapeHtml(emptyMessage)}</p>`;
   const tbodyId = options.tbodyId ? ` id="${escapeHtml(options.tbodyId)}"` : "";
-  return `<div class="table-wrap"><table><thead><tr>${columns.map((column) => `<th>${escapeHtml(column.label)}</th>`).join("")}</tr></thead><tbody${tbodyId}>${tableRows(rows, columns)}</tbody></table></div>`;
+  const wrapClass = options.wrapClass ? `table-wrap ${escapeHtml(options.wrapClass)}` : "table-wrap";
+  const tableClass = options.tableClass ? ` class="${escapeHtml(options.tableClass)}"` : "";
+  const colgroup = columns.some((column) => column.width)
+    ? `<colgroup>${columns.map((column) => `<col${column.width ? ` style="width:${escapeHtml(column.width)}"` : ""}>`).join("")}</colgroup>`
+    : "";
+  return `<div class="${wrapClass}"><table${tableClass}>${colgroup}<thead><tr>${columns.map((column) => `<th class="${escapeHtml(columnClass(column))}">${escapeHtml(column.label)}</th>`).join("")}</tr></thead><tbody${tbodyId}>${tableRows(rows, columns)}</tbody></table></div>`;
 }
 
 function formatCell(value) {
@@ -350,9 +359,19 @@ function hrefWithoutParams(keys) {
 function pageRangeMeta(collection, page, rows) {
   const total = Number(collection.row_count || 0);
   if (!total) return "0 exported rows";
+  if (!rows.length) return `No rows on page ${fmt.format(page)} of ${fmt.format(Math.max(1, Number(collection.page_count || 0)))}`;
   const start = (page - 1) * Number(collection.page_size || rows.length || 1) + 1;
   const end = Math.min(start + rows.length - 1, total);
   return `${fmt.format(start)}-${fmt.format(end)} of ${fmt.format(total)} exported rows`;
+}
+
+function hrefWithPage(page) {
+  const params = new URLSearchParams(window.location.search);
+  if (page <= 1) params.delete("page");
+  else params.set("page", String(page));
+  const query = params.toString();
+  const path = currentPageName();
+  return sitePath(query ? `${path}?${query}` : path);
 }
 
 async function loadPaginatedRows(indexPath, filter) {
@@ -859,20 +878,6 @@ async function renderOverview(app) {
     </section>`;
 }
 
-function namesFaqPanel(answers) {
-  const items = (answers || []).slice(0, 6);
-  if (!items.length) return "";
-  return `<aside class="names-faq panel">
-    <h2>FAQ</h2>
-    ${items.map((item) => `
-      <article class="names-faq-item">
-        <h3>${escapeHtml(item.question)}</h3>
-        <p class="meta">${fmt.format(item.count)} names - ${escapeHtml(item.definition)}</p>
-        <a href="${escapeHtml(sitePath(item.filter_link))}">Filtered table</a>
-      </article>`).join("")}
-  </aside>`;
-}
-
 async function renderFaq(app) {
   const [summary, answers] = await Promise.all([
     loadJson("data/summary.json"),
@@ -889,95 +894,79 @@ async function renderFaq(app) {
     </article>`).join("")}</section>`;
 }
 
-function namesScrollControls(collection, page, rows, disabled = false) {
-  const pageCount = Number(collection.page_count || 0);
-  if (disabled || pageCount <= page || !rows.length) return "";
-  return `<div class="scroll-controls">
-    <button class="load-more" id="load-more-names" type="button">Load more</button>
-    <p class="meta" id="names-scroll-status">${pageRangeMeta(collection, page, rows)}</p>
-  </div>`;
+function pageLink(label, targetPage, disabled) {
+  if (disabled) return `<span class="page-link disabled">${escapeHtml(label)}</span>`;
+  return `<a class="page-link" href="${escapeHtml(hrefWithPage(targetPage))}">${escapeHtml(label)}</a>`;
 }
 
-function wireNamesInfiniteScroll(collection, page, columns) {
-  const button = document.getElementById("load-more-names");
-  const tbody = document.getElementById("names-tbody");
-  const status = document.getElementById("names-scroll-status");
-  if (!button || !tbody) return;
+function namesPagination(collection, page) {
   const pageCount = Number(collection.page_count || 0);
-  const pageSize = Number(collection.page_size || 0) || 100;
-  let nextPage = page + 1;
-  let loadedRows = tbody.rows.length;
-  let loading = false;
+  if (pageCount <= 1) return "";
+  const safePage = Math.min(Math.max(1, page), pageCount);
+  return `<nav class="pagination names-pagination" aria-label="Names pages">
+    ${pageLink("First", 1, safePage <= 1)}
+    ${pageLink("Previous", safePage - 1, safePage <= 1)}
+    <span class="page-status">Page ${fmt.format(safePage)} of ${fmt.format(pageCount)}</span>
+    ${pageLink("Next", safePage + 1, safePage >= pageCount)}
+    ${pageLink("Last", pageCount, safePage >= pageCount)}
+  </nav>`;
+}
 
-  const updateStatus = () => {
-    if (!status) return;
-    const start = (page - 1) * pageSize + 1;
-    const end = Math.min(start + loadedRows - 1, Number(collection.row_count || 0));
-    status.textContent = `${fmt.format(start)}-${fmt.format(end)} of ${fmt.format(collection.row_count || 0)} exported rows`;
-  };
+function shortenName(value) {
+  const name = String(value || "");
+  if (name.length <= 18) return name;
+  return `${name.slice(0, 15)}...`;
+}
 
-  const loadNext = async () => {
-    if (loading || nextPage > pageCount) return;
-    loading = true;
-    button.disabled = true;
-    button.textContent = "Loading";
-    try {
-      const data = await loadPageJson(pagePath(collection.path_template, nextPage));
-      const rows = rowsFromPage(data, collection);
-      tbody.insertAdjacentHTML("beforeend", tableRows(rows, columns));
-      loadedRows += rows.length;
-      nextPage += 1;
-      updateStatus();
-      if (nextPage > pageCount) {
-        button.remove();
-        return;
-      }
-    } finally {
-      loading = false;
-      if (nextPage <= pageCount) {
-        button.disabled = false;
-        button.textContent = "Load more";
-      }
-    }
-  };
+function nameCell(row) {
+  const name = String(row.name || "");
+  return `<span class="name-cell" title="${escapeHtml(name)}">${escapeHtml(shortenName(name))}</span>`;
+}
 
-  button.addEventListener("click", loadNext);
-  if ("IntersectionObserver" in window) {
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) loadNext();
-    }, {rootMargin: "600px"});
-    observer.observe(button);
-  }
+function lastCheckedCell(row) {
+  const checkedAt = String(row.checked_at || "");
+  if (!checkedAt) return "";
+  return `<span title="${escapeHtml(checkedAt)}">${escapeHtml(checkedAt.replace("T", " ").replace(/:\d\d(?:\.\d+)?Z$/, " UTC"))}</span>`;
 }
 
 function namesColumns(rowDetail) {
   const compactColumns = [
-    {key: "name", label: "Name"},
-    {key: "next_step", label: "Next step", render: actionCell},
-    {key: "onchain_class", label: "Class"},
-    {key: "provider_guess", label: "Provider"},
-    {key: "provider_type", label: "Provider type"},
-    {key: "record_types", label: "Records"},
-    {key: "has_ds", label: "DS"},
-    {key: "dnssec_status", label: "DNSSEC"},
-    {key: "tlsa_status", label: "TLSA"},
-    {key: "dane_status", label: "DANE"},
-    {key: "failure_reason", label: "Failure"}
+    {key: "name", label: "Name", render: nameCell, width: "10%"},
+    {key: "next_step", label: "Next step", render: actionCell, width: "16%"},
+    {key: "onchain_class", label: "Class", width: "10%"},
+    {key: "provider_guess", label: "Provider", width: "10%"},
+    {key: "provider_type", label: "Provider type", width: "9%"},
+    {key: "record_types", label: "Records", width: "8%"},
+    {key: "has_ds", label: "DS", width: "4%"},
+    {key: "dnssec_status", label: "DNSSEC", width: "7%"},
+    {key: "tlsa_status", label: "TLSA", width: "6%"},
+    {key: "dane_status", label: "DANE", width: "6%"},
+    {key: "failure_reason", label: "Failure", width: "7%"},
+    {key: "checked_at", label: "Last checked", render: lastCheckedCell, width: "7%"}
   ];
   if (rowDetail === "compact") return compactColumns;
   return [
-    ...compactColumns.slice(0, 6),
-    {key: "ns_names", label: "NS"},
-    {key: "synth4", label: "SYNTH4"},
-    {key: "synth6", label: "SYNTH6"},
-    ...compactColumns.slice(6)
+    {...compactColumns[0], width: "8%"},
+    {...compactColumns[1], width: "14%"},
+    {...compactColumns[2], width: "8%"},
+    {...compactColumns[3], width: "8%"},
+    {...compactColumns[4], width: "7%"},
+    {...compactColumns[5], width: "6%"},
+    {key: "ns_names", label: "NS", width: "8%"},
+    {key: "synth4", label: "SYNTH4", width: "6%"},
+    {key: "synth6", label: "SYNTH6", width: "6%"},
+    {...compactColumns[6], width: "3%"},
+    {...compactColumns[7], width: "5%"},
+    {...compactColumns[8], width: "4%"},
+    {...compactColumns[9], width: "4%"},
+    {...compactColumns[10], width: "6%"},
+    {...compactColumns[11], width: "7%"}
   ];
 }
 
 async function renderNames(app) {
-  const [summary, answers, loadedPageData] = await Promise.all([
+  const [summary, loadedPageData] = await Promise.all([
     loadJson("data/summary.json"),
-    loadJson("data/faq_answers.json"),
     loadPaginatedRows("data/names-pages.json", activeFilter())
   ]);
   const providers = summary.providers || [];
@@ -1002,13 +991,12 @@ async function renderNames(app) {
         })}
         ${namesActionContext(summary.next_actions || [], filter)}
         ${lookupNotice(pageData, "names")}
-        ${table(pageData.rows, columns, query ? "No names match this search." : "No rows in this page.", {tbodyId: "names-tbody"})}
-        ${namesScrollControls(pageData.collection, pageData.page, pageData.rows, Boolean(query))}
+        ${namesPagination(pageData.collection, pageData.page)}
+        ${table(pageData.rows, columns, query ? "No names match this search." : "No rows in this page.", {wrapClass: "names-table-wrap", tableClass: "names-table"})}
+        ${namesPagination(pageData.collection, pageData.page)}
       </div>
-      ${namesFaqPanel(answers)}
     </section>`;
   wireAutoSubmitFilter();
-  wireNamesInfiniteScroll(pageData.collection, pageData.page, columns);
 }
 
 async function boot() {

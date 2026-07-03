@@ -677,7 +677,7 @@ def _name_row_columns(*, row_detail: str = "full") -> str:
       json_extract(rs.glue6, '$[0]') AS first_glue6,
       json_extract(rs.synth4, '$[0]') AS first_synth4,
       json_extract(rs.synth6, '$[0]') AS first_synth6,
-      ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.failure_reason
+      ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.failure_reason, ls.checked_at
     """
     return """
       n.name, n.state, n.expired, n.onchain_class, n.provider_guess,
@@ -712,6 +712,7 @@ def _name_output_keys(*, row_detail: str = "full") -> list[str]:
             "tlsa_status",
             "dane_status",
             "failure_reason",
+            "checked_at",
         ]
     return []
 

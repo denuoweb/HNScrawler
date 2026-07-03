@@ -197,6 +197,7 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert (out / "data" / names_pages["collections"]["provider:namebase/default"]["path_template"].replace("{page}", "1")).exists()
     assert "tlsa_status" in names_page_rows[0]
     assert "provider_type" in names_page_rows[0]
+    assert "checked_at" in names_page_rows[0]
     assert "classes" in summary
     assert "broken" in summary
     assert "examples" not in summary["broken"]
@@ -277,7 +278,7 @@ def test_compact_names_pages_include_generator_handoff_fields(tmp_path, monkeypa
     direct = next(row for row in rows if row["name"] == "direct")
 
     assert collection["row_detail"] == "compact"
-    for key in ("first_ns", "first_glue4", "first_glue6", "first_synth4", "first_synth6"):
+    for key in ("first_ns", "first_glue4", "first_glue6", "first_synth4", "first_synth6", "checked_at"):
         assert key in columns
     assert delegated["first_ns"] == "ns1.delegated"
     assert delegated["first_glue4"] == "198.51.100.2"

@@ -358,31 +358,51 @@ main {
 
 .names-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   align-items: start;
 }
 
-.names-main,
-.names-faq {
+.names-main {
   min-width: 0;
 }
 
-.names-faq {
-  position: sticky;
-  top: 16px;
+.names-pagination {
+  justify-content: space-between;
+  margin: 12px 0;
 }
 
-.names-faq-item {
-  display: grid;
-  gap: 6px;
-  padding: 12px 0;
-  border-top: 1px solid var(--line);
+.names-table-wrap {
+  overflow-x: hidden;
 }
 
-.names-faq-item:first-of-type {
-  border-top: 0;
-  padding-top: 0;
+.names-table {
+  table-layout: fixed;
+  min-width: 0;
+}
+
+.names-table th,
+.names-table td {
+  padding: 8px 6px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.names-table .col-name {
+  overflow: hidden;
+}
+
+.name-cell {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.names-table .action-cell {
+  min-width: 0;
+  max-width: none;
 }
 
 .bar-list {
@@ -739,10 +759,6 @@ th {
   .names-layout,
   .faq-list {
     grid-template-columns: 1fr;
-  }
-
-  .names-faq {
-    position: static;
   }
 
   .queue-context {
