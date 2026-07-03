@@ -61,6 +61,20 @@ DANE_FILTERS = {
     "stale_tlsa_only": "ls.failure_reason = 'stale_tlsa_spki_mismatch'",
 }
 
+FAQ_KEYS = (
+    "direct_ip_records",
+    "delegated_names",
+    "default_provider_names",
+    "ds_records",
+    "dnssec_candidates",
+    "likely_websites",
+    "strict_hns_working",
+    "doh_fallback_required",
+    "dane_working",
+    "missing_glue_only",
+    "stale_tlsa_only",
+)
+
 
 def export_all(
     conn: sqlite3.Connection,
@@ -95,98 +109,69 @@ def export_all(
 
 
 def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
-    active = table_count(conn, "SELECT COUNT(*) FROM names WHERE expired = 0")
-    total = table_count(conn, "SELECT COUNT(*) FROM names")
-    expired = table_count(conn, "SELECT COUNT(*) FROM names WHERE expired = 1")
-    direct_ip = table_count(
-        conn,
+    resource_counts = conn.execute(
         """
-        SELECT COUNT(*) FROM names n JOIN resource_summary rs ON rs.name = n.name
-        WHERE n.expired = 0 AND (json_array_length(rs.synth4) > 0 OR json_array_length(rs.synth6) > 0)
-        """,
-    )
-    delegated = table_count(
-        conn,
-        """
-        SELECT COUNT(*) FROM names n JOIN resource_summary rs ON rs.name = n.name
-        WHERE n.expired = 0 AND json_array_length(rs.ns_names) > 0
-        """,
-    )
-    delegated_with_glue = table_count(
-        conn,
-        """
-        SELECT COUNT(*) FROM names n JOIN resource_summary rs ON rs.name = n.name
-        WHERE n.expired = 0 AND json_array_length(rs.ns_names) > 0
-          AND (json_array_length(rs.glue4) > 0 OR json_array_length(rs.glue6) > 0)
-        """,
-    )
-    delegated_no_glue = table_count(
-        conn,
-        """
-        SELECT COUNT(*) FROM names n JOIN resource_summary rs ON rs.name = n.name
-        WHERE n.expired = 0 AND json_array_length(rs.ns_names) > 0
-          AND json_array_length(rs.glue4) = 0 AND json_array_length(rs.glue6) = 0
-        """,
-    )
-    ds_records = table_count(
-        conn,
-        "SELECT COUNT(*) FROM names n JOIN resource_summary rs ON rs.name = n.name WHERE n.expired = 0 AND rs.has_ds = 1",
-    )
-    dnssec_candidates = table_count(
-        conn,
-        """
-        SELECT COUNT(*) FROM names n JOIN resource_summary rs ON rs.name = n.name
-        WHERE n.expired = 0 AND rs.has_ds = 1 AND json_array_length(rs.ns_names) > 0
-        """,
-    )
-    dnssec_valid = table_count(
-        conn,
-        "SELECT COUNT(*) FROM live_status WHERE dnssec_status = 'valid'",
-    )
-    likely_websites = table_count(
-        conn,
-        """
-        SELECT COUNT(*) FROM names n JOIN resource_summary rs ON rs.name = n.name
-        WHERE n.expired = 0 AND (
-          json_array_length(rs.synth4) > 0 OR json_array_length(rs.synth6) > 0 OR
-          json_array_length(rs.glue4) > 0 OR json_array_length(rs.glue6) > 0 OR
-          (rs.has_ds = 1 AND json_array_length(rs.ns_names) > 0)
-        )
-        """,
-    )
-    strict_hns_working = table_count(
-        conn,
-        "SELECT COUNT(*) FROM live_status WHERE strict_hns_status = 'working'",
-    )
-    doh_fallback_required = table_count(
-        conn,
-        "SELECT COUNT(*) FROM live_status WHERE doh_fallback_status IN ('required', 'doh_fallback_only')",
-    )
-    dane_working = table_count(conn, "SELECT COUNT(*) FROM live_status WHERE dane_status = 'valid'")
-    default_provider = table_count(
-        conn,
-        """
-        SELECT COUNT(*) FROM names n JOIN provider_summary ps ON ps.provider_key = n.provider_guess
-        WHERE n.expired = 0 AND ps.provider_type = 'default_parking'
-        """,
-    )
-    missing_glue = table_count(
-        conn,
-        """
-        SELECT COUNT(*) FROM names n
-        JOIN resource_summary rs ON rs.name = n.name
+        SELECT
+          COUNT(*) AS total_names,
+          SUM(CASE WHEN COALESCE(n.expired, 0) = 0 THEN 1 ELSE 0 END) AS active_names,
+          SUM(CASE WHEN COALESCE(n.expired, 0) = 1 THEN 1 ELSE 0 END) AS expired_names,
+          SUM(CASE WHEN COALESCE(n.expired, 0) = 0
+                    AND (COALESCE(json_array_length(rs.synth4), 0) > 0
+                         OR COALESCE(json_array_length(rs.synth6), 0) > 0)
+                   THEN 1 ELSE 0 END) AS direct_ip_records,
+          SUM(CASE WHEN COALESCE(n.expired, 0) = 0
+                    AND COALESCE(json_array_length(rs.ns_names), 0) > 0
+                   THEN 1 ELSE 0 END) AS delegated_names,
+          SUM(CASE WHEN COALESCE(n.expired, 0) = 0
+                    AND COALESCE(json_array_length(rs.ns_names), 0) > 0
+                    AND (COALESCE(json_array_length(rs.glue4), 0) > 0
+                         OR COALESCE(json_array_length(rs.glue6), 0) > 0)
+                   THEN 1 ELSE 0 END) AS delegated_with_glue,
+          SUM(CASE WHEN COALESCE(n.expired, 0) = 0
+                    AND COALESCE(json_array_length(rs.ns_names), 0) > 0
+                    AND COALESCE(json_array_length(rs.glue4), 0) = 0
+                    AND COALESCE(json_array_length(rs.glue6), 0) = 0
+                   THEN 1 ELSE 0 END) AS delegated_no_glue,
+          SUM(CASE WHEN COALESCE(n.expired, 0) = 0 AND COALESCE(rs.has_ds, 0) = 1
+                   THEN 1 ELSE 0 END) AS ds_records,
+          SUM(CASE WHEN COALESCE(n.expired, 0) = 0
+                    AND COALESCE(rs.has_ds, 0) = 1
+                    AND COALESCE(json_array_length(rs.ns_names), 0) > 0
+                   THEN 1 ELSE 0 END) AS dnssec_candidates,
+          SUM(CASE WHEN COALESCE(n.expired, 0) = 0
+                    AND (
+                      COALESCE(json_array_length(rs.synth4), 0) > 0
+                      OR COALESCE(json_array_length(rs.synth6), 0) > 0
+                      OR COALESCE(json_array_length(rs.glue4), 0) > 0
+                      OR COALESCE(json_array_length(rs.glue6), 0) > 0
+                      OR (COALESCE(rs.has_ds, 0) = 1 AND COALESCE(json_array_length(rs.ns_names), 0) > 0)
+                    )
+                   THEN 1 ELSE 0 END) AS likely_websites,
+          SUM(CASE WHEN COALESCE(n.expired, 0) = 0 AND ps.provider_type = 'default_parking'
+                   THEN 1 ELSE 0 END) AS default_provider_names,
+          SUM(CASE WHEN COALESCE(n.expired, 0) = 0
+                    AND COALESCE(json_array_length(rs.ns_names), 0) > 0
+                    AND COALESCE(json_array_length(rs.glue4), 0) = 0
+                    AND COALESCE(json_array_length(rs.glue6), 0) = 0
+                    AND COALESCE(ls.failure_reason, 'missing_glue') = 'missing_glue'
+                   THEN 1 ELSE 0 END) AS missing_glue_only
+        FROM names n
+        LEFT JOIN resource_summary rs ON rs.name = n.name
         LEFT JOIN live_status ls ON ls.name = n.name
-        WHERE n.expired = 0
-          AND json_array_length(rs.ns_names) > 0
-          AND json_array_length(rs.glue4) = 0
-          AND json_array_length(rs.glue6) = 0
-          AND COALESCE(ls.failure_reason, 'missing_glue') = 'missing_glue'
-        """,
-    )
-    stale_tlsa = table_count(
-        conn,
-        "SELECT COUNT(*) FROM live_status WHERE failure_reason = 'stale_tlsa_spki_mismatch'",
-    )
+        LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
+        """
+    ).fetchone()
+    live_counts = conn.execute(
+        """
+        SELECT
+          SUM(CASE WHEN dnssec_status = 'valid' THEN 1 ELSE 0 END) AS dnssec_valid,
+          SUM(CASE WHEN strict_hns_status = 'working' THEN 1 ELSE 0 END) AS strict_hns_working,
+          SUM(CASE WHEN doh_fallback_status IN ('required', 'doh_fallback_only') THEN 1 ELSE 0 END) AS doh_fallback_required,
+          SUM(CASE WHEN dane_status = 'valid' THEN 1 ELSE 0 END) AS dane_working,
+          SUM(CASE WHEN failure_reason = 'stale_tlsa_spki_mismatch' THEN 1 ELSE 0 END) AS stale_tlsa_only
+        FROM live_status
+        """
+    ).fetchone()
     return {
         "generated_at": get_meta(conn, "generated_at", utc_now()),
         "last_indexed_height": _meta_int(conn, "last_indexed_height"),
@@ -201,23 +186,23 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
         "provider_rules_version": _meta_int(conn, "provider_rules_version"),
         "provider_rules_hash": get_meta(conn, "provider_rules_hash", ""),
         "provider_rules_path": get_meta(conn, "provider_rules_path", ""),
-        "total_names": total,
-        "active_names": active,
-        "expired_names": expired,
-        "direct_ip_records": direct_ip,
-        "delegated_names": delegated,
-        "delegated_with_glue": delegated_with_glue,
-        "delegated_no_glue": delegated_no_glue,
-        "default_provider_names": default_provider,
-        "ds_records": ds_records,
-        "dnssec_candidates": dnssec_candidates,
-        "dnssec_valid": dnssec_valid,
-        "likely_websites": likely_websites,
-        "strict_hns_working": strict_hns_working,
-        "doh_fallback_required": doh_fallback_required,
-        "dane_working": dane_working,
-        "missing_glue_only": missing_glue,
-        "stale_tlsa_only": stale_tlsa,
+        "total_names": _row_int(resource_counts, "total_names"),
+        "active_names": _row_int(resource_counts, "active_names"),
+        "expired_names": _row_int(resource_counts, "expired_names"),
+        "direct_ip_records": _row_int(resource_counts, "direct_ip_records"),
+        "delegated_names": _row_int(resource_counts, "delegated_names"),
+        "delegated_with_glue": _row_int(resource_counts, "delegated_with_glue"),
+        "delegated_no_glue": _row_int(resource_counts, "delegated_no_glue"),
+        "default_provider_names": _row_int(resource_counts, "default_provider_names"),
+        "ds_records": _row_int(resource_counts, "ds_records"),
+        "dnssec_candidates": _row_int(resource_counts, "dnssec_candidates"),
+        "dnssec_valid": _row_int(live_counts, "dnssec_valid"),
+        "likely_websites": _row_int(resource_counts, "likely_websites"),
+        "strict_hns_working": _row_int(live_counts, "strict_hns_working"),
+        "doh_fallback_required": _row_int(live_counts, "doh_fallback_required"),
+        "dane_working": _row_int(live_counts, "dane_working"),
+        "missing_glue_only": _row_int(resource_counts, "missing_glue_only"),
+        "stale_tlsa_only": _row_int(live_counts, "stale_tlsa_only"),
         "live_check_started_at": get_meta(conn, "live_check_started_at", ""),
         "live_check_finished_at": get_meta(conn, "live_check_finished_at", ""),
         "live_check_limit": get_meta(conn, "live_check_limit", ""),
@@ -233,6 +218,7 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
 
 def build_faq_answers(conn: sqlite3.Connection, summary: dict[str, Any]) -> list[dict[str, Any]]:
     active = max(1, int(summary["active_names"]))
+    examples = build_faq_examples(conn)
 
     def answer(key: str, question: str, count_key: str, definition: str, filter_link: str) -> dict[str, Any]:
         count = int(summary[count_key])
@@ -242,7 +228,7 @@ def build_faq_answers(conn: sqlite3.Connection, summary: dict[str, Any]) -> list
             "count": count,
             "percentage_of_active": round((count / active) * 100, 4),
             "definition": definition,
-            "examples": examples_for_filter(conn, key),
+            "examples": examples.get(key, []),
             "last_checked_height": summary["last_indexed_height"],
             "last_checked_time": summary["generated_at"],
             "filter_link": filter_link,
@@ -330,11 +316,70 @@ def build_faq_answers(conn: sqlite3.Connection, summary: dict[str, Any]) -> list
 
 
 def build_classes(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    rows = []
-    for klass in ONCHAIN_CLASSES:
-        count = table_count(conn, "SELECT COUNT(*) FROM names WHERE onchain_class = ?", (klass,))
-        rows.append({"class": klass, "count": count})
-    return rows
+    counts = {
+        row["onchain_class"]: int(row["count"])
+        for row in conn.execute("SELECT onchain_class, COUNT(*) AS count FROM names GROUP BY onchain_class")
+    }
+    return [{"class": klass, "count": counts.get(klass, 0)} for klass in ONCHAIN_CLASSES]
+
+
+def build_faq_examples(conn: sqlite3.Connection) -> dict[str, list[str]]:
+    examples = {key: [] for key in FAQ_KEYS}
+    live_filters = {
+        "strict_hns_working": "ls.strict_hns_status = 'working'",
+        "doh_fallback_required": "ls.doh_fallback_status IN ('required', 'doh_fallback_only')",
+        "dane_working": "ls.dane_status = 'valid'",
+        "stale_tlsa_only": "ls.failure_reason = 'stale_tlsa_spki_mismatch'",
+    }
+    for key, where in live_filters.items():
+        rows = conn.execute(
+            f"""
+            SELECT n.name
+            FROM live_status ls
+            JOIN names n ON n.name = ls.name
+            WHERE COALESCE(n.expired, 0) = 0 AND {where}
+            ORDER BY n.name
+            LIMIT 5
+            """
+        ).fetchall()
+        examples[key] = [row["name"] for row in rows]
+
+    resource_keys = (
+        "direct_ip_records",
+        "delegated_names",
+        "default_provider_names",
+        "ds_records",
+        "dnssec_candidates",
+        "likely_websites",
+        "missing_glue_only",
+    )
+    for row in conn.execute(
+        """
+        SELECT
+          n.name, n.provider_guess,
+          rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.has_ds,
+          ls.failure_reason, ps.provider_type
+        FROM names n
+        LEFT JOIN resource_summary rs ON rs.name = n.name
+        LEFT JOIN live_status ls ON ls.name = n.name
+        LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
+        WHERE COALESCE(n.expired, 0) = 0
+        ORDER BY n.name
+        """
+    ):
+        item = parse_json_columns(dict(row), ["ns_names", "glue4", "glue6", "synth4", "synth6"])
+        for key in resource_keys:
+            if len(examples[key]) >= 5:
+                continue
+            if key == "default_provider_names":
+                matches = item.get("provider_type") == "default_parking"
+            else:
+                matches = _name_row_matches_filter(item, key)
+            if matches:
+                examples[key].append(item["name"])
+        if all(len(examples[key]) >= 5 for key in resource_keys):
+            break
+    return examples
 
 
 def build_providers(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -789,6 +834,13 @@ def _artifact_entry(path: Path, relative: str) -> dict[str, Any]:
         "sha256": file_sha256(path),
         "bytes": path.stat().st_size,
     }
+
+
+def _row_int(row: sqlite3.Row | None, key: str) -> int:
+    if row is None:
+        return 0
+    value = row[key]
+    return int(value) if value is not None else 0
 
 
 def _csv_value(value: Any) -> Any:
