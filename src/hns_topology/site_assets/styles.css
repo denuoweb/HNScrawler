@@ -374,6 +374,16 @@ main {
   font-size: 13px;
 }
 
+.bar-link {
+  border-radius: 6px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.bar-link:hover {
+  background: #f4f8fc;
+}
+
 .bar-label {
   overflow: hidden;
   text-overflow: ellipsis;

@@ -127,12 +127,15 @@ function filterNotice(filter, before, after) {
   return `<p class="meta">Filter: ${escapeHtml(filterName(filter))}. Showing ${fmt.format(after)} of ${fmt.format(before)} exported rows.</p>`;
 }
 
-function bars(rows, labelKey, valueKey, limit = 12, labelFormatter = (value) => value) {
+function bars(rows, labelKey, valueKey, limit = 12, labelFormatter = (value) => value, hrefFormatter = null) {
   const max = Math.max(1, ...rows.map((row) => Number(row[valueKey] || 0)));
   return `<div class="bar-list">${rows.slice(0, limit).map((row) => {
     const value = Number(row[valueKey] || 0);
     const label = labelFormatter(row[labelKey]);
-    return `<div class="bar-row"><span class="bar-label" title="${escapeHtml(label)}">${escapeHtml(label)}</span><span class="bar-track"><span class="bar-fill" style="width:${(value / max) * 100}%"></span></span><strong>${fmt.format(value)}</strong></div>`;
+    const rowHtml = `<span class="bar-label" title="${escapeHtml(label)}">${escapeHtml(label)}</span><span class="bar-track"><span class="bar-fill" style="width:${(value / max) * 100}%"></span></span><strong>${fmt.format(value)}</strong>`;
+    const href = hrefFormatter ? hrefFormatter(row) : "";
+    if (href) return `<a class="bar-row bar-link" href="${escapeHtml(sitePath(href))}">${rowHtml}</a>`;
+    return `<div class="bar-row">${rowHtml}</div>`;
   }).join("")}</div>`;
 }
 
@@ -187,6 +190,21 @@ function classLabel(value) {
     MALFORMED_RESOURCE: "Malformed resource",
     UNKNOWN_OTHER: "Unknown other"
   })[value] || prettyToken(value);
+}
+
+function classFilterHref(value) {
+  return ({
+    DIRECT_SYNTH: "names.html?filter=direct_ip_records",
+    DELEGATED_WITH_GLUE: "names.html?filter=strict_hns_ready",
+    DELEGATED_NO_GLUE: "names.html?filter=missing_glue_only",
+    DNSSEC_CANDIDATE: "names.html?filter=dnssec_candidates",
+    DANE_CANDIDATE: "names.html?filter=dnssec_candidates",
+    PARKED_OR_DEFAULT: "names.html?filter=default_provider_names"
+  })[value] || "";
+}
+
+function providerFilterHref(row) {
+  return row.provider_key ? `names.html?filter=${encodeURIComponent(`${PROVIDER_FILTER_PREFIX}${row.provider_key}`)}` : "";
 }
 
 function daneGeneratorUrl(row, intent) {
@@ -779,8 +797,8 @@ async function renderOverview(app) {
   app.innerHTML = `${snapshot(summary)}
     ${adoptionFunnel(summary)}
     <section class="grid">
-      <article class="panel"><h2>Provider Dominance</h2>${bars(providers, "provider_key", "names_count")}</article>
-      <article class="panel"><h2>On-Chain Classes</h2>${bars(classes, "class", "count", 12, classLabel)}</article>
+      <article class="panel"><h2>Provider Dominance</h2>${bars(providers, "provider_key", "names_count", 12, (value) => value, providerFilterHref)}</article>
+      <article class="panel"><h2>On-Chain Classes</h2>${bars(classes, "class", "count", 12, classLabel, (row) => classFilterHref(row.class))}</article>
       <article class="panel"><h2>DANE</h2>
         <div class="stat-list">
           <a class="stat-line stat-link" href="${escapeHtml(sitePath("names.html?filter=ds_records"))}"><span>DS records</span><strong>${fmt.format(summary.ds_records)}</strong></a>

@@ -72,6 +72,8 @@ The Names page is backed by paginated `data/names-pages/` JSON. `--names-limit=0
 
 Exact name search first tries the lightweight lookup API when it is available. On the static site it falls back to binary-searching the sorted `names-pages/all` collection, so a direct name lookup does not require loading the full 12M+ row export or storing an additional lookup index.
 
+Overview provider and class summaries link back into existing Names filters where doing so is storage-safe. Class rows only link to existing action or status queues; the export does not create large class-specific duplicate page sets.
+
 Generated site files:
 
 - `index.html`
