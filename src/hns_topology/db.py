@@ -41,6 +41,9 @@ CREATE TABLE IF NOT EXISTS resource_summary (
   synth6 TEXT,
   ds_records TEXT,
   has_ds INTEGER DEFAULT 0,
+  has_ns INTEGER DEFAULT 0,
+  has_glue INTEGER DEFAULT 0,
+  has_synth INTEGER DEFAULT 0,
   has_txt INTEGER DEFAULT 0,
   raw_size INTEGER,
   resource_hash TEXT,
@@ -124,6 +127,9 @@ RESOURCE_COLUMNS = (
     "synth6",
     "ds_records",
     "has_ds",
+    "has_ns",
+    "has_glue",
+    "has_synth",
     "has_txt",
     "raw_size",
     "resource_hash",
@@ -163,9 +169,9 @@ UPSERT_NAME_SQL = """
 
 UPSERT_RESOURCE_SQL = """
     INSERT INTO resource_summary(
-      name, ns_names, glue4, glue6, synth4, synth6, ds_records, has_ds, has_txt,
-      raw_size, resource_hash
-    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      name, ns_names, glue4, glue6, synth4, synth6, ds_records, has_ds,
+      has_ns, has_glue, has_synth, has_txt, raw_size, resource_hash
+    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(name) DO UPDATE SET
       ns_names=excluded.ns_names,
       glue4=excluded.glue4,
@@ -174,6 +180,9 @@ UPSERT_RESOURCE_SQL = """
       synth6=excluded.synth6,
       ds_records=excluded.ds_records,
       has_ds=excluded.has_ds,
+      has_ns=excluded.has_ns,
+      has_glue=excluded.has_glue,
+      has_synth=excluded.has_synth,
       has_txt=excluded.has_txt,
       raw_size=excluded.raw_size,
       resource_hash=excluded.resource_hash
@@ -412,10 +421,8 @@ def recompute_provider_summary(
           COUNT(*) AS names_count,
           SUM(CASE
             WHEN n.expired = 0 AND (
-              json_array_length(rs.synth4) > 0 OR
-              json_array_length(rs.synth6) > 0 OR
-              json_array_length(rs.glue4) > 0 OR
-              json_array_length(rs.glue6) > 0 OR
+              rs.has_synth = 1 OR
+              rs.has_glue = 1 OR
               rs.has_ds = 1
             ) THEN 1 ELSE 0 END
           ) AS likely_website_count,
@@ -452,6 +459,35 @@ def recompute_provider_summary(
         )
 
 
+def backfill_resource_flags(conn: sqlite3.Connection) -> int:
+    cursor = conn.execute(
+        """
+        UPDATE resource_summary
+        SET
+          has_ns = CASE WHEN COALESCE(json_array_length(ns_names), 0) > 0 THEN 1 ELSE 0 END,
+          has_glue = CASE
+            WHEN COALESCE(json_array_length(glue4), 0) > 0
+              OR COALESCE(json_array_length(glue6), 0) > 0
+            THEN 1 ELSE 0 END,
+          has_synth = CASE
+            WHEN COALESCE(json_array_length(synth4), 0) > 0
+              OR COALESCE(json_array_length(synth6), 0) > 0
+            THEN 1 ELSE 0 END
+        WHERE
+          COALESCE(has_ns, -1) != CASE WHEN COALESCE(json_array_length(ns_names), 0) > 0 THEN 1 ELSE 0 END
+          OR COALESCE(has_glue, -1) != CASE
+            WHEN COALESCE(json_array_length(glue4), 0) > 0
+              OR COALESCE(json_array_length(glue6), 0) > 0
+            THEN 1 ELSE 0 END
+          OR COALESCE(has_synth, -1) != CASE
+            WHEN COALESCE(json_array_length(synth4), 0) > 0
+              OR COALESCE(json_array_length(synth6), 0) > 0
+            THEN 1 ELSE 0 END
+        """
+    )
+    return int(cursor.rowcount if cursor.rowcount is not None else 0)
+
+
 def table_count(conn: sqlite3.Connection, sql: str, params: tuple[Any, ...] = ()) -> int:
     row = conn.execute(sql, params).fetchone()
     return int(row[0] if row else 0)
@@ -474,7 +510,16 @@ def parse_json_columns(row: dict[str, Any], columns: Iterable[str]) -> dict[str,
 
 
 def _migrate_schema(conn: sqlite3.Connection) -> None:
-    _ensure_columns(conn, "resource_summary", {"ds_records": "TEXT"})
+    _ensure_columns(
+        conn,
+        "resource_summary",
+        {
+            "ds_records": "TEXT",
+            "has_ns": "INTEGER DEFAULT 0",
+            "has_glue": "INTEGER DEFAULT 0",
+            "has_synth": "INTEGER DEFAULT 0",
+        },
+    )
     conn.execute("UPDATE resource_summary SET ds_records = '[]' WHERE ds_records IS NULL")
     _ensure_columns(
         conn,
@@ -519,6 +564,9 @@ def _resource_params(summary: ResourceSummary) -> tuple[Any, ...]:
         dumps_json(summary.synth6),
         dumps_json(summary.ds_records),
         int(summary.has_ds),
+        int(summary.has_ns),
+        int(summary.has_glue),
+        int(summary.has_synth),
         int(summary.has_txt),
         summary.raw_size,
         summary.resource_hash,

@@ -254,6 +254,9 @@ def index_compact_name_batch(
         ds_records = _dict_list(row.get("ds_records"))
         record_types = _record_type_list(row.get("record_types"))
         has_ds = bool(row.get("has_ds")) or bool(ds_records)
+        has_ns = bool(ns_names)
+        has_glue = bool(glue4 or glue6)
+        has_synth = bool(synth4 or synth6)
         has_txt = bool(row.get("has_txt"))
         malformed = bool(row.get("malformed"))
         provider_guess = rules.match_normalized_fields(
@@ -270,9 +273,9 @@ def index_compact_name_batch(
             expired=expired,
             provider_guess=provider_guess,
             has_ds=has_ds,
-            has_ns=bool(ns_names),
-            has_glue=bool(glue4 or glue6),
-            has_synth=bool(synth4 or synth6),
+            has_ns=has_ns,
+            has_glue=has_glue,
+            has_synth=has_synth,
             malformed=malformed,
         )
         resource_hash = str(row.get("resource_hash") or _compact_row_hash(row))
@@ -301,6 +304,9 @@ def index_compact_name_batch(
                 _json_string_list(synth6),
                 _json_list(ds_records, sort_keys=True),
                 int(has_ds),
+                int(has_ns),
+                int(has_glue),
+                int(has_synth),
                 int(has_txt),
                 int(row.get("raw_size") or 0),
                 resource_hash,

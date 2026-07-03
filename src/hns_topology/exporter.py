@@ -118,55 +118,42 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0 THEN 1 ELSE 0 END) AS active_names,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 1 THEN 1 ELSE 0 END) AS expired_names,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0
-                    AND (instr(COALESCE(n.record_types, ''), '"SYNTH4"') > 0
-                         OR instr(COALESCE(n.record_types, ''), '"SYNTH6"') > 0)
+                    AND COALESCE(rs.has_synth, 0) = 1
                    THEN 1 ELSE 0 END) AS direct_ip_records,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0
-                    AND (instr(COALESCE(n.record_types, ''), '"NS"') > 0
-                         OR instr(COALESCE(n.record_types, ''), '"GLUE4"') > 0
-                         OR instr(COALESCE(n.record_types, ''), '"GLUE6"') > 0)
+                    AND COALESCE(rs.has_ns, 0) = 1
                    THEN 1 ELSE 0 END) AS delegated_names,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0
-                    AND (instr(COALESCE(n.record_types, ''), '"GLUE4"') > 0
-                         OR instr(COALESCE(n.record_types, ''), '"GLUE6"') > 0)
+                    AND COALESCE(rs.has_ns, 0) = 1
+                    AND COALESCE(rs.has_glue, 0) = 1
                    THEN 1 ELSE 0 END) AS delegated_with_glue,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0
-                    AND instr(COALESCE(n.record_types, ''), '"NS"') > 0
-                    AND instr(COALESCE(n.record_types, ''), '"GLUE4"') = 0
-                    AND instr(COALESCE(n.record_types, ''), '"GLUE6"') = 0
+                    AND COALESCE(rs.has_ns, 0) = 1
+                    AND COALESCE(rs.has_glue, 0) = 0
                    THEN 1 ELSE 0 END) AS delegated_no_glue,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0
-                    AND instr(COALESCE(n.record_types, ''), '"DS"') > 0
+                    AND COALESCE(rs.has_ds, 0) = 1
                    THEN 1 ELSE 0 END) AS ds_records,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0
-                    AND instr(COALESCE(n.record_types, ''), '"DS"') > 0
-                    AND (instr(COALESCE(n.record_types, ''), '"NS"') > 0
-                         OR instr(COALESCE(n.record_types, ''), '"GLUE4"') > 0
-                         OR instr(COALESCE(n.record_types, ''), '"GLUE6"') > 0)
+                    AND COALESCE(rs.has_ds, 0) = 1
+                    AND COALESCE(rs.has_ns, 0) = 1
                    THEN 1 ELSE 0 END) AS dnssec_candidates,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0
                     AND (
-                      instr(COALESCE(n.record_types, ''), '"SYNTH4"') > 0
-                      OR instr(COALESCE(n.record_types, ''), '"SYNTH6"') > 0
-                      OR instr(COALESCE(n.record_types, ''), '"GLUE4"') > 0
-                      OR instr(COALESCE(n.record_types, ''), '"GLUE6"') > 0
-                      OR (
-                        instr(COALESCE(n.record_types, ''), '"DS"') > 0
-                        AND (instr(COALESCE(n.record_types, ''), '"NS"') > 0
-                             OR instr(COALESCE(n.record_types, ''), '"GLUE4"') > 0
-                             OR instr(COALESCE(n.record_types, ''), '"GLUE6"') > 0)
-                      )
+                      COALESCE(rs.has_synth, 0) = 1
+                      OR COALESCE(rs.has_glue, 0) = 1
+                      OR (COALESCE(rs.has_ds, 0) = 1 AND COALESCE(rs.has_ns, 0) = 1)
                     )
                    THEN 1 ELSE 0 END) AS likely_websites,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0 AND ps.provider_type = 'default_parking'
                    THEN 1 ELSE 0 END) AS default_provider_names,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0
-                    AND instr(COALESCE(n.record_types, ''), '"NS"') > 0
-                    AND instr(COALESCE(n.record_types, ''), '"GLUE4"') = 0
-                    AND instr(COALESCE(n.record_types, ''), '"GLUE6"') = 0
+                    AND COALESCE(rs.has_ns, 0) = 1
+                    AND COALESCE(rs.has_glue, 0) = 0
                     AND COALESCE(ls.failure_reason, 'missing_glue') = 'missing_glue'
                    THEN 1 ELSE 0 END) AS missing_glue_only
         FROM names n
+        LEFT JOIN resource_summary rs ON rs.name = n.name
         LEFT JOIN live_status ls ON ls.name = n.name
         LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
         """
