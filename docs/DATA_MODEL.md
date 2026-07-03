@@ -125,7 +125,7 @@ Public exports are generated from SQLite:
 - `classes.json`
 - `providers.json`
 - `broken.json`
-- `dane.json`
+- `names-pages.json`
 - `names.json`
 - `names.csv`
 - `topology.sqlite.gz`

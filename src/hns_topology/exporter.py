@@ -22,18 +22,20 @@ DATA_ARTIFACTS = (
     "classes.json",
     "providers.json",
     "broken.json",
-    "dane.json",
-    "dane-pages.json",
     "names-pages.json",
 )
 
 PAGE_SIZE = 100
+FAILURE_REASON_FILTER_PREFIX = "failure_reason:"
+PROVIDER_TYPE_FILTER_PREFIX = "provider_type:"
 
 NAME_FILTERS = {
     "direct_ip_records": "json_array_length(rs.synth4) > 0 OR json_array_length(rs.synth6) > 0",
     "delegated_names": "json_array_length(rs.ns_names) > 0",
+    "default_provider_names": "ps.provider_type = 'default_parking'",
     "ds_records": "rs.has_ds = 1",
     "dnssec_candidates": "rs.has_ds = 1 AND json_array_length(rs.ns_names) > 0",
+    "dane_rows": "rs.has_ds = 1 OR ls.tlsa_status IS NOT NULL OR ls.dane_status IS NOT NULL",
     "likely_websites": (
         "json_array_length(rs.synth4) > 0 OR json_array_length(rs.synth6) > 0 OR "
         "json_array_length(rs.glue4) > 0 OR json_array_length(rs.glue6) > 0 OR "
@@ -99,23 +101,23 @@ def export_all(
     *,
     db_path: str | Path,
     out_dir: str | Path,
-    names_limit: int = 5000,
+    names_limit: int = 0,
     include_downloads: bool = False,
 ) -> None:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     summary = build_summary(conn)
+    effective_names_limit = _effective_names_limit(summary, names_limit)
     write_json(out / "summary.json", summary)
     write_json(out / "faq_answers.json", build_faq_answers(conn, summary))
     write_json(out / "classes.json", build_classes(conn))
     write_json(out / "providers.json", build_providers(conn))
     write_json(out / "broken.json", build_broken(conn))
-    write_json(out / "dane.json", build_dane(conn, summary=summary))
-    write_json(out / "names-pages.json", write_names_pages(conn, out, limit=names_limit, page_size=PAGE_SIZE))
-    write_json(out / "dane-pages.json", write_dane_pages(conn, out, limit=names_limit, page_size=PAGE_SIZE))
+    _remove_obsolete_data(out)
+    write_json(out / "names-pages.json", write_names_pages(conn, out, limit=effective_names_limit, page_size=PAGE_SIZE))
     if include_downloads:
-        write_json(out / "names.json", build_names(conn, limit=names_limit))
-        write_names_csv(conn, out / "names.csv", limit=names_limit)
+        write_json(out / "names.json", build_names(conn, limit=effective_names_limit))
+        write_names_csv(conn, out / "names.csv", limit=effective_names_limit)
         gzip_sqlite(db_path, out / "topology.sqlite.gz")
     else:
         for relative in ("names.json", "names.csv", "topology.sqlite.gz"):
@@ -267,21 +269,21 @@ def build_faq_answers(conn: sqlite3.Connection, summary: dict[str, Any]) -> list
             "How many use Namebase-style/default nameservers?",
             "default_provider_names",
             "Provider rules classify the resource as default parking or default hosted infrastructure.",
-            "providers.html?filter=default_provider_names",
+            "names.html?filter=default_provider_names",
         ),
         answer(
             "ds_records",
             "How many have DS records?",
             "ds_records",
             "Current HNS resource data contains at least one DS record.",
-            "dane.html?filter=ds_records",
+            "names.html?filter=ds_records",
         ),
         answer(
             "dnssec_candidates",
             "How many are DNSSEC candidates?",
             "dnssec_candidates",
             "Current HNS resource data contains DS plus delegated nameserver data.",
-            "dane.html?filter=dnssec_candidates",
+            "names.html?filter=dnssec_candidates",
         ),
         answer(
             "likely_websites",
@@ -302,28 +304,28 @@ def build_faq_answers(conn: sqlite3.Connection, summary: dict[str, Any]) -> list
             "How many require DoH fallback?",
             "doh_fallback_required",
             "Latest live check could only find a website address through the configured fallback resolver, not through strict HNS bootstrap.",
-            "broken.html?filter=doh_fallback_required",
+            "names.html?filter=doh_fallback_required",
         ),
         answer(
             "dane_working",
             "How many have working DANE?",
             "dane_working",
             "Latest live check found a TLSA record matching the HTTPS certificate/SPKI.",
-            "dane.html?filter=dane_working",
+            "names.html?filter=dane_working",
         ),
         answer(
             "missing_glue_only",
             "Which names are broken only because of missing GLUE?",
             "missing_glue_only",
             "Delegated names with no GLUE4/GLUE6 and no stronger live-check failure.",
-            "broken.html?filter=missing_glue_only",
+            "names.html?filter=missing_glue_only",
         ),
         answer(
             "stale_tlsa_only",
             "Which names are broken only because of stale TLSA?",
             "stale_tlsa_only",
             "Latest live check found TLSA data that does not match the current HTTPS certificate/SPKI.",
-            "broken.html?filter=stale_tlsa_only",
+            "names.html?filter=stale_tlsa_only",
         ),
     ]
 
@@ -451,13 +453,15 @@ def build_names(
     rows = conn.execute(
         f"""
         SELECT
-          n.name, n.state, n.expired, n.onchain_class, n.provider_guess, n.record_types,
+          n.name, n.state, n.expired, n.onchain_class, n.provider_guess,
+          COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types,
           rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.ds_records, rs.has_ds,
-          ls.dns_reachable, ls.dnssec_status, ls.dane_status, ls.https_status, ls.strict_hns_status,
-          ls.doh_fallback_status, ls.failure_reason, ls.checked_at
+          ls.dns_reachable, ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.https_status,
+          ls.strict_hns_status, ls.doh_fallback_status, ls.failure_reason, ls.checked_at
         FROM names n
         JOIN resource_summary rs ON rs.name = n.name
         LEFT JOIN live_status ls ON ls.name = n.name
+        LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
         WHERE {where}
         ORDER BY n.updated_at DESC, n.name
         LIMIT ?
@@ -579,51 +583,34 @@ def _write_names_pages_streamed(
     limit: int,
     page_size: int,
 ) -> dict[str, Any]:
-    keys = ["all", *NAME_FILTERS]
-    rows_by_key = {key: _build_name_page_rows(conn, key, limit=limit) for key in keys}
-    return _write_paginated_row_sets(base_dir, rows_by_key, limit=limit, page_size=page_size)
+    if base_dir.exists():
+        shutil.rmtree(base_dir)
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    collections: dict[str, Any] = {}
+    for key in _name_collection_keys(conn):
+        collections[key] = _write_name_collection(conn, base_dir, key, limit=limit, page_size=page_size)
+    return {
+        "page_size": page_size,
+        "limit": limit,
+        "collections": collections,
+    }
 
 
 def _build_name_page_rows(conn: sqlite3.Connection, key: str, *, limit: int) -> list[dict[str, Any]]:
     if limit <= 0:
         return []
-    row_columns = """
-      n.name, n.state, n.expired, n.onchain_class, n.provider_guess, n.record_types,
-      rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.ds_records, rs.has_ds,
-      ls.dns_reachable, ls.dnssec_status, ls.dane_status, ls.https_status,
-      ls.strict_hns_status, ls.doh_fallback_status, ls.failure_reason, ls.checked_at
-    """
-    if key in NAME_LIVE_FILTERS:
-        from_sql = """
-        FROM live_status ls
-        CROSS JOIN names n ON n.name = ls.name
-        CROSS JOIN resource_summary rs ON rs.name = n.name
-        """
-        where = f"COALESCE(n.expired, 0) = 0 AND {NAME_LIVE_FILTERS[key]}"
-    else:
-        where = "1=1"
-        if key != "all":
-            from_sql = """
-            FROM names n INDEXED BY idx_names_class
-            CROSS JOIN resource_summary rs ON rs.name = n.name
-            LEFT JOIN live_status ls ON ls.name = n.name
-            """
-            where = "COALESCE(n.expired, 0) = 0"
-            where = f"{where} AND {NAME_CLASS_FILTERS.get(key, '1=1')}"
-        else:
-            from_sql = """
-            FROM names n
-            CROSS JOIN resource_summary rs ON rs.name = n.name
-            LEFT JOIN live_status ls ON ls.name = n.name
-            """
+    from_sql = _name_rows_from_sql()
+    where, params = _name_collection_where(key)
     rows = conn.execute(
         f"""
-        SELECT {row_columns}
+        SELECT {_name_row_columns()}
         {from_sql}
         WHERE {where}
+        ORDER BY n.name
         LIMIT ?
         """,
-        (limit,),
+        (*params, limit),
     ).fetchall()
     return [
         parse_json_columns(
@@ -632,6 +619,121 @@ def _build_name_page_rows(conn: sqlite3.Connection, key: str, *, limit: int) -> 
         )
         for row in rows
     ]
+
+
+def _write_name_collection(
+    conn: sqlite3.Connection,
+    base_dir: Path,
+    key: str,
+    *,
+    limit: int,
+    page_size: int,
+) -> dict[str, Any]:
+    collection_dir = base_dir / key
+    collection_dir.mkdir(parents=True, exist_ok=True)
+    from_sql = _name_rows_from_sql()
+    where, params = _name_collection_where(key)
+    total_count = int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*)
+            {from_sql}
+            WHERE {where}
+            """,
+            params,
+        ).fetchone()[0]
+        or 0
+    )
+    count = min(total_count, max(0, limit))
+    page_count = max(1, math.ceil(count / page_size)) if count else 0
+    if count == 0:
+        write_json(collection_dir / "page-1.json", {"page": 1, "rows": []})
+    else:
+        cursor = conn.execute(
+            f"""
+            SELECT {_name_row_columns()}
+            {from_sql}
+            WHERE {where}
+            ORDER BY n.name
+            LIMIT ?
+            """,
+            (*params, count),
+        )
+        page = 1
+        while True:
+            page_rows = cursor.fetchmany(page_size)
+            if not page_rows:
+                break
+            rows = [
+                parse_json_columns(
+                    dict(row),
+                    ["record_types", "ns_names", "glue4", "glue6", "synth4", "synth6", "ds_records"],
+                )
+                for row in page_rows
+            ]
+            write_json(collection_dir / f"page-{page}.json", {"page": page, "rows": rows})
+            page += 1
+    return {
+        "row_count": count,
+        "total_count": total_count,
+        "page_size": page_size,
+        "page_count": page_count,
+        "path_template": f"{base_dir.name}/{key}/page-{{page}}.json",
+        "truncated": total_count > count,
+    }
+
+
+def _name_collection_keys(conn: sqlite3.Connection) -> list[str]:
+    provider_types = [
+        row["provider_type"]
+        for row in conn.execute(
+            """
+            SELECT DISTINCT COALESCE(provider_type, 'unknown') AS provider_type
+            FROM provider_summary
+            ORDER BY provider_type
+            """
+        )
+        if row["provider_type"]
+    ]
+    return [
+        "all",
+        *NAME_FILTERS,
+        *(f"{FAILURE_REASON_FILTER_PREFIX}{reason}" for reason in FAILURE_REASONS),
+        *(f"{PROVIDER_TYPE_FILTER_PREFIX}{provider_type}" for provider_type in provider_types),
+    ]
+
+
+def _name_row_columns() -> str:
+    return """
+      n.name, n.state, n.expired, n.onchain_class, n.provider_guess,
+      COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types,
+      rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.ds_records, rs.has_ds,
+      ls.dns_reachable, ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.https_status,
+      ls.strict_hns_status, ls.doh_fallback_status, ls.failure_reason, ls.checked_at
+    """
+
+
+def _name_rows_from_sql() -> str:
+    return """
+      FROM names n
+      JOIN resource_summary rs ON rs.name = n.name
+      LEFT JOIN live_status ls ON ls.name = n.name
+      LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
+    """
+
+
+def _name_collection_where(key: str) -> tuple[str, tuple[Any, ...]]:
+    if key == "all":
+        return "1=1", ()
+    if key.startswith(FAILURE_REASON_FILTER_PREFIX):
+        return "COALESCE(n.expired, 0) = 0 AND ls.failure_reason = ?", (
+            key.removeprefix(FAILURE_REASON_FILTER_PREFIX),
+        )
+    if key.startswith(PROVIDER_TYPE_FILTER_PREFIX):
+        return "COALESCE(ps.provider_type, 'unknown') = ?", (
+            key.removeprefix(PROVIDER_TYPE_FILTER_PREFIX),
+        )
+    return f"COALESCE(n.expired, 0) = 0 AND ({NAME_FILTERS.get(key, '1=1')})", ()
 
 
 def _write_dane_pages_streamed(
@@ -696,14 +798,22 @@ def _name_row_matches_filter(row: dict[str, Any], key: str) -> bool:
     has_glue = bool(row.get("glue4") or row.get("glue6"))
     has_synth = bool(row.get("synth4") or row.get("synth6"))
     has_ds = bool(row.get("has_ds"))
+    if key.startswith(FAILURE_REASON_FILTER_PREFIX):
+        return row.get("failure_reason") == key.removeprefix(FAILURE_REASON_FILTER_PREFIX)
+    if key.startswith(PROVIDER_TYPE_FILTER_PREFIX):
+        return row.get("provider_type") == key.removeprefix(PROVIDER_TYPE_FILTER_PREFIX)
     if key == "direct_ip_records":
         return has_synth
     if key == "delegated_names":
         return has_ns
+    if key == "default_provider_names":
+        return row.get("provider_type") == "default_parking"
     if key == "ds_records":
         return has_ds
     if key == "dnssec_candidates":
         return has_ds and has_ns
+    if key == "dane_rows":
+        return has_ds or bool(row.get("tlsa_status")) or bool(row.get("dane_status"))
     if key == "likely_websites":
         return has_synth or has_glue or (has_ds and has_ns)
     if key == "strict_hns_working":
@@ -805,6 +915,7 @@ def write_names_csv(conn: sqlite3.Connection, path: Path, *, limit: int) -> None
         "expired",
         "onchain_class",
         "provider_guess",
+        "provider_type",
         "record_types",
         "ns_names",
         "glue4",
@@ -815,6 +926,7 @@ def write_names_csv(conn: sqlite3.Connection, path: Path, *, limit: int) -> None
         "has_ds",
         "dns_reachable",
         "dnssec_status",
+        "tlsa_status",
         "dane_status",
         "https_status",
         "strict_hns_status",
@@ -853,6 +965,8 @@ def build_manifest(
     include_downloads: bool = False,
 ) -> dict[str, Any]:
     out = Path(out_dir)
+    names_total = int(summary["total_names"])
+    names_exported = _effective_names_limit(summary, names_limit)
     return {
         "manifest_version": 1,
         "exported_at": utc_now(),
@@ -861,8 +975,8 @@ def build_manifest(
             "format": "hns-topology-static-report",
             "names_limit": names_limit,
             "names_total_count": summary["total_names"],
-            "names_exported_count": min(int(summary["total_names"]), names_limit),
-            "names_truncated": int(summary["total_names"]) > names_limit,
+            "names_exported_count": names_exported,
+            "names_truncated": names_exported < names_total,
             "download_artifacts_included": include_downloads,
         },
         "snapshot": {
@@ -891,12 +1005,25 @@ def _manifest_artifact_paths(out: Path, *, include_downloads: bool) -> list[str]
     paths = list(DATA_ARTIFACTS)
     if include_downloads:
         paths.extend(("names.json", "names.csv", "topology.sqlite.gz"))
-    for directory in ("names-pages", "dane-pages"):
+    for directory in ("names-pages",):
         paths.extend(
             path.relative_to(out).as_posix()
             for path in sorted((out / directory).glob("*/*.json"))
         )
     return paths
+
+
+def _effective_names_limit(summary: dict[str, Any], names_limit: int) -> int:
+    total = int(summary["total_names"])
+    if names_limit <= 0:
+        return total
+    return min(total, names_limit)
+
+
+def _remove_obsolete_data(out: Path) -> None:
+    for relative in ("dane.json", "dane-pages.json"):
+        (out / relative).unlink(missing_ok=True)
+    shutil.rmtree(out / "dane-pages", ignore_errors=True)
 
 
 def _artifact_entry(path: Path, relative: str) -> dict[str, Any]:

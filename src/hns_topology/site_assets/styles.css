@@ -154,6 +154,21 @@ main {
   margin: 0 0 14px;
 }
 
+.filter-form {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 14px;
+}
+
+.filter-field {
+  display: grid;
+  flex: 1 1 320px;
+  gap: 8px;
+  max-width: 560px;
+}
+
 .search-label {
   color: var(--muted);
   font-size: 12px;
@@ -168,7 +183,8 @@ main {
   gap: 8px;
 }
 
-.search-row input[type="search"] {
+.search-row input[type="search"],
+.filter-field select {
   flex: 1 1 280px;
   min-width: min(100%, 280px);
   min-height: 38px;
@@ -181,14 +197,20 @@ main {
   font-size: 14px;
 }
 
-.search-row input[type="search"]:focus {
+.filter-field select {
+  width: 100%;
+}
+
+.search-row input[type="search"]:focus,
+.filter-field select:focus {
   border-color: var(--blue);
   outline: 2px solid rgba(37, 95, 153, 0.18);
   outline-offset: 0;
 }
 
 .search-button,
-.search-clear {
+.search-clear,
+.load-more {
   min-height: 38px;
   display: inline-flex;
   align-items: center;
@@ -218,12 +240,34 @@ main {
   background: var(--panel);
 }
 
-.search-clear:hover {
+.search-clear:hover,
+.load-more:hover {
   background: var(--surface);
+}
+
+.load-more {
+  border: 1px solid var(--line);
+  color: var(--blue);
+  background: var(--panel);
+  cursor: pointer;
+}
+
+.load-more:disabled {
+  color: var(--muted);
+  cursor: wait;
 }
 
 .search-meta {
   margin: 0;
+}
+
+.scroll-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
 }
 
 .panel.full {

@@ -4,7 +4,7 @@ set -euo pipefail
 TOPOLOGY_DB="${TOPOLOGY_DB:-data/topology.sqlite}"
 PUBLIC_DIR="${PUBLIC_DIR:-public}"
 INDEXER_MOUNT="${INDEXER_MOUNT:-/mnt/hnscrawler}"
-NAMES_LIMIT="${NAMES_LIMIT:-5000}"
+NAMES_LIMIT="${NAMES_LIMIT:-0}"
 
 . .venv/bin/activate
 if [ -d "$INDEXER_MOUNT" ] && ! mountpoint -q "$INDEXER_MOUNT"; then

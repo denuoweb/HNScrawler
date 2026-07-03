@@ -26,6 +26,7 @@ def test_lookup_name_returns_full_snapshot_row(tmp_path):
     assert result["normalized"] == "direct"
     assert result["row"]["name"] == "direct"
     assert result["row"]["onchain_class"] == "DIRECT_SYNTH"
+    assert "provider_type" in result["row"]
     assert result["row"]["synth4"] == ["203.0.113.10"]
     assert result["snapshot"]["last_indexed_height"] == "123456"
 

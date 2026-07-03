@@ -118,22 +118,25 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     for relative in [
         "index.html",
         "faq.html",
-        "providers.html",
         "names.html",
-        "broken.html",
-        "dane.html",
         "data/summary.json",
         "data/manifest.json",
         "data/providers.json",
+        "data/broken.json",
         "data/classes.json",
         "data/names-pages.json",
-        "data/dane-pages.json",
     ]:
         assert (out / relative).exists()
     for relative in [
+        "providers.html",
+        "broken.html",
+        "dane.html",
         "data/names.json",
         "data/names.csv",
         "data/topology.sqlite.gz",
+        "data/dane.json",
+        "data/dane-pages.json",
+        "data/dane-pages/all/page-1.json",
         "classes.html",
     ]:
         assert not (out / relative).exists()
@@ -142,12 +145,12 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     manifest_artifacts = {item["path"]: item for item in manifest["artifacts"]}
     providers = json.loads((out / "data/providers.json").read_text(encoding="utf-8"))
     names_pages = json.loads((out / "data/names-pages.json").read_text(encoding="utf-8"))
-    dane_pages = json.loads((out / "data/dane-pages.json").read_text(encoding="utf-8"))
+    names_page_rows = json.loads((out / "data/names-pages/all/page-1.json").read_text(encoding="utf-8"))["rows"]
     namebase_provider = next(item for item in providers if item["provider_key"] == "namebase/default")
     assert manifest["manifest_version"] == 1
     assert manifest["snapshot"]["height"] == 123456
     assert manifest["summary"]["total_names"] == 9
-    assert manifest["export"]["names_limit"] == 5000
+    assert manifest["export"]["names_limit"] == 0
     assert manifest["export"]["names_total_count"] == 9
     assert manifest["export"]["names_exported_count"] == 9
     assert manifest["export"]["names_truncated"] is False
@@ -155,13 +158,16 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert "summary.json" in manifest_artifacts
     assert "names-pages.json" in manifest_artifacts
     assert "names-pages/all/page-1.json" in manifest_artifacts
-    assert "dane-pages.json" in manifest_artifacts
+    assert "dane-pages.json" not in manifest_artifacts
     assert "names.json" not in manifest_artifacts
     assert "names.csv" not in manifest_artifacts
     assert "topology.sqlite.gz" not in manifest_artifacts
     assert names_pages["collections"]["all"]["row_count"] == 9
     assert names_pages["collections"]["all"]["page_count"] == 1
-    assert dane_pages["collections"]["all"]["row_count"] == 1
+    assert names_pages["collections"]["dane_rows"]["row_count"] == 1
+    assert names_pages["collections"]["ds_records"]["row_count"] == 1
+    assert "tlsa_status" in names_page_rows[0]
+    assert "provider_type" in names_page_rows[0]
     assert namebase_provider["ns_pattern"] == "suffix:namebase.io,suffix:parking.namebase.io"
 
     checks = validate_release(db_path=db_path, public_dir=out)

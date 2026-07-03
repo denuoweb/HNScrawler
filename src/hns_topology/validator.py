@@ -39,10 +39,7 @@ REQUIRED_META_KEYS = (
 REQUIRED_PUBLIC_FILES = (
     "index.html",
     "faq.html",
-    "providers.html",
     "names.html",
-    "broken.html",
-    "dane.html",
     "styles.css",
     "app.js",
     "data/summary.json",
@@ -51,8 +48,6 @@ REQUIRED_PUBLIC_FILES = (
     "data/classes.json",
     "data/faq_answers.json",
     "data/broken.json",
-    "data/dane.json",
-    "data/dane-pages.json",
     "data/names-pages.json",
 )
 
@@ -64,8 +59,6 @@ REQUIRED_MANIFEST_ARTIFACTS = (
     "classes.json",
     "providers.json",
     "broken.json",
-    "dane.json",
-    "dane-pages.json",
     "names-pages.json",
 )
 OPTIONAL_MANIFEST_ARTIFACTS = (
@@ -637,16 +630,11 @@ def _validate_export_counts(
     names_exported = export_meta.get("names_exported_count")
     names_truncated = export_meta.get("names_truncated")
     expected_total = int(summary["total_names"])
-    expected_exported = (
-        min(expected_total, names_limit)
-        if isinstance(names_limit, int) and names_limit >= 0
-        else None
-    )
-    expected_truncated = (
-        expected_total > names_limit
-        if isinstance(names_limit, int) and names_limit >= 0
-        else None
-    )
+    expected_exported = None
+    expected_truncated = None
+    if isinstance(names_limit, int):
+        expected_exported = expected_total if names_limit <= 0 else min(expected_total, names_limit)
+        expected_truncated = False if names_limit <= 0 else expected_total > names_limit
 
     mismatches: list[str] = []
     if names_total != expected_total:

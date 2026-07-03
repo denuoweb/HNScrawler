@@ -2,6 +2,9 @@ const fmt = new Intl.NumberFormat("en-US");
 const SITE_BASE_PATH = window.__HNS_TOPOLOGY_BASE__ || "/hns-topology/";
 const PAGE_FETCH_MIN_DELAY_MS = 350;
 const COLLECTION_FETCH_BATCH_SIZE = 8;
+const SEARCH_FULL_SCAN_MAX_ROWS = 5000;
+const FAILURE_REASON_FILTER_PREFIX = "failure_reason:";
+const PROVIDER_TYPE_FILTER_PREFIX = "provider_type:";
 let nextPageFetchAt = 0;
 const collectionRowsCache = new Map();
 
@@ -50,69 +53,29 @@ function activeSearch() {
   return (new URLSearchParams(window.location.search).get("q") || "").trim();
 }
 
-function activeProviderFilter() {
-  return new URLSearchParams(window.location.search).get("provider_filter") || activeFilter();
-}
-
-function hasItems(value) {
-  return Array.isArray(value) && value.length > 0;
-}
-
 function hasDs(row) {
   return row.has_ds === true || Number(row.has_ds || 0) === 1;
 }
 
 function filterName(filter) {
+  if (filter.startsWith(FAILURE_REASON_FILTER_PREFIX)) return prettyToken(filter.slice(FAILURE_REASON_FILTER_PREFIX.length));
+  if (filter.startsWith(PROVIDER_TYPE_FILTER_PREFIX)) return `provider ${prettyToken(filter.slice(PROVIDER_TYPE_FILTER_PREFIX.length))}`;
   return ({
     direct_ip_records: "direct IP records",
     delegated_names: "delegated names",
     default_provider_names: "default providers",
     ds_records: "DS records",
     dnssec_candidates: "DNSSEC candidates",
+    dane_rows: "DANE rows",
     likely_websites: "likely websites",
     strict_hns_working: "strict HNS working",
     doh_fallback_required: "fallback required",
-    dane_working: "working DANE",
+    dane_working: "valid DANE",
     missing_glue: "missing GLUE",
     missing_glue_only: "missing GLUE only",
     stale_tlsa: "stale TLSA",
-    stale_tlsa_only: "stale TLSA only",
-    provider_has_working: "working providers",
-    provider_has_dane: "DANE providers",
-    provider_has_likely_websites: "likely website providers"
+    stale_tlsa_only: "stale TLSA only"
   })[filter] || filter;
-}
-
-function rowMatchesFilter(row, filter) {
-  const predicates = {
-    direct_ip_records: (item) => hasItems(item.synth4) || hasItems(item.synth6),
-    delegated_names: (item) => hasItems(item.ns_names),
-    ds_records: (item) => hasDs(item),
-    dnssec_candidates: (item) => hasDs(item) && hasItems(item.ns_names),
-    likely_websites: (item) => hasItems(item.synth4) || hasItems(item.synth6) || hasItems(item.glue4) || hasItems(item.glue6) || (hasDs(item) && hasItems(item.ns_names)),
-    strict_hns_working: (item) => item.strict_hns_status === "working",
-    doh_fallback_required: (item) => ["required", "doh_fallback_only"].includes(item.doh_fallback_status),
-    dane_working: (item) => item.dane_status === "valid",
-    missing_glue: (item) => item.failure_reason === "missing_glue",
-    missing_glue_only: (item) => item.failure_reason === "missing_glue" || (hasItems(item.ns_names) && !hasItems(item.glue4) && !hasItems(item.glue6) && !item.failure_reason),
-    stale_tlsa: (item) => item.failure_reason === "stale_tlsa_spki_mismatch",
-    stale_tlsa_only: (item) => item.failure_reason === "stale_tlsa_spki_mismatch"
-  };
-  return predicates[filter] ? predicates[filter](row) : true;
-}
-
-function providerMatchesFilter(row, filter) {
-  if (filter === "default_provider_names") return row.provider_type === "default_parking";
-  if (filter === "provider_has_working") return Number(row.working_count || 0) > 0;
-  if (filter === "provider_has_dane") return Number(row.dane_count || 0) > 0;
-  if (filter === "provider_has_likely_websites") return Number(row.likely_website_count || 0) > 0;
-  if (filter.startsWith("provider_type:")) return row.provider_type === filter.slice("provider_type:".length);
-  return true;
-}
-
-function applyFilter(rows, filter, predicate = rowMatchesFilter) {
-  if (!filter) return rows;
-  return rows.filter((row) => predicate(row, filter));
 }
 
 function filterNotice(filter, before, after) {
@@ -128,9 +91,14 @@ function bars(rows, labelKey, valueKey, limit = 12) {
   }).join("")}</div>`;
 }
 
-function table(rows, columns, emptyMessage = "No rows in this page.") {
+function tableRows(rows, columns) {
+  return rows.map((row) => `<tr>${columns.map((column) => `<td>${formatCell(row[column.key])}</td>`).join("")}</tr>`).join("");
+}
+
+function table(rows, columns, emptyMessage = "No rows in this page.", options = {}) {
   if (!rows.length) return `<p class="empty-state">${escapeHtml(emptyMessage)}</p>`;
-  return `<div class="table-wrap"><table><thead><tr>${columns.map((column) => `<th>${column.label}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${columns.map((column) => `<td>${formatCell(row[column.key])}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+  const tbodyId = options.tbodyId ? ` id="${escapeHtml(options.tbodyId)}"` : "";
+  return `<div class="table-wrap"><table><thead><tr>${columns.map((column) => `<th>${column.label}</th>`).join("")}</tr></thead><tbody${tbodyId}>${tableRows(rows, columns)}</tbody></table></div>`;
 }
 
 function formatCell(value) {
@@ -138,6 +106,10 @@ function formatCell(value) {
   if (value === null || value === undefined) return "";
   if (typeof value === "number") return fmt.format(value);
   return escapeHtml(String(value));
+}
+
+function prettyToken(value) {
+  return String(value || "").replaceAll("_", " ");
 }
 
 function escapeHtml(value) {
@@ -160,8 +132,8 @@ function snapshot(summary) {
   return `<section class="snapshot">
     ${metric("Active names", summary.active_names, `${fmt.format(summary.expired_names)} expired`)}
     ${metric("Direct IP", summary.direct_ip_records, pct(summary.direct_ip_records, summary.active_names))}
-    ${metric("Delegated", summary.delegated_names, `${fmt.format(summary.delegated_with_glue)} with glue`)}
-    ${metric("Working DANE", summary.dane_working, `${fmt.format(summary.strict_hns_working)} strict HNS working`)}
+    ${metric("DS records", summary.ds_records, pct(summary.ds_records, summary.active_names))}
+    ${metric("Valid DANE", summary.dane_working, `${fmt.format(summary.strict_hns_working)} strict HNS working`)}
   </section>`;
 }
 
@@ -192,65 +164,12 @@ function currentPageName() {
   return pageName.endsWith(".html") ? pageName : "index.html";
 }
 
-function pageHref(page) {
-  const params = new URLSearchParams(window.location.search);
-  if (page <= 1) {
-    params.delete("page");
-  } else {
-    params.set("page", String(page));
-  }
-  const query = params.toString();
-  const path = currentPageName();
-  return sitePath(query ? `${path}?${query}` : path);
-}
-
 function hrefWithoutParams(keys) {
   const params = new URLSearchParams(window.location.search);
   keys.forEach((key) => params.delete(key));
   const query = params.toString();
   const path = currentPageName();
   return sitePath(query ? `${path}?${query}` : path);
-}
-
-function hrefWithParams(values) {
-  const params = new URLSearchParams(window.location.search);
-  Object.entries(values).forEach(([key, value]) => {
-    if (value === null || value === "") {
-      params.delete(key);
-    } else {
-      params.set(key, value);
-    }
-  });
-  const query = params.toString();
-  const path = currentPageName();
-  return sitePath(query ? `${path}?${query}` : path);
-}
-
-function providerFilterControls(providers, active) {
-  const types = Array.from(new Set(providers.map((row) => row.provider_type).filter(Boolean))).sort();
-  const options = [
-    {value: "", label: "All"},
-    ...types.map((type) => ({value: `provider_type:${type}`, label: type.replaceAll("_", " ")})),
-    {value: "provider_has_likely_websites", label: "Likely websites"},
-    {value: "provider_has_working", label: "Working"},
-    {value: "provider_has_dane", label: "DANE"}
-  ];
-  return `<div class="filter-controls" aria-label="Provider filters">${options.map((item) => {
-    const selected = item.value === active;
-    return `<a class="filter-chip${selected ? " active" : ""}" href="${escapeHtml(hrefWithParams({provider_filter: item.value || null, filter: null, page: null}))}">${escapeHtml(item.label)}</a>`;
-  }).join("")}</div>`;
-}
-
-function pagination(collection, page) {
-  const pageCount = Number(collection.page_count || 0);
-  if (pageCount <= 1) return "";
-  const prev = page > 1
-    ? `<a class="page-link" href="${escapeHtml(pageHref(page - 1))}">Previous</a>`
-    : `<span class="page-link disabled">Previous</span>`;
-  const next = page < pageCount
-    ? `<a class="page-link" href="${escapeHtml(pageHref(page + 1))}">Next</a>`
-    : `<span class="page-link disabled">Next</span>`;
-  return `<nav class="pagination" aria-label="Pagination">${prev}<span class="page-status">Page ${fmt.format(page)} of ${fmt.format(pageCount)}</span>${next}</nav>`;
 }
 
 function pageRangeMeta(collection, page, rows) {
@@ -395,6 +314,23 @@ async function applySearchToPageData(pageData, query, options = {}) {
       lookup
     };
   }
+  const exportedCount = Number(pageData.collection.row_count || 0);
+  if (exportedCount > SEARCH_FULL_SCAN_MAX_ROWS) {
+    const tokens = searchTokens(query);
+    const matchedRows = pageData.rows.filter((row) => rowMatchesSearch(row, tokens));
+    return {
+      ...pageData,
+      rows: matchedRows,
+      search: {
+        query,
+        matchedCount: matchedRows.length,
+        totalCount: pageData.rows.length,
+        exact: false,
+        scoped: true
+      },
+      lookup
+    };
+  }
   const allRows = await loadCollectionRows(pageData.collection);
   const tokens = searchTokens(query);
   const matchedRows = allRows.filter((row) => rowMatchesSearch(row, tokens));
@@ -415,19 +351,23 @@ async function applySearchToPageData(pageData, query, options = {}) {
       query,
       matchedCount: matchedRows.length,
       totalCount: allRows.length,
-      exact: false
+      exact: false,
+      scoped: false
     },
     lookup
   };
 }
 
-function searchHiddenInputs() {
+function hiddenInputsWithout(keys) {
   const params = new URLSearchParams(window.location.search);
-  params.delete("q");
-  params.delete("page");
+  keys.forEach((key) => params.delete(key));
   return Array.from(params.entries()).map(([key, value]) => (
     `<input type="hidden" name="${escapeHtml(key)}" value="${escapeHtml(value)}">`
   )).join("");
+}
+
+function searchHiddenInputs() {
+  return hiddenInputsWithout(["q", "page"]);
 }
 
 function searchControls({id, label, placeholder, query, search}) {
@@ -437,7 +377,9 @@ function searchControls({id, label, placeholder, query, search}) {
   const searchMeta = search
     ? `<p class="meta search-meta">${search.exact
       ? `Exact lookup "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} full-snapshot row.`
-      : `Search "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} of ${fmt.format(search.totalCount)} exported rows.`}</p>`
+      : search.scoped
+        ? `Search "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} of ${fmt.format(search.totalCount)} loaded rows. Exact name lookup still uses the full snapshot.`
+        : `Search "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} of ${fmt.format(search.totalCount)} exported rows.`}</p>`
     : "";
   return `<form class="search-form" role="search" action="${escapeHtml(currentPageName())}" method="get">
     ${searchHiddenInputs()}
@@ -457,9 +399,76 @@ function lookupNotice(pageData, pageName) {
     return `<p class="meta search-meta">Exact lookup found ${escapeHtml(pageData.lookup.row.name)} in the full snapshot, but it is not a DANE candidate in the current data.</p>`;
   }
   if (pageData.lookup.found) {
-    return `<p class="meta search-meta">Exact lookup uses the full snapshot. Browse pagination remains capped for bandwidth.</p>`;
+    return `<p class="meta search-meta">Exact lookup uses the full snapshot.</p>`;
   }
-  return `<p class="meta search-meta">Exact lookup did not find ${escapeHtml(pageData.lookup.normalized || activeSearch())} in the full snapshot. The table search below only scans the exported browse sample.</p>`;
+  return `<p class="meta search-meta">Exact lookup did not find ${escapeHtml(pageData.lookup.normalized || activeSearch())} in the full snapshot.</p>`;
+}
+
+function optionTag(value, label, active) {
+  return `<option value="${escapeHtml(value)}"${value === active ? " selected" : ""}>${escapeHtml(label)}</option>`;
+}
+
+function filterOptgroup(label, options, active) {
+  if (!options.length) return "";
+  return `<optgroup label="${escapeHtml(label)}">${options.map((item) => optionTag(item.value, item.label, active)).join("")}</optgroup>`;
+}
+
+function namesFilterControls({providers, broken, active}) {
+  const providerCounts = new Map();
+  providers.forEach((row) => {
+    const type = row.provider_type || "unknown";
+    providerCounts.set(type, (providerCounts.get(type) || 0) + Number(row.names_count || 0));
+  });
+  const providerOptions = Array.from(providerCounts.entries())
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([type, count]) => ({
+      value: `${PROVIDER_TYPE_FILTER_PREFIX}${type}`,
+      label: `${prettyToken(type)} (${fmt.format(count)})`
+    }));
+  const failureOptions = (broken.reasons || [])
+    .filter((row) => Number(row.count || 0) > 0)
+    .map((row) => ({
+      value: `${FAILURE_REASON_FILTER_PREFIX}${row.failure_reason}`,
+      label: `${prettyToken(row.failure_reason)} (${fmt.format(row.count || 0)})`
+    }));
+  const generalOptions = [
+    {value: "", label: "All names"},
+    {value: "direct_ip_records", label: "Direct IP records"},
+    {value: "delegated_names", label: "Delegated names"},
+    {value: "default_provider_names", label: "Default providers"},
+    {value: "likely_websites", label: "Likely websites"},
+    {value: "strict_hns_working", label: "Strict HNS working"},
+    {value: "doh_fallback_required", label: "Fallback required"}
+  ];
+  const daneOptions = [
+    {value: "dane_rows", label: "DANE rows"},
+    {value: "ds_records", label: "DS records"},
+    {value: "dnssec_candidates", label: "DNSSEC candidates"},
+    {value: "dane_working", label: "Valid DANE"},
+    {value: "stale_tlsa_only", label: "Stale TLSA"}
+  ];
+  const clearLink = active
+    ? `<a class="search-clear" href="${escapeHtml(hrefWithoutParams(["filter", "page"]))}">Clear</a>`
+    : "";
+  return `<form class="filter-form" action="${escapeHtml(currentPageName())}" method="get">
+    ${hiddenInputsWithout(["filter", "page"])}
+    <label class="filter-field" for="names-filter">
+      <span class="search-label">Filter</span>
+      <select id="names-filter" name="filter">
+        ${filterOptgroup("General", generalOptions, active)}
+        ${filterOptgroup("DANE and DNSSEC", daneOptions, active)}
+        ${filterOptgroup("Failure Reasons", failureOptions, active)}
+        ${filterOptgroup("Provider Types", providerOptions, active)}
+      </select>
+    </label>
+    ${clearLink}
+  </form>`;
+}
+
+function wireAutoSubmitFilter() {
+  const select = document.getElementById("names-filter");
+  if (!select) return;
+  select.addEventListener("change", () => select.form.submit());
 }
 
 async function renderOverview(app) {
@@ -473,7 +482,13 @@ async function renderOverview(app) {
     <section class="grid">
       <article class="panel"><h2>Provider Dominance</h2>${bars(providers, "provider_key", "names_count")}</article>
       <article class="panel"><h2>On-Chain Classes</h2>${bars(classes, "class", "count")}</article>
-      <article class="panel"><h2>Broken Paths</h2>${bars(broken.reasons, "failure_reason", "count", 10)}</article>
+      <article class="panel"><h2>DANE</h2>
+        <div class="stat-list">
+          <div class="stat-line"><span>DS records</span><strong>${fmt.format(summary.ds_records)}</strong></div>
+          <div class="stat-line"><span>Valid DANE</span><strong>${fmt.format(summary.dane_working)}</strong></div>
+        </div>
+      </article>
+      <article class="panel"><h2>Failure Reasons</h2>${bars(broken.reasons, "failure_reason", "count", 10)}</article>
       <article class="panel"><h2>Snapshot</h2>
       <p class="meta">Height ${summary.last_indexed_height ?? ""} generated ${summary.generated_at ?? ""}</p>
       <p class="meta">Source ${escapeHtml(summary.source_type || "unknown")} - rules v${summary.provider_rules_version ?? ""} ${escapeHtml((summary.provider_rules_hash || "").slice(0, 12))}</p>
@@ -497,42 +512,98 @@ async function renderFaq(app) {
     </article>`).join("")}</section>`;
 }
 
-async function renderProviders(app) {
-  const providers = await loadJson("data/providers.json");
-  const filter = activeProviderFilter();
-  const rows = applyFilter(providers, filter, providerMatchesFilter);
-  app.innerHTML = `${filterNotice(filter, providers.length, rows.length)}<section class="panel full"><div class="panel-heading"><h2>Providers</h2>${providerFilterControls(providers, filter)}</div>${bars(rows, "provider_key", "names_count", 20)}</section>
-    <section class="panel full">${table(rows, [
-      {key: "provider_key", label: "Provider"},
-      {key: "provider_type", label: "Type"},
-      {key: "ns_pattern", label: "NS Pattern"},
-      {key: "ip_pattern", label: "IP Pattern"},
-      {key: "names_count", label: "Names"},
-      {key: "likely_website_count", label: "Likely websites"},
-      {key: "working_count", label: "Working"},
-      {key: "dane_count", label: "DANE"}
-    ])}</section>`;
+function namesScrollControls(collection, page, rows, disabled = false) {
+  const pageCount = Number(collection.page_count || 0);
+  if (disabled || pageCount <= page || !rows.length) return "";
+  return `<div class="scroll-controls">
+    <button class="load-more" id="load-more-names" type="button">Load more</button>
+    <p class="meta" id="names-scroll-status">${pageRangeMeta(collection, page, rows)}</p>
+  </div>`;
 }
 
-async function renderClasses(app) {
-  const classes = await loadJson("data/classes.json");
-  app.innerHTML = `<section class="panel full"><h2>Classes</h2>${bars(classes, "class", "count", 20)}</section>`;
+function wireNamesInfiniteScroll(collection, page, columns) {
+  const button = document.getElementById("load-more-names");
+  const tbody = document.getElementById("names-tbody");
+  const status = document.getElementById("names-scroll-status");
+  if (!button || !tbody) return;
+  const pageCount = Number(collection.page_count || 0);
+  const pageSize = Number(collection.page_size || 0) || 100;
+  let nextPage = page + 1;
+  let loadedRows = tbody.rows.length;
+  let loading = false;
+
+  const updateStatus = () => {
+    if (!status) return;
+    const start = (page - 1) * pageSize + 1;
+    const end = Math.min(start + loadedRows - 1, Number(collection.row_count || 0));
+    status.textContent = `${fmt.format(start)}-${fmt.format(end)} of ${fmt.format(collection.row_count || 0)} exported rows`;
+  };
+
+  const loadNext = async () => {
+    if (loading || nextPage > pageCount) return;
+    loading = true;
+    button.disabled = true;
+    button.textContent = "Loading";
+    try {
+      const data = await loadPageJson(pagePath(collection.path_template, nextPage));
+      const rows = Array.isArray(data.rows) ? data.rows : [];
+      tbody.insertAdjacentHTML("beforeend", tableRows(rows, columns));
+      loadedRows += rows.length;
+      nextPage += 1;
+      updateStatus();
+      if (nextPage > pageCount) {
+        button.remove();
+        return;
+      }
+    } finally {
+      loading = false;
+      if (nextPage <= pageCount) {
+        button.disabled = false;
+        button.textContent = "Load more";
+      }
+    }
+  };
+
+  button.addEventListener("click", loadNext);
+  if ("IntersectionObserver" in window) {
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) loadNext();
+    }, {rootMargin: "600px"});
+    observer.observe(button);
+  }
 }
 
 async function renderNames(app) {
-  const [summary, loadedPageData] = await Promise.all([
+  const [summary, providers, broken, loadedPageData] = await Promise.all([
     loadJson("data/summary.json"),
+    loadJson("data/providers.json"),
+    loadJson("data/broken.json"),
     loadPaginatedRows("data/names-pages.json", activeFilter())
   ]);
   const filter = activeFilter();
   const query = activeSearch();
   const pageData = await applySearchToPageData(loadedPageData, query);
+  const columns = [
+    {key: "name", label: "Name"},
+    {key: "onchain_class", label: "Class"},
+    {key: "provider_guess", label: "Provider"},
+    {key: "provider_type", label: "Provider type"},
+    {key: "record_types", label: "Records"},
+    {key: "ns_names", label: "NS"},
+    {key: "synth4", label: "SYNTH4"},
+    {key: "synth6", label: "SYNTH6"},
+    {key: "has_ds", label: "DS"},
+    {key: "dnssec_status", label: "DNSSEC"},
+    {key: "tlsa_status", label: "TLSA"},
+    {key: "dane_status", label: "DANE"},
+    {key: "failure_reason", label: "Failure"}
+  ];
   app.innerHTML = `${filterNotice(filter, pageData.index.collections.all.row_count, loadedPageData.collection.row_count)}
     <section class="panel full">
       <div class="panel-heading">
         <div><h2>Names</h2><p class="meta">${pageRangeMeta(pageData.collection, pageData.page, pageData.rows)} - height ${summary.last_indexed_height ?? ""}</p></div>
-        ${pagination(pageData.collection, pageData.page)}
       </div>
+      ${namesFilterControls({providers, broken, active: filter})}
       ${searchControls({
         id: "names-search",
         label: "Search Names",
@@ -541,80 +612,11 @@ async function renderNames(app) {
         search: pageData.search
       })}
       ${lookupNotice(pageData, "names")}
-      ${table(pageData.rows, [
-        {key: "name", label: "Name"},
-        {key: "onchain_class", label: "Class"},
-        {key: "provider_guess", label: "Provider"},
-        {key: "record_types", label: "Records"},
-        {key: "ns_names", label: "NS"},
-        {key: "synth4", label: "SYNTH4"},
-        {key: "synth6", label: "SYNTH6"},
-        {key: "dnssec_status", label: "DNSSEC"},
-        {key: "dane_status", label: "DANE"},
-        {key: "failure_reason", label: "Failure"}
-      ], query ? "No names match this search." : "No rows in this page.")}
-      ${pagination(pageData.collection, pageData.page)}
+      ${table(pageData.rows, columns, query ? "No names match this search." : "No rows in this page.", {tbodyId: "names-tbody"})}
+      ${namesScrollControls(pageData.collection, pageData.page, pageData.rows, Boolean(query))}
     </section>`;
-}
-
-async function renderBroken(app) {
-  const broken = await loadJson("data/broken.json");
-  const filter = activeFilter();
-  const examples = applyFilter(broken.examples, filter);
-  app.innerHTML = `<section class="grid">
-    <article class="panel"><h2>Failure Reasons</h2>${bars(broken.reasons, "failure_reason", "count", 20)}</article>
-    <article class="panel"><h2>Examples</h2>${filterNotice(filter, broken.examples.length, examples.length)}${table(examples, [
-      {key: "name", label: "Name"},
-      {key: "onchain_class", label: "Class"},
-      {key: "provider_guess", label: "Provider"},
-      {key: "strict_hns_status", label: "Strict HNS"},
-      {key: "doh_fallback_status", label: "Fallback"},
-      {key: "failure_reason", label: "Reason"},
-      {key: "checked_at", label: "Checked"}
-    ])}</article>
-  </section>`;
-}
-
-async function renderDane(app) {
-  const [summary, dane, loadedPageData] = await Promise.all([
-    loadJson("data/summary.json"),
-    loadJson("data/dane.json"),
-    loadPaginatedRows("data/dane-pages.json", activeFilter())
-  ]);
-  const filter = activeFilter();
-  const query = activeSearch();
-  const pageData = await applySearchToPageData(loadedPageData, query, {daneOnly: true});
-  app.innerHTML = `<section class="grid">
-    <article class="panel"><h2>DANE Summary</h2>
-      <div class="stat-list">
-        <div class="stat-line"><span>DS records</span><strong>${fmt.format(dane.ds_count)}</strong></div>
-        <div class="stat-line"><span>Valid DANE</span><strong>${fmt.format(dane.valid_dane_count)}</strong></div>
-      </div>
-      <p class="meta">Height ${summary.last_indexed_height ?? ""}</p>
-    </article>
-    <article class="panel"><div class="panel-heading">
-      <div><h2>DANE Rows</h2>${filterNotice(filter, pageData.index.collections.all.row_count, loadedPageData.collection.row_count)}<p class="meta">${pageRangeMeta(pageData.collection, pageData.page, pageData.rows)}</p></div>
-      ${pagination(pageData.collection, pageData.page)}
-    </div>
-    ${searchControls({
-      id: "dane-search",
-      label: "Search DANE Rows",
-      placeholder: "Name, DNSSEC, TLSA, DANE, failure",
-      query,
-      search: pageData.search
-    })}
-    ${lookupNotice(pageData, "dane")}
-    ${table(pageData.rows, [
-      {key: "name", label: "Name"},
-      {key: "has_ds", label: "DS"},
-      {key: "ns_names", label: "NS"},
-      {key: "dnssec_status", label: "DNSSEC"},
-      {key: "tlsa_status", label: "TLSA"},
-      {key: "dane_status", label: "DANE"},
-      {key: "failure_reason", label: "Failure"},
-      {key: "checked_at", label: "Checked"}
-    ], query ? "No DANE rows match this search." : "No rows in this page.")}${pagination(pageData.collection, pageData.page)}</article>
-  </section>`;
+  wireAutoSubmitFilter();
+  wireNamesInfiniteScroll(pageData.collection, pageData.page, columns);
 }
 
 async function boot() {
@@ -624,11 +626,7 @@ async function boot() {
   const renderers = {
     overview: renderOverview,
     faq: renderFaq,
-    providers: renderProviders,
-    classes: renderClasses,
-    names: renderNames,
-    broken: renderBroken,
-    dane: renderDane
+    names: renderNames
   };
   try {
     await (renderers[page] || renderOverview)(app);

@@ -8,11 +8,8 @@ from .exporter import export_all
 
 PAGES = {
     "index.html": ("overview", "HNS Topology"),
-    "faq.html": ("faq", "Topology FAQ"),
-    "providers.html": ("providers", "Provider Dominance"),
     "names.html": ("names", "Names"),
-    "broken.html": ("broken", "Broken Paths"),
-    "dane.html": ("dane", "DANE"),
+    "faq.html": ("faq", "Topology FAQ"),
 }
 GENERATED_HTML_FILES = {
     "index.html",
@@ -31,7 +28,7 @@ def generate_site(
     *,
     db_path: str | Path,
     out_dir: str | Path,
-    names_limit: int = 5000,
+    names_limit: int = 0,
     include_downloads: bool = False,
 ) -> None:
     out = Path(out_dir)
@@ -64,11 +61,8 @@ def _html(*, page: str, title: str) -> str:
         f'<a href="{SITE_BASE_PATH}{filename}" data-nav="{name}">{label}</a>'
         for filename, (name, label) in [
             ("index.html", ("overview", "Overview")),
-            ("faq.html", ("faq", "FAQ")),
-            ("providers.html", ("providers", "Providers")),
             ("names.html", ("names", "Names")),
-            ("broken.html", ("broken", "Broken")),
-            ("dane.html", ("dane", "DANE")),
+            ("faq.html", ("faq", "FAQ")),
         ]
     )
     return f"""<!doctype html>

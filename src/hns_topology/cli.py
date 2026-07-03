@@ -130,14 +130,14 @@ def build_parser() -> argparse.ArgumentParser:
     export = sub.add_parser("export", help="Write JSON/CSV/SQLite.gz artifacts.")
     export.add_argument("--db", required=True)
     export.add_argument("--out", required=True)
-    export.add_argument("--names-limit", type=int, default=5000)
+    export.add_argument("--names-limit", type=int, default=0)
     export.add_argument("--include-downloads", action="store_true")
     export.set_defaults(func=cmd_export)
 
     site = sub.add_parser("generate-site", help="Generate static report site.")
     site.add_argument("--db", required=True)
     site.add_argument("--out", required=True)
-    site.add_argument("--names-limit", type=int, default=5000)
+    site.add_argument("--names-limit", type=int, default=0)
     site.add_argument("--include-downloads", action="store_true")
     site.set_defaults(func=cmd_generate_site)
 

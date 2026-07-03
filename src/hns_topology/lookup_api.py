@@ -36,13 +36,15 @@ def lookup_name(db_path: str | Path, name: str) -> dict:
         row = conn.execute(
             """
             SELECT
-              n.name, n.state, n.expired, n.onchain_class, n.provider_guess, n.record_types,
+              n.name, n.state, n.expired, n.onchain_class, n.provider_guess,
+              COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types,
               rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.ds_records, rs.has_ds,
               ls.dns_reachable, ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.https_status,
               ls.strict_hns_status, ls.doh_fallback_status, ls.failure_reason, ls.checked_at
             FROM names n
             JOIN resource_summary rs ON rs.name = n.name
             LEFT JOIN live_status ls ON ls.name = n.name
+            LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
             WHERE n.name = ?
             LIMIT 1
             """,
