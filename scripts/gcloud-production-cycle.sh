@@ -57,6 +57,26 @@ run_cmd() {
   fi
 }
 
+wait_for_hsd_ready() {
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "would poll HSD readiness with a fresh SSH connection per attempt"
+    return 0
+  fi
+
+  for attempt in $(seq 1 "$HSD_READY_ATTEMPTS"); do
+    if run_cmd gcloud compute ssh "$INDEXER_VM" \
+      --project "$GCP_PROJECT" \
+      --zone "$GCP_ZONE" \
+      --quiet \
+      --command "cd '$INDEXER_REPO_DIR' && scripts/check-hsd-ready.sh"; then
+      return 0
+    fi
+    echo "HSD not ready or SSH check failed; attempt $attempt/$HSD_READY_ATTEMPTS, sleeping $HSD_READY_INTERVAL_SECONDS seconds"
+    sleep "$HSD_READY_INTERVAL_SECONDS"
+  done
+  return 1
+}
+
 instance_exists() {
   gcloud compute instances describe "$INDEXER_VM" \
     --project "$GCP_PROJECT" \
@@ -130,20 +150,7 @@ if [ "$START_HSD" = "1" ]; then
 fi
 
 if [ "$WAIT_FOR_HSD_READY" = "1" ]; then
-  run_cmd gcloud compute ssh "$INDEXER_VM" \
-    --project "$GCP_PROJECT" \
-    --zone "$GCP_ZONE" \
-    --quiet \
-    --command "set -euo pipefail
-cd '$INDEXER_REPO_DIR'
-for attempt in \$(seq 1 '$HSD_READY_ATTEMPTS'); do
-  if scripts/check-hsd-ready.sh; then
-    exit 0
-  fi
-  echo \"HSD not ready; attempt \$attempt/$HSD_READY_ATTEMPTS, sleeping $HSD_READY_INTERVAL_SECONDS seconds\"
-  sleep '$HSD_READY_INTERVAL_SECONDS'
-done
-exit 1"
+  wait_for_hsd_ready
 fi
 
 if [ "$RUN_PIPELINE" = "1" ]; then
