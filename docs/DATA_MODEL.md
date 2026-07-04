@@ -147,7 +147,7 @@ Public exports are generated from SQLite:
 - `faq_answers.json`
 - `names-pages.json`
 - `names-pages/<collection>/page-<n>.json`
-- `ip-addresses/<ip>.json` for GLUE and SYNTH address lookups
+- `ip-addresses/<ip>.json` and `ip-addresses/<ip>/page-<n>.json` for GLUE and SYNTH address lookups
 - `dns-evidence/<name>.json` when scanner or crowd evidence exists
 
 The default public export does not write standalone Providers, Classes, Broken, DANE, CSV, SQLite, or full `names.json` artifacts. Provider, class, failure, and DANE summaries live in `summary.json`; rows are searched and filtered through the Names collections. `names.json`, `names.csv`, and `topology.sqlite.gz` are written only when `--include-downloads` is explicitly requested.
@@ -158,7 +158,7 @@ There is no standalone DANE row exporter in the production path. DANE-specific v
 
 Names collections are ordered by normalized name. The browser uses that invariant for static exact-name lookup: if `/api/name` is unavailable, it binary-searches the sorted `all` collection by fetching only a small number of page files. Compact row arrays still include first NS/GLUE/SYNTH scalar fields plus resource hash, size, version, index height, and a DNS evidence path for DANE generator handoff links and diagnostics.
 
-IP address artifacts are keyed by URL-encoded address, for example `ip-addresses/44.231.6.183.json` or an encoded IPv6 literal. Each file contains the canonical query IP, `row_count`, and full Names rows for exported names whose `GLUE4`, `GLUE6`, `SYNTH4`, or `SYNTH6` values contain that address.
+IP address artifacts are keyed by URL-encoded address, for example `ip-addresses/44.231.6.183.json` or an encoded IPv6 literal. The index file contains the canonical query IP, `row_count`, `page_count`, `page_size`, and a page path template. Page files contain full Names rows for exported names whose `GLUE4`, `GLUE6`, `SYNTH4`, or `SYNTH6` values contain that address.
 
 `summary.json` includes `next_actions`, a small derived list for the Overview action panel and filtered Names queue context. Each item contains a count, a primary Names filter, a filter link, and the DANE generator intent to use for matching row-level handoffs. The list is deliberately derived from existing counters and filters so it does not create new row artifacts.
 

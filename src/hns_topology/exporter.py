@@ -609,75 +609,82 @@ def write_ip_address_names(conn: sqlite3.Connection, out: Path, *, limit: int) -
     )
     json_columns = _name_json_columns(row_detail="full")
     current_ip: str | None = None
-    current_file: Any = None
-    current_tmp_path: Path | None = None
+    current_rows: list[dict[str, Any]] = []
     current_row_count = 0
-    current_first_row = True
+    current_page = 1
     file_count = 0
-    try:
-        for row in cursor:
-            item = dict(row)
-            ip = item.pop("ip", "")
-            if current_ip is None:
-                current_ip = ip
-                current_file, current_tmp_path = _open_ip_address_file(base_dir, current_ip)
-            if ip != current_ip:
-                if current_file is None or current_tmp_path is None:
-                    raise RuntimeError("IP address export file was not open")
-                _close_ip_address_file(current_file, current_tmp_path, current_ip, current_row_count)
-                file_count += 1
-                current_ip = ip
-                current_file, current_tmp_path = _open_ip_address_file(base_dir, current_ip)
-                current_row_count = 0
-                current_first_row = True
-            if current_file is None:
-                raise RuntimeError("IP address export file was not open")
-            row_payload = parse_json_columns(item, json_columns)
-            _write_ip_address_row(current_file, row_payload, first=current_first_row)
-            current_first_row = False
-            current_row_count += 1
-        if current_ip is not None:
-            if current_file is None or current_tmp_path is None:
-                raise RuntimeError("IP address export file was not open")
-            _close_ip_address_file(current_file, current_tmp_path, current_ip, current_row_count)
-            current_file = None
-            current_tmp_path = None
+    for row in cursor:
+        item = dict(row)
+        ip = item.pop("ip", "")
+        if current_ip is None:
+            current_ip = ip
+        if ip != current_ip:
+            _finish_ip_address_pages(
+                base_dir,
+                current_ip,
+                rows=current_rows,
+                row_count=current_row_count,
+                page=current_page,
+            )
             file_count += 1
-    finally:
-        if current_file is not None:
-            current_file.close()
-        if current_tmp_path is not None:
-            current_tmp_path.unlink(missing_ok=True)
+            current_ip = ip
+            current_rows = []
+            current_row_count = 0
+            current_page = 1
+        current_rows.append(parse_json_columns(item, json_columns))
+        current_row_count += 1
+        if len(current_rows) >= PAGE_SIZE:
+            _write_ip_address_page(base_dir, current_ip, current_page, current_rows)
+            current_rows = []
+            current_page += 1
+    if current_ip is not None:
+        _finish_ip_address_pages(
+            base_dir,
+            current_ip,
+            rows=current_rows,
+            row_count=current_row_count,
+            page=current_page,
+        )
+        file_count += 1
     return file_count
 
 
-def _open_ip_address_file(base_dir: Path, ip: str) -> tuple[Any, Path]:
-    tmp_path = base_dir / f"{_ip_address_filename(ip)}.tmp"
-    handle = tmp_path.open("w", encoding="utf-8")
-    handle.write("{\n")
-    handle.write(f'  "ip": {dumps_json(ip)},\n')
-    handle.write('  "rows": [')
-    return handle, tmp_path
+def _finish_ip_address_pages(
+    base_dir: Path,
+    ip: str,
+    *,
+    rows: list[dict[str, Any]],
+    row_count: int,
+    page: int,
+) -> None:
+    if rows:
+        _write_ip_address_page(base_dir, ip, page, rows)
+    page_count = math.ceil(row_count / PAGE_SIZE) if row_count else 0
+    write_json(
+        base_dir / _ip_address_filename(ip),
+        {
+            "ip": ip,
+            "row_count": row_count,
+            "page_size": PAGE_SIZE,
+            "page_count": page_count,
+            "path_template": f"ip-addresses/{_ip_address_basename(ip)}/page-{{page}}.json",
+            "row_detail": "full",
+        },
+    )
 
 
-def _write_ip_address_row(handle: Any, row: dict[str, Any], *, first: bool) -> None:
-    if first:
-        handle.write("\n    ")
-    else:
-        handle.write(",\n    ")
-    handle.write(dumps_json(row))
+def _write_ip_address_page(base_dir: Path, ip: str, page: int, rows: list[dict[str, Any]]) -> None:
+    page_dir = base_dir / _ip_address_basename(ip)
+    page_dir.mkdir(parents=True, exist_ok=True)
+    write_json(page_dir / f"page-{page}.json", {"page": page, "rows": rows})
 
 
-def _close_ip_address_file(handle: Any, tmp_path: Path, ip: str, row_count: int) -> None:
-    handle.write("\n  ],\n")
-    handle.write(f'  "row_count": {row_count}\n')
-    handle.write("}\n")
-    handle.close()
-    tmp_path.replace(tmp_path.with_name(_ip_address_filename(ip)))
+def _ip_address_basename(ip: str) -> str:
+    return quote(ip, safe="")
 
 
 def _ip_address_filename(ip: str) -> str:
-    return f"{quote(ip, safe='')}.json"
+    return f"{_ip_address_basename(ip)}.json"
 
 
 def build_dns_evidence(conn: sqlite3.Connection, name: str) -> dict[str, Any]:

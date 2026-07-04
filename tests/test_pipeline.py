@@ -166,8 +166,14 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     providers = summary["providers"]
     names_pages = json.loads((out / "data/names-pages.json").read_text(encoding="utf-8"))
     names_page_rows = json.loads((out / "data/names-pages/all/page-1.json").read_text(encoding="utf-8"))["rows"]
-    delegated_ip_rows = json.loads((out / "data/ip-addresses/198.51.100.2.json").read_text(encoding="utf-8"))
-    direct_ip_rows = json.loads((out / "data/ip-addresses/203.0.113.10.json").read_text(encoding="utf-8"))
+    delegated_ip_index = json.loads((out / "data/ip-addresses/198.51.100.2.json").read_text(encoding="utf-8"))
+    direct_ip_index = json.loads((out / "data/ip-addresses/203.0.113.10.json").read_text(encoding="utf-8"))
+    delegated_ip_page = json.loads(
+        (out / "data" / delegated_ip_index["path_template"].replace("{page}", "1")).read_text(encoding="utf-8")
+    )
+    direct_ip_page = json.loads(
+        (out / "data" / direct_ip_index["path_template"].replace("{page}", "1")).read_text(encoding="utf-8")
+    )
     names_page_names = [row["name"] for row in names_page_rows]
     direct_row = next(row for row in names_page_rows if row["name"] == "direct")
     namebase_provider = next(item for item in providers if item["provider_key"] == "namebase/default")
@@ -186,7 +192,9 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert "names-pages.json" in manifest_artifacts
     assert "names-pages/all/page-1.json" in manifest_artifacts
     assert "ip-addresses/198.51.100.2.json" in manifest_artifacts
+    assert "ip-addresses/198.51.100.2/page-1.json" in manifest_artifacts
     assert "ip-addresses/203.0.113.10.json" in manifest_artifacts
+    assert "ip-addresses/203.0.113.10/page-1.json" in manifest_artifacts
     assert "dane-pages.json" not in manifest_artifacts
     assert "names.json" not in manifest_artifacts
     assert "names.csv" not in manifest_artifacts
@@ -209,12 +217,16 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert direct_row["raw_size"] > 0
     assert direct_row["resource_hash"]
     assert direct_row["last_seen_height"] == 123456
-    assert delegated_ip_rows["ip"] == "198.51.100.2"
-    assert delegated_ip_rows["row_count"] == 1
-    assert [row["name"] for row in delegated_ip_rows["rows"]] == ["delegated"]
-    assert direct_ip_rows["ip"] == "203.0.113.10"
-    assert direct_ip_rows["row_count"] == 1
-    assert [row["name"] for row in direct_ip_rows["rows"]] == ["direct"]
+    assert delegated_ip_index["ip"] == "198.51.100.2"
+    assert delegated_ip_index["row_count"] == 1
+    assert delegated_ip_index["page_count"] == 1
+    assert delegated_ip_index["row_detail"] == "full"
+    assert [row["name"] for row in delegated_ip_page["rows"]] == ["delegated"]
+    assert direct_ip_index["ip"] == "203.0.113.10"
+    assert direct_ip_index["row_count"] == 1
+    assert direct_ip_index["page_count"] == 1
+    assert direct_ip_index["row_detail"] == "full"
+    assert [row["name"] for row in direct_ip_page["rows"]] == ["direct"]
     assert "classes" in summary
     assert "broken" in summary
     assert "examples" not in summary["broken"]

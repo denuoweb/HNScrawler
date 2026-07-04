@@ -482,30 +482,49 @@ function isDaneRow(row) {
   return hasDs(row) || Boolean(row.tlsa_status) || Boolean(row.dane_status);
 }
 
-async function lookupIpAddress(query) {
+async function lookupIpAddress(query, page) {
   const ip = normalizeIpQuery(query);
   if (!ip) return null;
-  if (ipAddressLookupCache.has(ip)) return ipAddressLookupCache.get(ip);
-  const lookupPromise = loadJson(`data/ip-addresses/${encodeURIComponent(ip)}.json`)
-    .then((data) => {
-      const rows = Array.isArray(data.rows) ? data.rows : [];
-      return {
-        found: true,
-        query,
-        ip,
-        rowCount: Number(data.row_count || rows.length),
-        rows
-      };
-    })
-    .catch(() => ({
+  if (!ipAddressLookupCache.has(ip)) {
+    const lookupPromise = loadJson(`data/ip-addresses/${encodeURIComponent(ip)}.json`)
+      .catch(() => null);
+    ipAddressLookupCache.set(ip, lookupPromise);
+  }
+  const data = await ipAddressLookupCache.get(ip);
+  if (!data) {
+    return {
       found: false,
       query,
       ip,
       rowCount: 0,
+      pageCount: 0,
+      pageSize: 100,
+      page: 1,
       rows: []
-    }));
-  ipAddressLookupCache.set(ip, lookupPromise);
-  return lookupPromise;
+    };
+  }
+  const embeddedRows = Array.isArray(data.rows) ? data.rows : null;
+  const rowCount = Number(data.row_count || embeddedRows?.length || 0);
+  const pageSize = Number(data.page_size || 0) || 100;
+  const pageCount = Number(data.page_count || 0) || (rowCount ? Math.ceil(rowCount / pageSize) : 0);
+  const safePage = pageCount > 0 ? Math.min(Math.max(1, page), pageCount) : 1;
+  const rows = embeddedRows
+    ? embeddedRows.slice((safePage - 1) * pageSize, safePage * pageSize)
+    : pageCount > 0 && data.path_template
+      ? await loadJson(pagePath(data.path_template, safePage))
+        .then((pageData) => rowsFromPage(pageData, data))
+        .catch(() => [])
+      : [];
+  return {
+    found: true,
+    query,
+    ip,
+    rowCount,
+    pageCount,
+    pageSize,
+    page: safePage,
+    rows
+  };
 }
 
 async function lookupExactNameFromApi(query, name) {
@@ -573,31 +592,31 @@ async function lookupExactName(query, index) {
 
 async function applySearchToPageData(pageData, query, options = {}) {
   if (!query) return {...pageData, search: null, lookup: null};
-  const ipLookup = await lookupIpAddress(query);
+  const ipLookup = await lookupIpAddress(query, activePage());
   if (ipLookup) {
-    const allRows = options.daneOnly ? ipLookup.rows.filter(isDaneRow) : ipLookup.rows;
+    const rows = options.daneOnly ? ipLookup.rows.filter(isDaneRow) : ipLookup.rows;
     const allCollection = pageData.index?.collections?.all || pageData.collection;
     const exportedCount = Number(allCollection.row_count || 0);
     const totalCount = Number(allCollection.total_count || exportedCount);
     const fullSnapshot = exportedCount === totalCount;
-    const pageSize = Number(pageData.collection.page_size || 0) || 100;
-    const pageCount = allRows.length ? Math.ceil(allRows.length / pageSize) : 0;
-    const page = pageCount > 0 ? Math.min(activePage(), pageCount) : 1;
-    const start = (page - 1) * pageSize;
+    const rowCount = options.daneOnly ? rows.length : ipLookup.rowCount;
+    const pageCount = options.daneOnly ? (rows.length ? 1 : 0) : ipLookup.pageCount;
+    const page = options.daneOnly ? 1 : ipLookup.page;
     return {
       ...pageData,
       collection: {
         ...pageData.collection,
-        row_count: allRows.length,
+        row_count: rowCount,
+        page_size: ipLookup.pageSize,
         page_count: pageCount,
         row_detail: "full",
         columns: null
       },
       page,
-      rows: allRows.slice(start, start + pageSize),
+      rows,
       search: {
         query,
-        matchedCount: allRows.length,
+        matchedCount: rowCount,
         totalCount: "snapshot",
         exact: false,
         ip: true,
