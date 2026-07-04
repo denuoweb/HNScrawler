@@ -64,7 +64,7 @@ See `docs/PERFORMANCE.md` for the HSD data-structure audit and bootstrap tuning 
 
 ## Production Shape
 
-Use a temporary or dedicated indexer VM with a persistent disk for HSD and the working database. Publish only generated `public/` artifacts to the existing production web VM, backed by its attached artifact disk rather than its boot disk. The production defaults keep no release archives or downloadable database backups; validation runs before publish, and only the live site tree remains.
+Use a temporary or dedicated indexer VM with a persistent disk for HSD and the working database. Publish only generated `public/` artifacts to the existing production web VM, backed by its attached artifact disk rather than its boot disk. The production publish path validates on the indexer, opens temporary VPC SSH access from the indexer to the web VM, and rsyncs the generated site directly cloud-to-cloud. The production defaults keep no release archives or downloadable database backups; validation runs before publish, and only the live site tree remains.
 
 Every generated snapshot includes source provenance, provider-rule provenance, provider/class/failure summaries, and live-check run settings in `data/summary.json`, including source type/hash, crawler version, provider rule version, provider rule hash, live-check rate limits, candidate counts, and checked counts. `data/manifest.json` records the export format version plus SHA-256 and byte-size entries for the public data files.
 

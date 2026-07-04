@@ -26,6 +26,7 @@ def generate_site(
     out = Path(out_dir)
     out.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{out.name}.tmp-", dir=out.parent))
+    staging.chmod(0o755)
     try:
         _generate_site_into(
             conn,

@@ -31,7 +31,7 @@ Required for publishing:
 - `DENUO_WEB_PATH` defaults to `/var/www/denuoweb/hns-topology`
 - `PROD_ARTIFACT_DISK` defaults to `hns-topology-data`
 - `PROD_ARTIFACT_MOUNT` defaults to `/mnt/hns-topology`
-- `REMOTE_TMP` defaults to `/mnt/hns-topology/.incoming/hns-topology-public`
+- `DENUO_WEB_TARGET_TAGS` defaults to `denuoweb` for the temporary direct-publish firewall rule
 
 Optional for release archives:
 
@@ -123,7 +123,9 @@ Current production shape:
 
 Keep full HSD data off the production web VM unless there is a deliberate later decision to colocate a pruned node. The intended production VM payload is the generated static report and optional downloadable artifacts.
 
-`scripts/publish-site.sh` refuses to publish through GCE unless `PROD_ARTIFACT_MOUNT` is mounted and the resolved `DENUO_WEB_PATH` is under that mount. It also stages incoming files under `REMOTE_TMP` on the artifact disk, not under `/tmp`, so large reports do not temporarily consume the production boot disk. `ALLOW_BOOT_DISK_PUBLISH=1` exists only as an emergency override and should not be used for normal Denuo deployment.
+`scripts/publish-indexer-site.sh` is the preferred production publish path. It validates `/mnt/hnscrawler/public` on `hns-topology-indexer`, creates a temporary SSH key on that VM, adds that key only to `denuoweb-vm`, opens a temporary firewall rule from the indexer private IP to TCP 22 on the `denuoweb` target tag, and runs `rsync` directly from the indexer to the resolved production artifact target over the VPC. The script removes the temporary key metadata and firewall rule on exit. This avoids relaying multi-gigabyte static exports through the local workstation and avoids keeping a second full staging tree on the web disk.
+
+`scripts/publish-site.sh` remains available for publishing a local `public/` directory. It refuses to publish through GCE unless `PROD_ARTIFACT_MOUNT` is mounted and the resolved `DENUO_WEB_PATH` is under that mount. It stages incoming files under `REMOTE_TMP` on the artifact disk, not under `/tmp`, so large reports do not temporarily consume the production boot disk. `ALLOW_BOOT_DISK_PUBLISH=1` exists only as an emergency override and should not be used for normal Denuo deployment.
 
 `scripts/publish-site.sh` also runs `hns-topology validate-public --public-dir <public>` by default before upload. That validation checks required public files, export counts, and `public/data/manifest.json` checksums for the generated static data. Set `VALIDATE_BEFORE_PUBLISH=0` only for deliberate debugging.
 

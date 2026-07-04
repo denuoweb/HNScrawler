@@ -119,14 +119,14 @@ case \"\$PUBLISH_TARGET/\" in
 esac
 tar -C '$REMOTE_TMP' -xzf '$REMOTE_ARCHIVE'
 sudo mkdir -p \"\$PUBLISH_TARGET\"
-sudo rsync -a --delete '$REMOTE_TMP/' \"\$PUBLISH_TARGET/\"
+sudo rsync -a --delete --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r '$REMOTE_TMP/' \"\$PUBLISH_TARGET/\"
 sudo chown -R www-data:www-data \"\$PUBLISH_TARGET\"
 rm -rf '$REMOTE_TMP' '$REMOTE_ARCHIVE'
 echo '[publish] remote sync complete'"
 else
   DENUO_WEB_HOST="${DENUO_WEB_HOST:?set DENUO_WEB_HOST}"
   log "syncing site to $DENUO_WEB_HOST:$DENUO_WEB_PATH"
-  rsync -az --delete "$PUBLIC_DIR"/ "$DENUO_WEB_HOST":"$DENUO_WEB_PATH"/
+  rsync -az --delete --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r "$PUBLIC_DIR"/ "$DENUO_WEB_HOST":"$DENUO_WEB_PATH"/
 fi
 
 log "publish complete"

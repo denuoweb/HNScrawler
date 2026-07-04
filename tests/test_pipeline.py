@@ -1,4 +1,5 @@
 import json
+import stat
 from pathlib import Path
 
 from hns_topology.db import (
@@ -161,6 +162,7 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
         "data/ip-addresses/203.0.113.10.json",
     ]:
         assert (out / relative).exists()
+    assert stat.S_IMODE(out.stat().st_mode) == 0o755
     for relative in [
         "providers.html",
         "broken.html",
