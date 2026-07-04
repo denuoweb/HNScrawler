@@ -174,6 +174,10 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     direct_ip_page = json.loads(
         (out / "data" / direct_ip_index["path_template"].replace("{page}", "1")).read_text(encoding="utf-8")
     )
+    delegated_ip_rows = [
+        dict(zip(delegated_ip_page["columns"], row, strict=True)) for row in delegated_ip_page["rows"]
+    ]
+    direct_ip_rows = [dict(zip(direct_ip_page["columns"], row, strict=True)) for row in direct_ip_page["rows"]]
     names_page_names = [row["name"] for row in names_page_rows]
     direct_row = next(row for row in names_page_rows if row["name"] == "direct")
     namebase_provider = next(item for item in providers if item["provider_key"] == "namebase/default")
@@ -220,13 +224,15 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert delegated_ip_index["ip"] == "198.51.100.2"
     assert delegated_ip_index["row_count"] == 1
     assert delegated_ip_index["page_count"] == 1
-    assert delegated_ip_index["row_detail"] == "full"
-    assert [row["name"] for row in delegated_ip_page["rows"]] == ["delegated"]
+    assert delegated_ip_index["row_detail"] == "compact"
+    assert "first_glue4" in delegated_ip_index["columns"]
+    assert [row["name"] for row in delegated_ip_rows] == ["delegated"]
     assert direct_ip_index["ip"] == "203.0.113.10"
     assert direct_ip_index["row_count"] == 1
     assert direct_ip_index["page_count"] == 1
-    assert direct_ip_index["row_detail"] == "full"
-    assert [row["name"] for row in direct_ip_page["rows"]] == ["direct"]
+    assert direct_ip_index["row_detail"] == "compact"
+    assert "first_synth4" in direct_ip_index["columns"]
+    assert [row["name"] for row in direct_ip_rows] == ["direct"]
     assert "classes" in summary
     assert "broken" in summary
     assert "examples" not in summary["broken"]

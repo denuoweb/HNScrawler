@@ -596,7 +596,7 @@ def write_ip_address_names(conn: sqlite3.Connection, out: Path, *, limit: int) -
           JOIN json_each(COALESCE(rs.synth6, '[]')) AS ip_value
           WHERE trim(CAST(ip_value.value AS TEXT)) != ''
         )
-        SELECT ip_names.ip, {_name_row_columns(row_detail="full")}
+        SELECT ip_names.ip, {_name_row_columns(row_detail="compact")}
         FROM ip_names
         JOIN names n ON n.name = ip_names.name
         JOIN resource_summary rs ON rs.name = n.name
@@ -607,7 +607,9 @@ def write_ip_address_names(conn: sqlite3.Connection, out: Path, *, limit: int) -
         """,
         (limit,),
     )
-    json_columns = _name_json_columns(row_detail="full")
+    row_detail = "compact"
+    json_columns = _name_json_columns(row_detail=row_detail)
+    output_keys = _name_output_keys(row_detail=row_detail)
     current_ip: str | None = None
     current_rows: list[dict[str, Any]] = []
     current_row_count = 0
@@ -625,6 +627,8 @@ def write_ip_address_names(conn: sqlite3.Connection, out: Path, *, limit: int) -
                 rows=current_rows,
                 row_count=current_row_count,
                 page=current_page,
+                row_detail=row_detail,
+                output_keys=output_keys,
             )
             file_count += 1
             current_ip = ip
@@ -634,17 +638,19 @@ def write_ip_address_names(conn: sqlite3.Connection, out: Path, *, limit: int) -
         current_rows.append(parse_json_columns(item, json_columns))
         current_row_count += 1
         if len(current_rows) >= PAGE_SIZE:
-            _write_ip_address_page(base_dir, current_ip, current_page, current_rows)
+            _write_ip_address_page(base_dir, current_ip, current_page, current_rows, output_keys=output_keys)
             current_rows = []
             current_page += 1
     if current_ip is not None:
         _finish_ip_address_pages(
             base_dir,
             current_ip,
-            rows=current_rows,
-            row_count=current_row_count,
-            page=current_page,
-        )
+        rows=current_rows,
+        row_count=current_row_count,
+        page=current_page,
+        row_detail=row_detail,
+        output_keys=output_keys,
+    )
         file_count += 1
     return file_count
 
@@ -656,9 +662,11 @@ def _finish_ip_address_pages(
     rows: list[dict[str, Any]],
     row_count: int,
     page: int,
+    row_detail: str,
+    output_keys: list[str],
 ) -> None:
     if rows:
-        _write_ip_address_page(base_dir, ip, page, rows)
+        _write_ip_address_page(base_dir, ip, page, rows, output_keys=output_keys)
     page_count = math.ceil(row_count / PAGE_SIZE) if row_count else 0
     write_json(
         base_dir / _ip_address_filename(ip),
@@ -668,15 +676,30 @@ def _finish_ip_address_pages(
             "page_size": PAGE_SIZE,
             "page_count": page_count,
             "path_template": f"ip-addresses/{_ip_address_basename(ip)}/page-{{page}}.json",
-            "row_detail": "full",
+            "row_detail": row_detail,
+            "columns": output_keys,
         },
     )
 
 
-def _write_ip_address_page(base_dir: Path, ip: str, page: int, rows: list[dict[str, Any]]) -> None:
+def _write_ip_address_page(
+    base_dir: Path,
+    ip: str,
+    page: int,
+    rows: list[dict[str, Any]],
+    *,
+    output_keys: list[str],
+) -> None:
     page_dir = base_dir / _ip_address_basename(ip)
     page_dir.mkdir(parents=True, exist_ok=True)
-    write_json(page_dir / f"page-{page}.json", {"page": page, "rows": rows})
+    write_json(
+        page_dir / f"page-{page}.json",
+        {
+            "page": page,
+            "columns": output_keys,
+            "rows": [[row.get(key) for key in output_keys] for row in rows],
+        },
+    )
 
 
 def _ip_address_basename(ip: str) -> str:

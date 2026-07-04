@@ -500,6 +500,8 @@ async function lookupIpAddress(query, page) {
       pageCount: 0,
       pageSize: 100,
       page: 1,
+      rowDetail: "compact",
+      columns: null,
       rows: []
     };
   }
@@ -523,6 +525,8 @@ async function lookupIpAddress(query, page) {
     pageCount,
     pageSize,
     page: safePage,
+    rowDetail: data.row_detail || "full",
+    columns: Array.isArray(data.columns) ? data.columns : null,
     rows
   };
 }
@@ -609,8 +613,8 @@ async function applySearchToPageData(pageData, query, options = {}) {
         row_count: rowCount,
         page_size: ipLookup.pageSize,
         page_count: pageCount,
-        row_detail: "full",
-        columns: null
+        row_detail: ipLookup.rowDetail,
+        columns: ipLookup.columns
       },
       page,
       rows,
