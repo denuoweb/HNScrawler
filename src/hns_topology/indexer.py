@@ -31,6 +31,7 @@ from .db import (
     upsert_resource_rows,
 )
 from .hsd_rpc import HsdRpcClient
+from .jsonutil import loads_json_list
 from .models import NameRecord, ResourceSummary
 from .provider_rules import ProviderRules
 from .timeutil import utc_now
@@ -401,6 +402,70 @@ def rollback_reorg(
     return result
 
 
+def reclassify_existing_names(
+    conn,
+    *,
+    rules: ProviderRules,
+    batch_size: int = 100_000,
+    progress_interval: int = 500_000,
+    progress: Callable[[int, int], None] | None = None,
+) -> dict[str, int | str]:
+    batch_size = max(1, batch_size)
+    progress_interval = max(0, progress_interval)
+    now = utc_now()
+    scanned = 0
+    changed = 0
+    batch: list[tuple[str, str, str]] = []
+
+    def flush() -> None:
+        nonlocal changed
+        if not batch:
+            return
+        conn.executemany(
+            """
+            UPDATE names
+            SET onchain_class = ?, provider_guess = ?
+            WHERE name = ?
+            """,
+            batch,
+        )
+        changed += len(batch)
+        batch.clear()
+
+    rows = conn.execute(
+        """
+        SELECT
+          n.name, n.expired, n.record_types, n.onchain_class, n.provider_guess,
+          rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6,
+          rs.ds_records, rs.has_ds, rs.has_txt, rs.raw_size,
+          rs.resource_version, rs.resource_hash
+        FROM names n
+        JOIN resource_summary rs ON rs.name = n.name
+        ORDER BY n.name
+        """
+    )
+    for row in rows:
+        scanned += 1
+        name = str(row["name"])
+        summary = _summary_from_stored_row(name, row)
+        provider_guess = rules.match(name, summary)
+        onchain_class = classify_onchain(summary, expired=bool(row["expired"]), provider_guess=provider_guess)
+        if provider_guess != row["provider_guess"] or onchain_class != row["onchain_class"]:
+            batch.append((onchain_class, provider_guess, name))
+        if len(batch) >= batch_size:
+            flush()
+        if progress is not None and progress_interval and scanned % progress_interval == 0:
+            progress(scanned, changed + len(batch))
+
+    flush()
+    _set_provider_rule_meta(conn, rules)
+    set_meta(conn, "provider_reclassified_at", now)
+    recompute_provider_summary(conn, rules.provider_types, now, rules.provider_patterns)
+    if progress is not None:
+        progress(scanned, changed)
+    return {"scanned": scanned, "changed": changed, "reclassified_at": now}
+
+
 def extract_changed_name_refs_from_block(
     block: dict[str, Any],
     *,
@@ -564,6 +629,26 @@ def _summary_from_compact_row(name: str, row: dict[str, Any]) -> ResourceSummary
         resource_hash=str(row.get("resource_hash") or _compact_row_hash(row)),
         record_types=record_types,
         malformed=bool(row.get("malformed")),
+    )
+
+
+def _summary_from_stored_row(name: str, row: Any) -> ResourceSummary:
+    return _summary_from_compact_row(
+        name,
+        {
+            "ns_names": loads_json_list(row["ns_names"]),
+            "glue4": loads_json_list(row["glue4"]),
+            "glue6": loads_json_list(row["glue6"]),
+            "synth4": loads_json_list(row["synth4"]),
+            "synth6": loads_json_list(row["synth6"]),
+            "ds_records": loads_json_list(row["ds_records"]),
+            "record_types": loads_json_list(row["record_types"]),
+            "has_ds": row["has_ds"],
+            "has_txt": row["has_txt"],
+            "raw_size": row["raw_size"],
+            "resource_version": row["resource_version"],
+            "resource_hash": row["resource_hash"],
+        },
     )
 
 

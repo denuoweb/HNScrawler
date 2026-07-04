@@ -34,6 +34,7 @@ from .indexer import (
     extract_changed_name_refs_from_block,
     find_reorg_mismatch,
     index_changed_names,
+    reclassify_existing_names,
     rollback_reorg,
 )
 from .livecheck import LiveCheckConfig, count_live_check_candidates, run_live_checks
@@ -155,6 +156,15 @@ def build_parser() -> argparse.ArgumentParser:
     rebuild_ip.add_argument("--batch-size", type=int, default=100_000)
     rebuild_ip.add_argument("--progress-interval", type=int, default=500_000)
     rebuild_ip.set_defaults(func=cmd_rebuild_resource_ip)
+
+    reclassify = sub.add_parser(
+        "reclassify", help="Recompute provider guesses and on-chain classes from stored resource summaries."
+    )
+    reclassify.add_argument("--db", required=True)
+    reclassify.add_argument("--rules", default=str(DEFAULT_RULES))
+    reclassify.add_argument("--batch-size", type=int, default=100_000)
+    reclassify.add_argument("--progress-interval", type=int, default=500_000)
+    reclassify.set_defaults(func=cmd_reclassify)
 
     export = sub.add_parser("export", help="Write JSON/CSV/SQLite.gz artifacts.")
     export.add_argument("--db", required=True)
@@ -551,6 +561,29 @@ def cmd_rebuild_resource_ip(args: argparse.Namespace) -> int:
                 progress=progress,
             )
     print(f"rebuilt resource_ip index with {count} rows")
+    return 0
+
+
+def cmd_reclassify(args: argparse.Namespace) -> int:
+    rules = ProviderRules.from_file(args.rules)
+
+    def progress(scanned: int, changed: int) -> None:
+        print(f"[reclassify] scanned={scanned} changed={changed}", file=sys.stderr, flush=True)
+
+    with connect(args.db) as conn:
+        init_db(conn)
+        with conn:
+            result = reclassify_existing_names(
+                conn,
+                rules=rules,
+                batch_size=getattr(args, "batch_size", 100_000),
+                progress_interval=getattr(args, "progress_interval", 500_000),
+                progress=progress,
+            )
+    print(
+        "reclassified names: "
+        f"scanned={result['scanned']} changed={result['changed']} at={result['reclassified_at']}"
+    )
     return 0
 
 

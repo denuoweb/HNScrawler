@@ -72,7 +72,9 @@ The Names page is backed by paginated `data/names-pages/` JSON. Each row has an 
 
 Exact name search first tries the lightweight lookup API when it is available. On the static site it falls back to binary-searching the sorted `names-pages/all` collection, so a direct name lookup does not require loading the full 12M+ row export or storing an additional lookup index.
 
-IP address search detects IPv4 and IPv6 literals in the Names page and loads compact `data/ip-addresses/` postings. Page files contain only names for the common single-field case, or name plus field-mask pairs when an address appears in multiple record fields. They do not duplicate full Names rows.
+IP address search detects IPv4 and IPv6 literals in the Names page and loads compact `data/ip-addresses/` postings. Page files contain only names for the common single-field case, or name plus field-mask pairs when an address appears in multiple record fields. They do not duplicate full Names rows. `summary.json` also carries compact top resource-IP and nameserver-host aggregates so shared infrastructure clusters can be audited without creating new high-cardinality page sets.
+
+Known high-frequency marketplace/default glue IPs are classified before the self-hosted rule, and known public HNS resolver IPs are marked as resolver infrastructure. Default parking and resolver infrastructure are excluded from live-check candidate selection and from actionable website queues such as likely websites, strict HNS ready, and needs DANE. Existing databases can apply provider-rule changes with `hns-topology reclassify --db data/topology.sqlite` without rerunning HSD extraction.
 
 `generate-site` builds into a fresh staging directory and swaps the completed tree into place, so removed pages or renamed JSON artifacts do not linger in `public/`. It requires the derived `resource_ip` index to already be current. Existing databases from before the IP index change should run `hns-topology rebuild-resource-ip --db data/topology.sqlite` once before export; this heavy backfill is deliberately not hidden inside site generation.
 
@@ -112,6 +114,7 @@ hns-topology reorg-check --db data/topology.sqlite --rollback
 hns-topology live-check --db data/topology.sqlite --limit 100 --concurrency 4 --min-delay-ms 250
 hns-topology import-dns-evidence --db data/topology.sqlite --file evidence.json --source crowd --source-id worker-1
 hns-topology rebuild-resource-ip --db data/topology.sqlite
+hns-topology reclassify --db data/topology.sqlite
 hns-topology export --db data/topology.sqlite --out public/data
 hns-topology generate-site --db data/topology.sqlite --out public
 hns-topology serve-lookup --db data/topology.sqlite --host 127.0.0.1 --port 8787

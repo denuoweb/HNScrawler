@@ -19,6 +19,7 @@ from hns_topology.indexer import (
     extract_changed_name_refs_from_block,
     find_reorg_mismatch,
     index_changed_names,
+    reclassify_existing_names,
     rollback_reorg,
 )
 from hns_topology.models import FAILURE_REASONS, LiveStatus
@@ -124,13 +125,24 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     assert next_actions["plan_dnssec_dane"]["count"] == 3
     assert summary["source_type"] == "fixture"
     assert summary["source_file_hash"]
-    assert summary["provider_rules_version"] == 3
+    assert summary["provider_rules_version"] == 4
     assert summary["provider_rules_hash"]
     assert any(item["key"] == "direct_ip_records" for item in answers)
     assert any(item["key"] == "needs_dane" for item in answers)
     assert any(item["key"] == "needs_fix" for item in answers)
     assert "examples" not in summary["broken"]
     assert {item["failure_reason"] for item in summary["broken"]["reasons"]} == set(FAILURE_REASONS)
+    assert {item["ip"] for item in summary["top_resource_ips"]} >= {
+        "198.51.100.2",
+        "198.51.100.3",
+        "203.0.113.10",
+    }
+    assert {item["nameserver"] for item in summary["top_nameservers"]} >= {
+        "ns1.delegated",
+        "ns1.external.example",
+        "ns1.namebase.io",
+    }
+    assert any(item["ip"] == "194.50.5.27" for item in summary["known_hns_resolvers"])
     assert namebase_provider["ns_pattern"] == "suffix:namebase.io,suffix:parking.namebase.io"
     assert namebase_provider["ip_pattern"] == ""
     assert resource_ip_count == 5
@@ -275,6 +287,9 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert direct_ip_page["rows"] == ["direct"]
     assert "classes" in summary
     assert "broken" in summary
+    assert "top_resource_ips" in summary
+    assert "top_nameservers" in summary
+    assert "known_hns_resolvers" in summary
     assert "examples" not in summary["broken"]
     assert "next_actions" in summary
     assert {item["filter"] for item in summary["next_actions"]} <= set(names_pages["collections"])
@@ -681,6 +696,77 @@ def test_hsd_bootstrap_smoke_limit_records_provenance(tmp_path):
     assert client.get_names_calls == 1
     assert summary["source_type"] == "hsd_rpc"
     assert summary["source_rpc_url"] == "http://127.0.0.1:12037"
+
+
+def test_reclassify_existing_names_applies_new_provider_rules(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    fixture_path = tmp_path / "bulk_fixture.json"
+    legacy_rules_path = tmp_path / "legacy_rules.json"
+    fixture_path.write_text(
+        json.dumps(
+            {
+                "chain": "fixture",
+                "height": 1,
+                "tip_hash": "tip",
+                "names": [
+                    {
+                        "name": "bulk",
+                        "nameHash": "hash-bulk",
+                        "state": "CLOSED",
+                        "renewal": 1,
+                        "resource": {
+                            "records": [
+                                {"type": "NS", "ns": "ns1.bulk."},
+                                {"type": "GLUE4", "ns": "ns1.bulk.", "address": "44.231.6.183"},
+                            ]
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    legacy_rules_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "default_provider_key": "unknown/custom",
+                "rules": [
+                    {
+                        "provider_key": "self-hosted",
+                        "provider_type": "self_hosted",
+                        "priority": 30,
+                        "self_hosted": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    legacy_rules = ProviderRules.from_file(legacy_rules_path)
+    current_rules = ProviderRules.from_file("configs/provider_rules.json")
+
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=fixture_path, rules=legacy_rules)
+        before = conn.execute(
+            "SELECT provider_guess, onchain_class FROM names WHERE name = 'bulk'"
+        ).fetchone()
+        result = reclassify_existing_names(conn, rules=current_rules, progress_interval=0)
+        after = conn.execute(
+            "SELECT provider_guess, onchain_class FROM names WHERE name = 'bulk'"
+        ).fetchone()
+        provider = conn.execute(
+            "SELECT provider_type, names_count FROM provider_summary WHERE provider_key = 'bulk/default'"
+        ).fetchone()
+
+    assert before["provider_guess"] == "self-hosted"
+    assert before["onchain_class"] == "DELEGATED_WITH_GLUE"
+    assert result["scanned"] == 1
+    assert result["changed"] == 1
+    assert after["provider_guess"] == "bulk/default"
+    assert after["onchain_class"] == "PARKED_OR_DEFAULT"
+    assert provider["provider_type"] == "default_parking"
+    assert provider["names_count"] == 1
 
 
 def test_extract_changed_name_refs_decodes_raw_names_and_resolves_hashes():

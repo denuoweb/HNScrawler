@@ -78,6 +78,39 @@ def test_provider_rules_detect_self_hosted_and_default():
     )
 
 
+def test_provider_rules_mark_shared_default_glue_before_self_hosted():
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    summary = summarize_resource(
+        "bulk",
+        {
+            "records": [
+                {"type": "NS", "ns": "ns1.bulk."},
+                {"type": "GLUE4", "ns": "ns1.bulk.", "address": "44.231.6.183"},
+            ]
+        },
+    )
+
+    provider = rules.match("bulk", summary)
+
+    assert provider == "bulk/default"
+    assert classify_onchain(summary, expired=False, provider_guess=provider) == "PARKED_OR_DEFAULT"
+
+
+def test_provider_rules_mark_known_public_resolver_ips():
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    summary = summarize_resource(
+        "resolverglue",
+        {
+            "records": [
+                {"type": "NS", "ns": "ns1.resolverglue."},
+                {"type": "GLUE4", "ns": "ns1.resolverglue.", "address": "194.50.5.27"},
+            ]
+        },
+    )
+
+    assert rules.match("resolverglue", summary) == "hns-resolver/plain-dns"
+
+
 def test_provider_rules_match_common_dns_providers():
     rules = ProviderRules.from_file("configs/provider_rules.json")
     cases = [

@@ -227,6 +227,54 @@ function providerFilterHref(row) {
   return row.provider_key ? `names.html?filter=${encodeURIComponent(`${PROVIDER_FILTER_PREFIX}${row.provider_key}`)}` : "";
 }
 
+function topIpCell(row) {
+  const href = row.filter_link || `names.html?q=${encodeURIComponent(row.ip || "")}`;
+  return `<a href="${escapeHtml(sitePath(href))}">${escapeHtml(row.ip || "")}</a>`;
+}
+
+function nameserverCell(row) {
+  return `<span title="${escapeHtml(row.nameserver || "")}">${escapeHtml(row.nameserver || "")}</span>`;
+}
+
+function ipFieldCountsCell(row) {
+  const counts = row.field_counts || {};
+  const parts = Object.entries(counts)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([field, count]) => `${field} ${fmt.format(count || 0)}`);
+  return escapeHtml(parts.join(", "));
+}
+
+function ipRoleCell(row) {
+  const label = row.label || prettyToken(row.role || "unknown");
+  return `<span title="${escapeHtml(row.source || "")}">${escapeHtml(label)}</span>`;
+}
+
+function resolverSoftwareCell(row) {
+  return row.hnsdoh_software ? "HNSDoH" : "plain DNS";
+}
+
+function topologySignals(summary) {
+  const topIps = summary.top_resource_ips || [];
+  const topNameservers = summary.top_nameservers || [];
+  const resolvers = summary.known_hns_resolvers || [];
+  return `
+    <article class="panel"><h2>Resource IP Clusters</h2>${table(topIps, [
+      {key: "ip", label: "IP", render: topIpCell, width: "30%"},
+      {key: "names_count", label: "Names", width: "18%"},
+      {key: "field_counts", label: "Fields", render: ipFieldCountsCell, width: "27%"},
+      {key: "role", label: "Role", render: ipRoleCell, width: "25%"}
+    ], "No resource IPs in this snapshot.", {wrapClass: "compact-table-wrap"})}</article>
+    <article class="panel"><h2>Nameserver Hosts</h2>${table(topNameservers, [
+      {key: "nameserver", label: "Nameserver", render: nameserverCell, width: "70%"},
+      {key: "names_count", label: "Names", width: "30%"}
+    ], "No nameservers in this snapshot.", {wrapClass: "compact-table-wrap"})}</article>
+    <article class="panel"><h2>Known HNS Resolvers</h2>${table(resolvers, [
+      {key: "ip", label: "IP", width: "30%"},
+      {key: "provider", label: "Provider", width: "40%"},
+      {key: "hnsdoh_software", label: "Software", render: resolverSoftwareCell, width: "30%"}
+    ], "No resolver inventory configured.", {wrapClass: "compact-table-wrap"})}</article>`;
+}
+
 function daneGeneratorUrl(row, intent) {
   const params = new URLSearchParams();
   const name = String(row.name || "");
@@ -1044,6 +1092,7 @@ async function renderOverview(app) {
     ${adoptionFunnel(summary)}
     <section class="grid">
       ${nextActionsPanel(summary.next_actions || [])}
+      ${topologySignals(summary)}
       <article class="panel"><h2>Provider Dominance</h2>${bars(providers, "provider_key", "names_count", 12, (value) => value, providerFilterHref)}</article>
       <article class="panel"><h2>On-Chain Classes</h2>${bars(classes, "class", "count", 12, classLabel, (row) => classFilterHref(row.class))}</article>
       <article class="panel"><h2>DANE</h2>

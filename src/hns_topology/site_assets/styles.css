@@ -618,6 +618,10 @@ table {
   background: var(--panel);
 }
 
+.compact-table-wrap table {
+  min-width: 520px;
+}
+
 th,
 td {
   padding: 10px;

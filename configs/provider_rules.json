@@ -1,7 +1,19 @@
 {
-  "version": 3,
+  "version": 4,
   "default_provider_key": "unknown/custom",
   "rules": [
+    {
+      "provider_key": "bulk/default",
+      "provider_type": "default_parking",
+      "priority": 5,
+      "ip_prefixes": [
+        "44.231.6.183/32",
+        "54.214.136.246/32",
+        "34.123.215.203/32",
+        "45.79.95.228/32",
+        "45.79.214.114/32"
+      ]
+    },
     {
       "provider_key": "namebase/default",
       "provider_type": "default_parking",
@@ -17,6 +29,24 @@
       "priority": 20,
       "ns_suffixes": [
         "impervious.com"
+      ]
+    },
+    {
+      "provider_key": "hns-resolver/plain-dns",
+      "provider_type": "public_resolver",
+      "priority": 25,
+      "ip_prefixes": [
+        "194.50.5.27/32",
+        "139.177.195.185/32",
+        "172.233.46.92/32",
+        "172.105.120.203/32",
+        "51.24.7.1/32",
+        "194.50.5.26/32",
+        "194.50.5.28/32",
+        "139.144.68.241/32",
+        "139.144.68.242/32",
+        "2a01:7e01:e002:c300::/128",
+        "2a01:7e01:e002:c500::/128"
       ]
     },
     {

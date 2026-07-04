@@ -166,6 +166,8 @@ There is no standalone DANE row exporter in the production path. DANE-specific v
 
 `summary.broken` contains failure reason counts for the Names filter dropdown, not duplicated example rows. Example names for a failure reason come from the filtered Names collection.
 
+`summary.top_resource_ips`, `summary.top_nameservers`, and `summary.known_hns_resolvers` are bounded diagnostic aggregates for the Overview page. They expose shared resource clusters and public resolver inventory without creating additional static row collections.
+
 Names collections are ordered by normalized name. The `all` collection is the canonical sorted row store. Visible Names filters, provider queues, provider-type queues, and nonzero failure queues are compact ordinal postings into that row store rather than duplicate row payloads. The browser resolves only the current postings page back to canonical rows. Static exact-name lookup binary-searches the sorted `all` collection by fetching only a small number of page files when `/api/name` is unavailable.
 
 Compact canonical row arrays still include first NS/GLUE/SYNTH scalar fields plus resource hash, size, version, index height, and a DNS evidence path for DANE generator handoff links and diagnostics. Full resource arrays are embedded only when the collection is small enough to use full rows.
@@ -173,6 +175,8 @@ Compact canonical row arrays still include first NS/GLUE/SYNTH scalar fields plu
 IP address artifacts are keyed by URL-encoded address, for example `ip-addresses/44.231.6.183.json` or an encoded IPv6 literal. The index file contains the canonical query IP, `row_count`, `page_count`, `page_size`, row detail, field counts, columns, field-mask metadata, and a page path template. Page files contain compact postings for exported names whose `GLUE4`, `GLUE6`, `SYNTH4`, or `SYNTH6` values contain that address. When every row on a page has the same field mask, `row_encoding = name` stores only a JSON array of names. Mixed-field pages use `row_encoding = name_field_mask` with `[name, field_mask]` rows. They intentionally do not duplicate full or compact Names rows.
 
 The `resource_ip` table is a derived index. Bootstrap and incremental indexing keep it current, but legacy or manually repaired databases must run `hns-topology rebuild-resource-ip --db <path>` before export. Export fails fast when this derived index is missing, stale, or missing its `(ip, name)` lookup index. Full rebuilds scan `resource_summary` once, bulk-load `resource_ip`, then create the lookup index after loading.
+
+Provider-rule changes that only affect classification can be applied to an existing database with `hns-topology reclassify --db <path>`. That command scans stored compact `resource_summary` rows, recomputes `names.provider_guess` and `names.onchain_class`, updates provider-rule provenance, and refreshes `provider_summary` without re-fetching HSD resources or rebuilding `resource_ip`.
 
 `summary.json` includes `next_actions`, a small derived list for the Overview action panel and filtered Names queue context. Each item contains a count, a primary Names filter, a filter link, and the DANE generator intent to use for matching row-level handoffs. The list is deliberately derived from existing counters and filters so it does not create new row artifacts.
 

@@ -20,6 +20,7 @@ from cryptography import x509
 
 from .dane import match_association_bytes, selected_certificate_bytes
 from .db import insert_dns_evidence_batch, parse_json_columns, upsert_live_status
+from .infra import NON_ACTIONABLE_PROVIDER_TYPES
 from .models import FAILURE_REASONS, PROMISING_CLASSES, DnsEvidence, LiveStatus
 from .timeutil import utc_after, utc_now
 
@@ -84,16 +85,19 @@ def _check_name_with_evidence(
 
 def count_live_check_candidates(conn) -> int:
     class_placeholders = ",".join("?" for _ in PROMISING_CLASSES)
+    excluded_provider_placeholders = ",".join("?" for _ in NON_ACTIONABLE_PROVIDER_TYPES)
     sql = f"""
       SELECT COUNT(*)
       FROM names n
       JOIN resource_summary rs ON rs.name = n.name
       LEFT JOIN live_status ls ON ls.name = n.name
+      LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
       WHERE n.expired = 0
         AND n.onchain_class IN ({class_placeholders})
+        AND COALESCE(ps.provider_type, 'unknown') NOT IN ({excluded_provider_placeholders})
         AND (ls.next_check_at IS NULL OR ls.next_check_at <= ?)
     """
-    params: list = [*sorted(PROMISING_CLASSES), utc_now()]
+    params: list = [*sorted(PROMISING_CLASSES), *NON_ACTIONABLE_PROVIDER_TYPES, utc_now()]
     row = conn.execute(sql, params).fetchone()
     return int(row[0] if row else 0)
 
@@ -103,8 +107,9 @@ def select_live_check_candidates(
     *,
     limit: int | None,
     priority_names: Iterable[str] = (),
-) -> list[dict]:
+    ) -> list[dict]:
     class_placeholders = ",".join("?" for _ in PROMISING_CLASSES)
+    excluded_provider_placeholders = ",".join("?" for _ in NON_ACTIONABLE_PROVIDER_TYPES)
     select_columns = (
         "n.name, n.onchain_class, rs.ns_names, rs.glue4, rs.glue6, "
         "rs.synth4, rs.synth6, rs.ds_records, rs.has_ds"
@@ -149,13 +154,15 @@ def select_live_check_candidates(
       FROM names n
       JOIN resource_summary rs ON rs.name = n.name
       LEFT JOIN live_status ls ON ls.name = n.name
+      LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
       WHERE n.expired = 0
         AND n.onchain_class IN ({class_placeholders})
+        AND COALESCE(ps.provider_type, 'unknown') NOT IN ({excluded_provider_placeholders})
         AND (ls.next_check_at IS NULL OR ls.next_check_at <= ?)
         {exclusion}
       ORDER BY n.updated_at DESC, n.name
     """
-    params: list = [*sorted(PROMISING_CLASSES), utc_now(), *sorted(seen)]
+    params: list = [*sorted(PROMISING_CLASSES), *NON_ACTIONABLE_PROVIDER_TYPES, utc_now(), *sorted(seen)]
     if remaining_limit is not None:
         sql += " LIMIT ?"
         params.append(remaining_limit)

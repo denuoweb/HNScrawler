@@ -16,6 +16,7 @@ from urllib.parse import quote
 from . import __version__
 from .db import get_meta, parse_json_columns, require_resource_ip_index, rows_to_dicts, table_count
 from .fileutil import file_sha256
+from .infra import KNOWN_HNS_RESOLVERS, NON_ACTIONABLE_PROVIDER_TYPES, resource_ip_role
 from .jsonutil import dumps_json, dumps_pretty
 from .models import FAILURE_REASONS, ONCHAIN_CLASSES
 from .timeutil import utc_now
@@ -37,6 +38,11 @@ IP_FIELD_BITS = {
     "SYNTH4": 4,
     "SYNTH6": 8,
 }
+NON_ACTIONABLE_PROVIDER_TYPES_SQL = ", ".join(f"'{item}'" for item in NON_ACTIONABLE_PROVIDER_TYPES)
+ACTIONABLE_PROVIDER_SQL = (
+    f"COALESCE(ps.provider_type, 'unknown') NOT IN ({NON_ACTIONABLE_PROVIDER_TYPES_SQL})"
+)
+ACTIONABLE_EXPORT_SQL = f"provider_type NOT IN ({NON_ACTIONABLE_PROVIDER_TYPES_SQL})"
 
 NAME_FILTERS = {
     "direct_ip_records": "rs.has_synth = 1",
@@ -46,14 +52,17 @@ NAME_FILTERS = {
     "dnssec_candidates": "rs.has_ds = 1 AND rs.has_ns = 1",
     "dane_rows": "rs.has_ds = 1 OR ls.tlsa_status IS NOT NULL OR ls.dane_status IS NOT NULL",
     "strict_hns_ready": (
-        "rs.has_synth = 1 OR (rs.has_ns = 1 AND rs.has_glue = 1)"
+        f"{ACTIONABLE_PROVIDER_SQL} AND "
+        "(rs.has_synth = 1 OR (rs.has_ns = 1 AND rs.has_glue = 1))"
     ),
     "likely_websites": (
-        "rs.has_synth = 1 OR rs.has_glue = 1 OR (rs.has_ds = 1 AND rs.has_ns = 1)"
+        f"{ACTIONABLE_PROVIDER_SQL} AND "
+        "(rs.has_synth = 1 OR rs.has_glue = 1 OR (rs.has_ds = 1 AND rs.has_ns = 1))"
     ),
     "strict_hns_working": "ls.strict_hns_status = 'working'",
     "doh_fallback_required": "ls.doh_fallback_status IN ('required', 'doh_fallback_only')",
     "needs_dane": (
+        f"{ACTIONABLE_PROVIDER_SQL} AND "
         "(rs.has_ds = 1 OR ls.dnssec_status = 'valid') "
         "AND COALESCE(ls.dane_status, '') != 'valid' "
         "AND COALESCE(ls.tlsa_status, 'missing') IN ('missing', 'unknown', '')"
@@ -113,11 +122,18 @@ POSTING_NAME_FILTERS = {
     "default_provider_names": "provider_type = 'default_parking'",
     "ds_records": "has_ds = 1",
     "dnssec_candidates": "has_ds = 1 AND has_ns = 1",
-    "strict_hns_ready": "has_synth = 1 OR (has_ns = 1 AND has_glue = 1)",
-    "likely_websites": "has_synth = 1 OR has_glue = 1 OR (has_ds = 1 AND has_ns = 1)",
+    "strict_hns_ready": (
+        f"{ACTIONABLE_EXPORT_SQL} AND "
+        "(has_synth = 1 OR (has_ns = 1 AND has_glue = 1))"
+    ),
+    "likely_websites": (
+        f"{ACTIONABLE_EXPORT_SQL} AND "
+        "(has_synth = 1 OR has_glue = 1 OR (has_ds = 1 AND has_ns = 1))"
+    ),
     "strict_hns_working": "strict_hns_status = 'working'",
     "doh_fallback_required": "doh_fallback_status IN ('required', 'doh_fallback_only')",
     "needs_dane": (
+        f"{ACTIONABLE_EXPORT_SQL} AND "
         "(has_ds = 1 OR dnssec_status = 'valid') "
         "AND COALESCE(dane_status, '') != 'valid' "
         "AND COALESCE(tlsa_status, 'missing') IN ('missing', 'unknown', '')"
@@ -179,7 +195,7 @@ def export_all(
 
 def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
     resource_counts = conn.execute(
-        """
+        f"""
         SELECT
           COUNT(*) AS total_names,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0 THEN 1 ELSE 0 END) AS active_names,
@@ -206,12 +222,14 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
                     AND COALESCE(rs.has_ns, 0) = 1
                    THEN 1 ELSE 0 END) AS dnssec_candidates,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0
+                    AND {ACTIONABLE_PROVIDER_SQL}
                     AND (
                       COALESCE(rs.has_synth, 0) = 1
                       OR (COALESCE(rs.has_ns, 0) = 1 AND COALESCE(rs.has_glue, 0) = 1)
                     )
                    THEN 1 ELSE 0 END) AS strict_hns_ready,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0
+                    AND {ACTIONABLE_PROVIDER_SQL}
                     AND (
                       COALESCE(rs.has_synth, 0) = 1
                       OR COALESCE(rs.has_glue, 0) = 1
@@ -219,6 +237,7 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
                     )
                    THEN 1 ELSE 0 END) AS likely_websites,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0
+                    AND {ACTIONABLE_PROVIDER_SQL}
                     AND (COALESCE(rs.has_ds, 0) = 1 OR ls.dnssec_status = 'valid')
                     AND COALESCE(ls.dane_status, '') != 'valid'
                     AND COALESCE(ls.tlsa_status, 'missing') IN ('missing', 'unknown', '')
@@ -307,6 +326,9 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
     summary["classes"] = build_classes(conn)
     summary["providers"] = build_providers(conn)
     summary["broken"] = build_broken(conn)
+    summary["top_resource_ips"] = build_top_resource_ips(conn)
+    summary["top_nameservers"] = build_top_nameservers(conn)
+    summary["known_hns_resolvers"] = [dict(item) for item in KNOWN_HNS_RESOLVERS]
     summary["next_actions"] = build_next_actions(summary)
     return summary
 
@@ -531,6 +553,79 @@ def build_broken(conn: sqlite3.Connection) -> dict[str, Any]:
         for reason in FAILURE_REASONS
     ]
     return {"reasons": reasons}
+
+
+def build_top_resource_ips(conn: sqlite3.Connection, *, limit: int = 10) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT ri.ip, COUNT(DISTINCT ri.name) AS names_count
+        FROM resource_ip ri
+        JOIN names n ON n.name = ri.name
+        WHERE COALESCE(n.expired, 0) = 0
+        GROUP BY ri.ip
+        ORDER BY names_count DESC, ri.ip
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        ip = str(row["ip"])
+        role = resource_ip_role(ip)
+        result.append(
+            {
+                "ip": ip,
+                "names_count": int(row["names_count"] or 0),
+                "field_counts": _top_ip_field_counts(conn, ip),
+                "role": role["role"],
+                "label": role["label"],
+                "source": role["source"],
+                "filter_link": f"names.html?q={quote(ip)}",
+            }
+        )
+    return result
+
+
+def build_top_nameservers(conn: sqlite3.Connection, *, limit: int = 10) -> list[dict[str, Any]]:
+    return [
+        {
+            "nameserver": str(row["nameserver"]),
+            "names_count": int(row["names_count"] or 0),
+        }
+        for row in conn.execute(
+            """
+            SELECT ns.value AS nameserver, COUNT(*) AS names_count
+            FROM resource_summary rs
+            JOIN names n ON n.name = rs.name
+            JOIN json_each(rs.ns_names) ns
+            WHERE COALESCE(n.expired, 0) = 0
+              AND ns.value IS NOT NULL
+              AND ns.value != ''
+            GROUP BY ns.value
+            ORDER BY names_count DESC, nameserver
+            LIMIT ?
+            """,
+            (limit,),
+        )
+    ]
+
+
+def _top_ip_field_counts(conn: sqlite3.Connection, ip: str) -> dict[str, int]:
+    return {
+        row["field"]: int(row["names_count"] or 0)
+        for row in conn.execute(
+            """
+            SELECT ri.field, COUNT(DISTINCT ri.name) AS names_count
+            FROM resource_ip ri
+            JOIN names n ON n.name = ri.name
+            WHERE COALESCE(n.expired, 0) = 0
+              AND ri.ip = ?
+            GROUP BY ri.field
+            ORDER BY ri.field
+            """,
+            (ip,),
+        )
+    }
 
 
 def build_names(
