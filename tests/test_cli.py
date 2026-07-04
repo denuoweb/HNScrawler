@@ -3,7 +3,14 @@ import json
 from pathlib import Path
 
 from hns_topology import cli
-from hns_topology.db import RESOURCE_IP_INDEX_META_KEY, connect, get_meta, init_db, set_meta
+from hns_topology.db import (
+    RESOURCE_IP_INDEX_META_KEY,
+    RESOURCE_IP_INDEX_VERSION,
+    connect,
+    get_meta,
+    init_db,
+    set_meta,
+)
 from hns_topology.indexer import bootstrap_from_fixture
 from hns_topology.models import LiveStatus
 from hns_topology.provider_rules import ProviderRules
@@ -336,7 +343,9 @@ def test_rebuild_resource_ip_command_restores_derived_index(tmp_path):
     with connect(db_path) as conn:
         count = conn.execute("SELECT COUNT(*) FROM resource_ip").fetchone()[0]
         version = get_meta(conn, RESOURCE_IP_INDEX_META_KEY)
+        indexes = {row["name"] for row in conn.execute("PRAGMA index_list(resource_ip)")}
 
     assert result == 0
     assert count == 5
-    assert version == "1"
+    assert version == RESOURCE_IP_INDEX_VERSION
+    assert "idx_resource_ip_ip_name" in indexes

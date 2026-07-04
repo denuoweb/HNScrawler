@@ -22,7 +22,9 @@ The browser is static-first. It loads `names-pages.json` and one page file for t
 
 ## Current Correction
 
-The database now has `resource_ip(name, ip, field)` with an `(ip, name)` index. Indexing keeps this table in sync with `resource_summary`. Existing databases are backfilled with the explicit `hns-topology rebuild-resource-ip` command; schema migration does not hide that production-scale rewrite inside unrelated commands.
+The database now has `resource_ip(name, ip, field)` with an `(ip, name)` lookup index. Indexing keeps this table in sync with `resource_summary`. Existing databases are backfilled with the explicit `hns-topology rebuild-resource-ip` command; schema migration does not hide that production-scale rewrite inside unrelated commands.
+
+The derived IP index is built like a bulk index job: scan `resource_summary` once in name order, load `resource_ip` without the secondary IP lookup index attached, then create `idx_resource_ip_ip_name` after the load. New full bootstraps follow the same shape by deferring the lookup index until the resource rows are loaded.
 
 IP lookup is now built from a normalized `resource_ip` table into compact static postings consumed by the Names page.
 
@@ -37,9 +39,11 @@ Site generation now writes a complete release tree into a staging directory and 
 The same pattern should be applied to Names filters:
 
 - Keep SQLite as the source of truth during indexing and export.
-- Use static JSON for summary data and compact postings, not repeated full row collections.
+- Use static JSON for summary data and compact postings, not repeated row collections.
 - Replace duplicated Names filter pages with compact posting lists that reference one canonical row store.
 - Add query-specific indexes, for example `(provider_guess, name)`, before generating large filter postings.
 - Keep high-cardinality UI views paginated and decode only the current page in the browser.
+
+The remaining large artifact risk is `data/names-pages`: filter pages still duplicate compact row payloads across overlapping collections. The lean target is one canonical sorted Names row store plus filter/provider/status postings into that store. If detailed diagnostics must show every resource record, store full resource detail once per canonical name row or in sharded on-demand detail files, not once per filter.
 
 For production, the web VM can remain a static file server. The next reduction is to apply the same row-store plus postings approach to Names filters, where most of the remaining redundancy lives.

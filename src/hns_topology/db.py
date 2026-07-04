@@ -2,14 +2,28 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
 from .jsonutil import dumps_json, loads_json_list
 from .models import DnsEvidence, LiveStatus, NameRecord, ResourceSummary
 
-SCHEMA_SQL = """
+RESOURCE_IP_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS resource_ip (
+  name TEXT NOT NULL,
+  ip TEXT NOT NULL,
+  field TEXT NOT NULL,
+  PRIMARY KEY(name, ip, field),
+  FOREIGN KEY(name) REFERENCES resource_summary(name) ON DELETE CASCADE
+) WITHOUT ROWID;
+"""
+
+RESOURCE_IP_LOOKUP_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_resource_ip_ip_name ON resource_ip(ip, name);
+"""
+
+SCHEMA_SQL = f"""
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 
@@ -51,13 +65,7 @@ CREATE TABLE IF NOT EXISTS resource_summary (
   FOREIGN KEY(name) REFERENCES names(name) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS resource_ip (
-  name TEXT NOT NULL,
-  ip TEXT NOT NULL,
-  field TEXT NOT NULL,
-  PRIMARY KEY(name, ip, field),
-  FOREIGN KEY(name) REFERENCES resource_summary(name) ON DELETE CASCADE
-);
+{RESOURCE_IP_TABLE_SQL}
 
 CREATE TABLE IF NOT EXISTS live_status (
   name TEXT PRIMARY KEY,
@@ -129,7 +137,6 @@ CREATE TABLE IF NOT EXISTS changed_name_rollbacks (
 CREATE INDEX IF NOT EXISTS idx_names_class ON names(onchain_class);
 CREATE INDEX IF NOT EXISTS idx_names_provider ON names(provider_guess);
 CREATE INDEX IF NOT EXISTS idx_names_expired ON names(expired);
-CREATE INDEX IF NOT EXISTS idx_resource_ip_ip_name ON resource_ip(ip, name);
 CREATE INDEX IF NOT EXISTS idx_live_failure ON live_status(failure_reason);
 CREATE INDEX IF NOT EXISTS idx_live_next_check ON live_status(next_check_at);
 CREATE INDEX IF NOT EXISTS idx_dns_evidence_name_captured ON dns_evidence(name, captured_at DESC);
@@ -176,7 +183,7 @@ RESOURCE_IP_FIELDS = (
     ("SYNTH6", "synth6"),
 )
 RESOURCE_IP_INDEX_META_KEY = "resource_ip_index_version"
-RESOURCE_IP_INDEX_VERSION = "1"
+RESOURCE_IP_INDEX_VERSION = "2"
 
 LIVE_COLUMNS = (
     "name",
@@ -582,11 +589,25 @@ def backfill_resource_flags(conn: sqlite3.Connection) -> int:
 
 
 def resource_ip_index_is_current(conn: sqlite3.Connection) -> bool:
-    return get_meta(conn, RESOURCE_IP_INDEX_META_KEY) == RESOURCE_IP_INDEX_VERSION
+    return (
+        get_meta(conn, RESOURCE_IP_INDEX_META_KEY) == RESOURCE_IP_INDEX_VERSION
+        and resource_ip_lookup_index_exists(conn)
+    )
 
 
 def mark_resource_ip_index_current(conn: sqlite3.Connection) -> None:
     set_meta(conn, RESOURCE_IP_INDEX_META_KEY, RESOURCE_IP_INDEX_VERSION)
+
+
+def ensure_resource_ip_lookup_index(conn: sqlite3.Connection) -> None:
+    conn.execute(RESOURCE_IP_LOOKUP_INDEX_SQL)
+
+
+def resource_ip_lookup_index_exists(conn: sqlite3.Connection) -> bool:
+    return any(
+        row["name"] == "idx_resource_ip_ip_name"
+        for row in conn.execute("PRAGMA index_list(resource_ip)")
+    )
 
 
 def require_resource_ip_index(conn: sqlite3.Connection) -> None:
@@ -598,21 +619,58 @@ def require_resource_ip_index(conn: sqlite3.Connection) -> None:
     )
 
 
-def rebuild_resource_ip_index(conn: sqlite3.Connection) -> int:
-    conn.execute("DELETE FROM resource_ip")
-    for field, column in RESOURCE_IP_FIELDS:
-        conn.execute(
-            f"""
-            INSERT OR IGNORE INTO resource_ip(name, ip, field)
-            SELECT rs.name, lower(trim(CAST(ip_value.value AS TEXT))) AS ip, ?
-            FROM resource_summary rs
-            JOIN json_each(COALESCE(rs.{column}, '[]')) AS ip_value
-            WHERE trim(CAST(ip_value.value AS TEXT)) != ''
+def rebuild_resource_ip_index(
+    conn: sqlite3.Connection,
+    *,
+    batch_size: int = 100_000,
+    progress_interval: int = 500_000,
+    progress: Callable[[int, int], None] | None = None,
+) -> int:
+    batch_size = max(1, batch_size)
+    progress_interval = max(0, progress_interval)
+    conn.execute("DROP INDEX IF EXISTS idx_resource_ip_ip_name")
+    conn.execute("DROP TABLE IF EXISTS resource_ip")
+    conn.execute(RESOURCE_IP_TABLE_SQL)
+
+    scanned = 0
+    inserted = 0
+    batch: list[tuple[str, str, str]] = []
+
+    def flush() -> None:
+        nonlocal inserted
+        if not batch:
+            return
+        conn.executemany(
+            """
+            INSERT INTO resource_ip(name, ip, field)
+            VALUES(?, ?, ?)
             """,
-            (field,),
+            batch,
         )
+        inserted += len(batch)
+        batch.clear()
+
+    rows = conn.execute(
+        """
+        SELECT name, glue4, glue6, synth4, synth6
+        FROM resource_summary
+        ORDER BY name
+        """
+    )
+    for row in rows:
+        scanned += 1
+        batch.extend(_resource_ip_rows_from_mapping(row))
+        if len(batch) >= batch_size:
+            flush()
+        if progress is not None and progress_interval and scanned % progress_interval == 0:
+            progress(scanned, inserted + len(batch))
+
+    flush()
+    ensure_resource_ip_lookup_index(conn)
     mark_resource_ip_index_current(conn)
-    return table_count(conn, "SELECT COUNT(*) FROM resource_ip")
+    if progress is not None:
+        progress(scanned, inserted)
+    return inserted
 
 
 def table_count(conn: sqlite3.Connection, sql: str, params: tuple[Any, ...] = ()) -> int:
@@ -746,6 +804,25 @@ def _replace_resource_ip_rows(conn: sqlite3.Connection, row: tuple[Any, ...]) ->
 def _replace_resource_ip_rows_from_mapping(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
     values = tuple(row.get(column) for column in RESOURCE_COLUMNS)
     _replace_resource_ip_rows(conn, values)
+
+
+def _resource_ip_rows_from_mapping(row: sqlite3.Row) -> list[tuple[str, str, str]]:
+    name = str(row["name"] or "")
+    if not name:
+        return []
+    rows: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for field, column in RESOURCE_IP_FIELDS:
+        for value in _json_string_values(row[column]):
+            ip = str(value).strip().lower()
+            if not ip:
+                continue
+            item = (name, ip, field)
+            if item in seen:
+                continue
+            seen.add(item)
+            rows.append(item)
+    return rows
 
 
 def _iter_resource_ip_rows(rows: Iterable[tuple[Any, ...]]) -> Iterable[tuple[str, str, str]]:

@@ -1,7 +1,14 @@
 import json
 from pathlib import Path
 
-from hns_topology.db import connect, set_meta, upsert_live_status
+from hns_topology.db import (
+    RESOURCE_IP_INDEX_META_KEY,
+    RESOURCE_IP_INDEX_VERSION,
+    connect,
+    get_meta,
+    set_meta,
+    upsert_live_status,
+)
 from hns_topology.exporter import build_faq_answers, build_summary
 from hns_topology.indexer import (
     UnpaginatedGetNamesError,
@@ -85,6 +92,8 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
         summary = build_summary(conn)
         answers = build_faq_answers(conn, summary)
         resource_ip_count = conn.execute("SELECT COUNT(*) FROM resource_ip").fetchone()[0]
+        resource_ip_version = get_meta(conn, RESOURCE_IP_INDEX_META_KEY)
+        resource_ip_indexes = {row["name"] for row in conn.execute("PRAGMA index_list(resource_ip)")}
         namebase_provider = conn.execute(
             "SELECT ns_pattern, ip_pattern FROM provider_summary WHERE provider_key = ?",
             ("namebase/default",),
@@ -124,6 +133,8 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     assert namebase_provider["ns_pattern"] == "suffix:namebase.io,suffix:parking.namebase.io"
     assert namebase_provider["ip_pattern"] == ""
     assert resource_ip_count == 5
+    assert resource_ip_version == RESOURCE_IP_INDEX_VERSION
+    assert "idx_resource_ip_ip_name" in resource_ip_indexes
 
 
 def test_generate_site_writes_requested_artifacts(tmp_path):

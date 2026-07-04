@@ -152,6 +152,8 @@ def build_parser() -> argparse.ArgumentParser:
         "rebuild-resource-ip", help="Rebuild the derived resource IP index."
     )
     rebuild_ip.add_argument("--db", required=True)
+    rebuild_ip.add_argument("--batch-size", type=int, default=100_000)
+    rebuild_ip.add_argument("--progress-interval", type=int, default=500_000)
     rebuild_ip.set_defaults(func=cmd_rebuild_resource_ip)
 
     export = sub.add_parser("export", help="Write JSON/CSV/SQLite.gz artifacts.")
@@ -536,10 +538,18 @@ def cmd_import_dns_evidence(args: argparse.Namespace) -> int:
 
 
 def cmd_rebuild_resource_ip(args: argparse.Namespace) -> int:
+    def progress(scanned: int, inserted: int) -> None:
+        print(f"[resource-ip] scanned={scanned} rows={inserted}", file=sys.stderr, flush=True)
+
     with connect(args.db) as conn:
         init_db(conn)
         with conn:
-            count = rebuild_resource_ip_index(conn)
+            count = rebuild_resource_ip_index(
+                conn,
+                batch_size=getattr(args, "batch_size", 100_000),
+                progress_interval=getattr(args, "progress_interval", 500_000),
+                progress=progress,
+            )
     print(f"rebuilt resource_ip index with {count} rows")
     return 0
 
