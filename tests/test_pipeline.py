@@ -224,15 +224,19 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert delegated_ip_index["ip"] == "198.51.100.2"
     assert delegated_ip_index["row_count"] == 1
     assert delegated_ip_index["page_count"] == 1
-    assert delegated_ip_index["row_detail"] == "compact"
-    assert "first_glue4" in delegated_ip_index["columns"]
+    assert delegated_ip_index["row_detail"] == "ip_matches"
+    assert delegated_ip_index["columns"] == ["name", "fields"]
+    assert delegated_ip_index["field_counts"] == {"GLUE4": 1}
     assert [row["name"] for row in delegated_ip_rows] == ["delegated"]
+    assert [row["fields"] for row in delegated_ip_rows] == [["GLUE4"]]
     assert direct_ip_index["ip"] == "203.0.113.10"
     assert direct_ip_index["row_count"] == 1
     assert direct_ip_index["page_count"] == 1
-    assert direct_ip_index["row_detail"] == "compact"
-    assert "first_synth4" in direct_ip_index["columns"]
+    assert direct_ip_index["row_detail"] == "ip_matches"
+    assert direct_ip_index["columns"] == ["name", "fields"]
+    assert direct_ip_index["field_counts"] == {"SYNTH4": 1}
     assert [row["name"] for row in direct_ip_rows] == ["direct"]
+    assert [row["fields"] for row in direct_ip_rows] == [["SYNTH4"]]
     assert "classes" in summary
     assert "broken" in summary
     assert "examples" not in summary["broken"]

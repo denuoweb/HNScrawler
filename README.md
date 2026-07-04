@@ -72,7 +72,7 @@ The Names page is backed by paginated `data/names-pages/` JSON. Each row has an 
 
 Exact name search first tries the lightweight lookup API when it is available. On the static site it falls back to binary-searching the sorted `names-pages/all` collection, so a direct name lookup does not require loading the full 12M+ row export or storing an additional lookup index.
 
-IP address search detects IPv4 and IPv6 literals, loads the matching `data/ip-addresses/` index, and fetches only the current page of rows. This supports provider or crowd analysis such as finding all names that point at `44.231.6.183`.
+IP address search detects IPv4 and IPv6 literals, loads the matching `data/ip-addresses/` index, and fetches only the current page of name/field matches. This supports provider or crowd analysis such as finding all names that point at a shared infrastructure address without duplicating full Names rows.
 
 Overview provider and class summaries link back into existing Names filters where doing so is storage-safe. Class rows only link to existing action or status queues; the export does not create large class-specific duplicate page sets.
 

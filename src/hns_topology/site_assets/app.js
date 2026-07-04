@@ -500,7 +500,7 @@ async function lookupIpAddress(query, page) {
       pageCount: 0,
       pageSize: 100,
       page: 1,
-      rowDetail: "compact",
+      rowDetail: "ip_matches",
       columns: null,
       rows: []
     };
@@ -527,7 +527,8 @@ async function lookupIpAddress(query, page) {
     page: safePage,
     rowDetail: data.row_detail || "full",
     columns: Array.isArray(data.columns) ? data.columns : null,
-    rows
+    fieldCounts: data.field_counts || {},
+    rows: rows.map((row) => ({...row, matched_ip: ip}))
   };
 }
 
@@ -1027,6 +1028,17 @@ function nameCell(row) {
   return `<span class="name-cell" title="${escapeHtml(name)}">${escapeHtml(shortenName(name))}</span>`;
 }
 
+function ipFieldsCell(row) {
+  const fields = Array.isArray(row.fields) ? row.fields : String(row.fields || "").split(",").filter(Boolean);
+  return fields.map((field) => `<code>${escapeHtml(field)}</code>`).join(" ");
+}
+
+function exactNameLookupCell(row) {
+  const name = String(row.name || "");
+  if (!name) return "";
+  return `<a href="${escapeHtml(sitePath(`names.html?q=${encodeURIComponent(name)}`))}">Open name</a>`;
+}
+
 function lastCheckedCell(row) {
   const checkedAt = String(row.checked_at || "");
   if (!checkedAt) return "";
@@ -1250,6 +1262,14 @@ function nameDetailRow(row, colspan) {
 }
 
 function namesColumns(rowDetail) {
+  if (rowDetail === "ip_matches") {
+    return [
+      {key: "name", label: "Name", render: nameCell, width: "35%"},
+      {key: "matched_ip", label: "IP", width: "20%"},
+      {key: "fields", label: "Matched fields", render: ipFieldsCell, width: "25%"},
+      {key: "lookup", label: "Lookup", render: exactNameLookupCell, width: "20%"}
+    ];
+  }
   const compactColumns = [
     {key: "name", label: "Name", render: nameCell, width: "10%"},
     {key: "next_step", label: "Next step", render: actionCell, width: "16%"},
@@ -1295,6 +1315,7 @@ async function renderNames(app) {
   const query = activeSearch();
   const pageData = await applySearchToPageData(loadedPageData, query);
   const columns = namesColumns(pageData.collection.row_detail);
+  const detailRender = pageData.collection.row_detail === "ip_matches" ? null : nameDetailRow;
   app.innerHTML = `${filterNotice(filter, pageData.index.collections.all.row_count, loadedPageData.collection.row_count)}
     <section class="names-layout">
       <div class="panel names-main">
@@ -1312,7 +1333,7 @@ async function renderNames(app) {
         ${namesActionContext(summary.next_actions || [], filter)}
         ${lookupNotice(pageData, "names")}
         ${namesPagination(pageData.collection, pageData.page)}
-        ${table(pageData.rows, columns, query ? "No names match this search." : "No rows in this page.", {wrapClass: "names-table-wrap", tableClass: "names-table", detailRender: nameDetailRow})}
+        ${table(pageData.rows, columns, query ? "No names match this search." : "No rows in this page.", {wrapClass: "names-table-wrap", tableClass: "names-table", detailRender})}
         ${namesPagination(pageData.collection, pageData.page)}
       </div>
   </section>`;
