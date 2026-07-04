@@ -28,6 +28,9 @@ def test_lookup_name_returns_full_snapshot_row(tmp_path):
     assert result["row"]["onchain_class"] == "DIRECT_SYNTH"
     assert "provider_type" in result["row"]
     assert result["row"]["synth4"] == ["203.0.113.10"]
+    assert result["row"]["resource_version"] == 0
+    assert result["row"]["raw_size"] > 0
+    assert result["row"]["resource_hash"]
     assert result["snapshot"]["last_indexed_height"] == "123456"
 
 

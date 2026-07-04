@@ -55,7 +55,10 @@ def _records_from_resource(resource: Any) -> tuple[list[dict[str, Any]], bool]:
 
 def summarize_resource(name: str, resource: Any) -> ResourceSummary:
     records, malformed = _records_from_resource(resource)
+    resource_version = _resource_version(resource)
     canonical_resource = {"records": records} if isinstance(resource, (dict, list)) else resource
+    if isinstance(canonical_resource, dict) and resource_version is not None:
+        canonical_resource = {"version": resource_version, **canonical_resource}
     raw = dumps_json(canonical_resource).encode("utf-8")
 
     ns_names: set[str] = set()
@@ -112,6 +115,7 @@ def summarize_resource(name: str, resource: Any) -> ResourceSummary:
         has_ds=has_ds,
         has_txt=has_txt,
         raw_size=len(raw),
+        resource_version=resource_version,
         resource_hash=resource_hash(canonical_resource),
         record_types=sorted(record_types),
         malformed=malformed,
@@ -186,3 +190,9 @@ def _safe_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _resource_version(resource: Any) -> int | None:
+    if not isinstance(resource, dict):
+        return None
+    return _safe_int(resource.get("version"))

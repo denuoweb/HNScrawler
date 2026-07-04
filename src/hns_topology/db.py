@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .jsonutil import dumps_json
-from .models import LiveStatus, NameRecord, ResourceSummary
+from .models import DnsEvidence, LiveStatus, NameRecord, ResourceSummary
 
 SCHEMA_SQL = """
 PRAGMA journal_mode = WAL;
@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS resource_summary (
   has_synth INTEGER DEFAULT 0,
   has_txt INTEGER DEFAULT 0,
   raw_size INTEGER,
+  resource_version INTEGER,
   resource_hash TEXT,
   FOREIGN KEY(name) REFERENCES names(name) ON DELETE CASCADE
 );
@@ -77,6 +78,26 @@ CREATE TABLE IF NOT EXISTS provider_summary (
   updated_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS dns_evidence (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  qname TEXT NOT NULL,
+  rrtype TEXT NOT NULL,
+  server TEXT,
+  source TEXT NOT NULL DEFAULT 'scanner',
+  source_id TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL,
+  rcode TEXT,
+  flags TEXT,
+  answer_json TEXT NOT NULL DEFAULT '[]',
+  authority_json TEXT NOT NULL DEFAULT '[]',
+  additional_json TEXT NOT NULL DEFAULT '[]',
+  elapsed_ms INTEGER,
+  error TEXT,
+  captured_at TEXT NOT NULL,
+  FOREIGN KEY(name) REFERENCES names(name) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS block_history (
   height INTEGER PRIMARY KEY,
   block_hash TEXT NOT NULL,
@@ -102,6 +123,8 @@ CREATE INDEX IF NOT EXISTS idx_names_provider ON names(provider_guess);
 CREATE INDEX IF NOT EXISTS idx_names_expired ON names(expired);
 CREATE INDEX IF NOT EXISTS idx_live_failure ON live_status(failure_reason);
 CREATE INDEX IF NOT EXISTS idx_live_next_check ON live_status(next_check_at);
+CREATE INDEX IF NOT EXISTS idx_dns_evidence_name_captured ON dns_evidence(name, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dns_evidence_query_captured ON dns_evidence(name, qname, rrtype, captured_at DESC);
 """
 
 NAMES_COLUMNS = (
@@ -132,6 +155,7 @@ RESOURCE_COLUMNS = (
     "has_synth",
     "has_txt",
     "raw_size",
+    "resource_version",
     "resource_hash",
 )
 
@@ -147,6 +171,24 @@ LIVE_COLUMNS = (
     "failure_reason",
     "checked_at",
     "next_check_at",
+)
+
+DNS_EVIDENCE_COLUMNS = (
+    "name",
+    "qname",
+    "rrtype",
+    "server",
+    "source",
+    "source_id",
+    "status",
+    "rcode",
+    "flags",
+    "answer_json",
+    "authority_json",
+    "additional_json",
+    "elapsed_ms",
+    "error",
+    "captured_at",
 )
 
 UPSERT_NAME_SQL = """
@@ -170,8 +212,8 @@ UPSERT_NAME_SQL = """
 UPSERT_RESOURCE_SQL = """
     INSERT INTO resource_summary(
       name, ns_names, glue4, glue6, synth4, synth6, ds_records, has_ds,
-      has_ns, has_glue, has_synth, has_txt, raw_size, resource_hash
-    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      has_ns, has_glue, has_synth, has_txt, raw_size, resource_version, resource_hash
+    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(name) DO UPDATE SET
       ns_names=excluded.ns_names,
       glue4=excluded.glue4,
@@ -185,6 +227,7 @@ UPSERT_RESOURCE_SQL = """
       has_synth=excluded.has_synth,
       has_txt=excluded.has_txt,
       raw_size=excluded.raw_size,
+      resource_version=excluded.resource_version,
       resource_hash=excluded.resource_hash
     """
 
@@ -276,6 +319,26 @@ def upsert_live_status(conn: sqlite3.Connection, status: LiveStatus) -> None:
             status.checked_at,
             status.next_check_at,
         ),
+    )
+
+
+def insert_dns_evidence(conn: sqlite3.Connection, evidence: DnsEvidence) -> None:
+    conn.execute(
+        f"""
+        INSERT INTO dns_evidence({", ".join(DNS_EVIDENCE_COLUMNS)})
+        VALUES({", ".join("?" for _ in DNS_EVIDENCE_COLUMNS)})
+        """,
+        _dns_evidence_params(evidence),
+    )
+
+
+def insert_dns_evidence_batch(conn: sqlite3.Connection, evidence: Iterable[DnsEvidence]) -> None:
+    conn.executemany(
+        f"""
+        INSERT INTO dns_evidence({", ".join(DNS_EVIDENCE_COLUMNS)})
+        VALUES({", ".join("?" for _ in DNS_EVIDENCE_COLUMNS)})
+        """,
+        (_dns_evidence_params(item) for item in evidence),
     )
 
 
@@ -518,6 +581,7 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
             "has_ns": "INTEGER DEFAULT 0",
             "has_glue": "INTEGER DEFAULT 0",
             "has_synth": "INTEGER DEFAULT 0",
+            "resource_version": "INTEGER",
         },
     )
     conn.execute("UPDATE resource_summary SET ds_records = '[]' WHERE ds_records IS NULL")
@@ -528,6 +592,26 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
             "previous_name_row": "TEXT",
             "previous_resource_summary": "TEXT",
         },
+    )
+
+
+def _dns_evidence_params(evidence: DnsEvidence) -> tuple[Any, ...]:
+    return (
+        evidence.name,
+        evidence.qname,
+        evidence.rrtype,
+        evidence.server,
+        evidence.source,
+        evidence.source_id,
+        evidence.status,
+        evidence.rcode,
+        evidence.flags,
+        dumps_json(evidence.answer),
+        dumps_json(evidence.authority),
+        dumps_json(evidence.additional),
+        evidence.elapsed_ms,
+        evidence.error,
+        evidence.captured_at,
     )
 
 
@@ -569,6 +653,7 @@ def _resource_params(summary: ResourceSummary) -> tuple[Any, ...]:
         int(summary.has_synth),
         int(summary.has_txt),
         summary.raw_size,
+        summary.resource_version,
         summary.resource_hash,
     )
 

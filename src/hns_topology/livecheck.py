@@ -12,14 +12,18 @@ import dns.dnssec
 import dns.exception
 import dns.flags
 import dns.name
+import dns.query
+import dns.rcode
 import dns.rdatatype
 import dns.resolver
 from cryptography import x509
 
 from .dane import match_association_bytes, selected_certificate_bytes
-from .db import parse_json_columns, upsert_live_status
-from .models import FAILURE_REASONS, PROMISING_CLASSES, LiveStatus
+from .db import insert_dns_evidence_batch, parse_json_columns, upsert_live_status
+from .models import FAILURE_REASONS, PROMISING_CLASSES, DnsEvidence, LiveStatus
 from .timeutil import utc_after, utc_now
+
+DNS_EVIDENCE_SERVER_LIMIT = 3
 
 
 @dataclass(frozen=True)
@@ -57,13 +61,25 @@ def run_live_checks(
     limiter = RateLimiter(config.min_delay_ms)
     checked = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=config.concurrency) as executor:
-        futures = [executor.submit(check_name, row, config, limiter) for row in rows]
+        futures = [executor.submit(_check_name_with_evidence, row, config, limiter) for row in rows]
         for future in concurrent.futures.as_completed(futures):
-            status = future.result()
+            status, evidence = future.result()
             with conn:
                 upsert_live_status(conn, status)
+                if evidence:
+                    insert_dns_evidence_batch(conn, evidence)
             checked += 1
     return checked
+
+
+def _check_name_with_evidence(
+    row: dict,
+    config: LiveCheckConfig,
+    limiter: RateLimiter,
+) -> tuple[LiveStatus, list[DnsEvidence]]:
+    status = check_name(row, config, limiter)
+    evidence = collect_dns_evidence(row, config, limiter=limiter)
+    return status, evidence
 
 
 def count_live_check_candidates(conn) -> int:
@@ -249,6 +265,165 @@ def check_name(row: dict, config: LiveCheckConfig, limiter: RateLimiter) -> Live
         checked_at=checked_at,
         next_check_at=next_check_at,
     )
+
+
+def collect_dns_evidence(
+    row: dict,
+    config: LiveCheckConfig,
+    *,
+    limiter: RateLimiter | None = None,
+    source: str = "scanner",
+    source_id: str = "",
+) -> list[DnsEvidence]:
+    name = str(row["name"]).strip().lower().rstrip(".")
+    servers = sorted(set(_strict_bootstrap_addresses(row)))[:DNS_EVIDENCE_SERVER_LIMIT]
+    if not name or not servers:
+        return []
+    queries = _dns_evidence_queries(name)
+    captured: list[DnsEvidence] = []
+    captured_at = utc_now()
+    for server in servers:
+        for qname, rrtype in queries:
+            if limiter is not None:
+                limiter.wait()
+            captured.append(
+                query_dns_evidence(
+                    name=name,
+                    server=server,
+                    qname=qname,
+                    rrtype=rrtype,
+                    timeout=config.timeout,
+                    source=source,
+                    source_id=source_id,
+                    captured_at=captured_at,
+                )
+            )
+    return captured
+
+
+def query_dns_evidence(
+    *,
+    name: str,
+    server: str,
+    qname: str,
+    rrtype: str,
+    timeout: float,
+    source: str = "scanner",
+    source_id: str = "",
+    captured_at: str | None = None,
+) -> DnsEvidence:
+    captured_at = captured_at or utc_now()
+    started = time.monotonic()
+    try:
+        query = dns.message.make_query(
+            dns.name.from_text(_fqdn(qname)),
+            dns.rdatatype.from_text(rrtype),
+            want_dnssec=True,
+        )
+        query.flags &= ~dns.flags.RD
+        response = dns.query.udp(query, server, timeout=timeout)
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        rcode = dns.rcode.to_text(response.rcode())
+        return DnsEvidence(
+            name=name,
+            qname=_fqdn(qname),
+            rrtype=rrtype.upper(),
+            server=server,
+            source=source,
+            source_id=source_id,
+            status="ok" if response.rcode() == dns.rcode.NOERROR else "rcode",
+            rcode=rcode,
+            flags=dns.flags.to_text(response.flags),
+            answer=_rrsets_to_text(response.answer),
+            authority=_rrsets_to_text(response.authority),
+            additional=_rrsets_to_text(response.additional),
+            elapsed_ms=elapsed_ms,
+            error=None,
+            captured_at=captured_at,
+        )
+    except dns.exception.Timeout as exc:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        return _failed_dns_evidence(
+            name=name,
+            server=server,
+            qname=qname,
+            rrtype=rrtype,
+            timeout_ms=elapsed_ms,
+            source=source,
+            source_id=source_id,
+            captured_at=captured_at,
+            status="timeout",
+            error=type(exc).__name__,
+        )
+    except Exception as exc:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        return _failed_dns_evidence(
+            name=name,
+            server=server,
+            qname=qname,
+            rrtype=rrtype,
+            timeout_ms=elapsed_ms,
+            source=source,
+            source_id=source_id,
+            captured_at=captured_at,
+            status="error",
+            error=type(exc).__name__,
+        )
+
+
+def _failed_dns_evidence(
+    *,
+    name: str,
+    server: str,
+    qname: str,
+    rrtype: str,
+    timeout_ms: int,
+    source: str,
+    source_id: str,
+    captured_at: str,
+    status: str,
+    error: str,
+) -> DnsEvidence:
+    return DnsEvidence(
+        name=name,
+        qname=_fqdn(qname),
+        rrtype=rrtype.upper(),
+        server=server,
+        source=source,
+        source_id=source_id,
+        status=status,
+        rcode=None,
+        flags=None,
+        answer=[],
+        authority=[],
+        additional=[],
+        elapsed_ms=timeout_ms,
+        error=error,
+        captured_at=captured_at,
+    )
+
+
+def _dns_evidence_queries(name: str) -> list[tuple[str, str]]:
+    root = _fqdn(name)
+    return [
+        (root, "A"),
+        (root, "AAAA"),
+        (f"_443._tcp.{root}", "TLSA"),
+        (f"_443._tcp.www.{root}", "TLSA"),
+        (root, "DNSKEY"),
+    ]
+
+
+def _fqdn(value: str) -> str:
+    text = str(value).strip()
+    return text if text.endswith(".") else f"{text}."
+
+
+def _rrsets_to_text(rrsets) -> list[str]:
+    lines: list[str] = []
+    for rrset in rrsets:
+        lines.extend(line for line in rrset.to_text().splitlines() if line.strip())
+    return lines
 
 
 def _synth_addresses(row: dict) -> list[str]:

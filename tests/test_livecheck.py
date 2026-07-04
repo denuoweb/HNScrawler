@@ -2,6 +2,7 @@ import hashlib
 from pathlib import Path
 
 import dns.dnssec
+import dns.message
 import dns.name
 import dns.rdata
 import dns.rdataclass
@@ -18,6 +19,7 @@ from hns_topology.livecheck import (
     _find_rrsig,
     _match_association,
     check_name,
+    collect_dns_evidence,
     select_live_check_candidates,
 )
 from hns_topology.provider_rules import ProviderRules
@@ -80,6 +82,38 @@ def test_priority_live_check_names_are_selected_before_limit(tmp_path):
         rows = select_live_check_candidates(conn, limit=1, priority_names=["secure"])
 
     assert [row["name"] for row in rows] == ["secure"]
+
+
+def test_collect_dns_evidence_queries_bootstrap_server(monkeypatch):
+    seen = []
+
+    def fake_udp(query, server, timeout):
+        seen.append((query.question[0].name.to_text(), dns.rdatatype.to_text(query.question[0].rdtype), server))
+        response = dns.message.make_response(query)
+        if query.question[0].rdtype == dns.rdatatype.A:
+            response.answer.append(
+                dns.rrset.from_text(query.question[0].name, 300, "IN", "A", "198.51.100.10")
+            )
+        return response
+
+    monkeypatch.setattr("dns.query.udp", fake_udp)
+
+    evidence = collect_dns_evidence(
+        {
+            "name": "secure",
+            "ns_names": ["ns1.secure"],
+            "glue4": ["203.0.113.53"],
+            "glue6": [],
+            "synth4": [],
+            "synth6": [],
+        },
+        LiveCheckConfig(timeout=0.1),
+    )
+
+    assert [item.rrtype for item in evidence] == ["A", "AAAA", "TLSA", "TLSA", "DNSKEY"]
+    assert evidence[0].server == "203.0.113.53"
+    assert evidence[0].answer == ["secure. 300 IN A 198.51.100.10"]
+    assert seen[0] == ("secure.", "A", "203.0.113.53")
 
 
 class DummyLimiter:

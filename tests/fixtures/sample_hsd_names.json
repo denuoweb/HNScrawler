@@ -10,6 +10,7 @@
       "state": "CLOSED",
       "renewal": 122000,
       "resource": {
+        "version": 0,
         "records": [
           {"type": "SYNTH4", "address": "203.0.113.10"},
           {"type": "SYNTH6", "address": "2001:db8::10"}
@@ -106,4 +107,3 @@
     }
   ]
 }
-

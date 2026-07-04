@@ -143,8 +143,12 @@ function columnClass(column) {
   return column.className || `col-${String(column.key || "value").replace(/[^a-z0-9_-]/gi, "-").toLowerCase()}`;
 }
 
-function tableRows(rows, columns) {
-  return rows.map((row) => `<tr>${columns.map((column) => `<td class="${escapeHtml(columnClass(column))}">${column.render ? column.render(row) : formatCell(row[column.key])}</td>`).join("")}</tr>`).join("");
+function tableRows(rows, columns, options = {}) {
+  return rows.map((row) => {
+    const cells = columns.map((column) => `<td class="${escapeHtml(columnClass(column))}">${column.render ? column.render(row) : formatCell(row[column.key])}</td>`).join("");
+    const detail = options.detailRender ? options.detailRender(row, columns.length) : "";
+    return `<tr>${cells}</tr>${detail}`;
+  }).join("");
 }
 
 function table(rows, columns, emptyMessage = "No rows in this page.", options = {}) {
@@ -155,7 +159,7 @@ function table(rows, columns, emptyMessage = "No rows in this page.", options = 
   const colgroup = columns.some((column) => column.width)
     ? `<colgroup>${columns.map((column) => `<col${column.width ? ` style="width:${escapeHtml(column.width)}"` : ""}>`).join("")}</colgroup>`
     : "";
-  return `<div class="${wrapClass}"><table${tableClass}>${colgroup}<thead><tr>${columns.map((column) => `<th class="${escapeHtml(columnClass(column))}">${escapeHtml(column.label)}</th>`).join("")}</tr></thead><tbody${tbodyId}>${tableRows(rows, columns)}</tbody></table></div>`;
+  return `<div class="${wrapClass}"><table${tableClass}>${colgroup}<thead><tr>${columns.map((column) => `<th class="${escapeHtml(columnClass(column))}">${escapeHtml(column.label)}</th>`).join("")}</tr></thead><tbody${tbodyId}>${tableRows(rows, columns, options)}</tbody></table></div>`;
 }
 
 function formatCell(value) {
@@ -930,6 +934,222 @@ function lastCheckedCell(row) {
   return `<span title="${escapeHtml(checkedAt)}">${escapeHtml(checkedAt.replace("T", " ").replace(/:\d\d(?:\.\d+)?Z$/, " UTC"))}</span>`;
 }
 
+function listValues(...values) {
+  const seen = new Set();
+  const result = [];
+  values.flatMap((value) => Array.isArray(value) ? value : [value]).forEach((value) => {
+    const text = String(value || "").trim();
+    if (!text || seen.has(text)) return;
+    seen.add(text);
+    result.push(text);
+  });
+  return result;
+}
+
+function trailingDot(value) {
+  const text = String(value || "").trim();
+  return text && !text.endsWith(".") ? `${text}.` : text;
+}
+
+function hnsRootFromNs(ns, fallback) {
+  const normalized = String(ns || "").toLowerCase().replace(/\.+$/, "");
+  const labels = normalized.split(".").filter(Boolean);
+  return labels.length ? labels[labels.length - 1] : fallback;
+}
+
+function hnsNameLink(root, label) {
+  const name = String(root || "").toLowerCase().replace(/\.+$/, "");
+  const text = label || root;
+  if (!/^[a-z0-9-]{1,63}$/.test(name)) return escapeHtml(text);
+  return `<a href="https://shakeshift.com/name/${encodeURIComponent(name)}" target="_blank" rel="noopener">${escapeHtml(text)}</a>`;
+}
+
+function codeLine(value) {
+  return `<code>${escapeHtml(value)}</code>`;
+}
+
+function dsRecordLine(record) {
+  if (!record || typeof record !== "object") return "";
+  return [
+    record.keyTag,
+    record.algorithm,
+    record.digestType,
+    String(record.digest || "").toLowerCase()
+  ].filter((value) => value !== null && value !== undefined && value !== "").join(" ");
+}
+
+function resourceRecordBlock(label, lines) {
+  if (!lines.length) return "";
+  return lines.map((line) => `<div class="resource-record"><span>${escapeHtml(label)}</span>${line}</div>`).join("");
+}
+
+function resourceRecordSections(row) {
+  const sections = [];
+  const name = String(row.name || "");
+  const nsNames = listValues(row.ns_names, row.first_ns).map(trailingDot);
+  const glue4 = listValues(row.glue4, row.first_glue4);
+  const glue6 = listValues(row.glue6, row.first_glue6);
+  const synth4 = listValues(row.synth4, row.first_synth4);
+  const synth6 = listValues(row.synth6, row.first_synth6);
+  const dsRecords = Array.isArray(row.ds_records) ? row.ds_records : [];
+
+  sections.push(resourceRecordBlock("DS", dsRecords.map(dsRecordLine).filter(Boolean).map(codeLine)));
+  sections.push(resourceRecordBlock("GLUE4", glue4.map((address, index) => {
+    const ns = nsNames[index] || nsNames[0] || name;
+    return `${hnsNameLink(hnsRootFromNs(ns, name), ns)}${codeLine(address)}`;
+  })));
+  sections.push(resourceRecordBlock("GLUE6", glue6.map((address, index) => {
+    const ns = nsNames[index] || nsNames[0] || name;
+    return `${hnsNameLink(hnsRootFromNs(ns, name), ns)}${codeLine(address)}`;
+  })));
+  sections.push(resourceRecordBlock("NS", nsNames.map((ns) => hnsNameLink(hnsRootFromNs(ns, name), ns))));
+  sections.push(resourceRecordBlock("SYNTH4", synth4.map(codeLine)));
+  sections.push(resourceRecordBlock("SYNTH6", synth6.map(codeLine)));
+
+  return sections.filter(Boolean).join("");
+}
+
+function resourceMetadata(row) {
+  const items = [];
+  if (row.resource_version !== null && row.resource_version !== undefined && row.resource_version !== "") {
+    items.push(["Version", row.resource_version]);
+  }
+  if (row.raw_size !== null && row.raw_size !== undefined && row.raw_size !== "") {
+    items.push(["Size", `${fmt.format(Number(row.raw_size || 0))} Bytes`]);
+  }
+  if (row.resource_hash) {
+    items.push(["Hash", String(row.resource_hash)]);
+  }
+  if (row.last_seen_height !== null && row.last_seen_height !== undefined && row.last_seen_height !== "") {
+    items.push(["Height", row.last_seen_height]);
+  }
+  if (row.updated_at) {
+    items.push(["Indexed", String(row.updated_at).replace("T", " ").replace(/:\d\d(?:\.\d+)?Z$/, " UTC")]);
+  }
+  if (!items.length) return "";
+  return `<dl class="diagnostic-kv">${items.map(([key, value]) => `
+    <div><dt>${escapeHtml(key)}</dt><dd title="${escapeHtml(value)}">${escapeHtml(value)}</dd></div>`).join("")}</dl>`;
+}
+
+function liveDiagnosticStatus(row) {
+  const fields = [
+    ["DNS reachable", row.dns_reachable],
+    ["DNSSEC", row.dnssec_status],
+    ["TLSA", row.tlsa_status],
+    ["DANE", row.dane_status],
+    ["HTTPS", row.https_status],
+    ["Strict HNS", row.strict_hns_status],
+    ["Resolver fallback", row.doh_fallback_status],
+    ["Failure", row.failure_reason],
+    ["Last checked", row.checked_at ? String(row.checked_at).replace("T", " ").replace(/:\d\d(?:\.\d+)?Z$/, " UTC") : ""]
+  ].filter(([, value]) => value !== null && value !== undefined && value !== "");
+  if (!fields.length) return `<p class="meta">No live-check result in this row.</p>`;
+  return `<dl class="diagnostic-kv">${fields.map(([key, value]) => `
+    <div><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(prettyToken(value))}</dd></div>`).join("")}</dl>`;
+}
+
+function dnsProbeCommands(row) {
+  const name = String(row.name || "").replace(/\.+$/, "");
+  const server = firstValue(row.synth4) || firstValue(row.glue4) || row.first_synth4 || row.first_glue4
+    || firstValue(row.synth6) || firstValue(row.glue6) || row.first_synth6 || row.first_glue6;
+  if (!name || !server) return [];
+  return [
+    `dig @${server} ${name}. A +norecurse +dnssec`,
+    `dig @${server} _443._tcp.${name}. TLSA +norecurse +dnssec`,
+    `dig @${server} ${name}. DNSKEY +norecurse +dnssec`
+  ];
+}
+
+function dnsEvidenceSection(row) {
+  const path = row.dns_evidence_path || "";
+  if (!path) return `<section><h3>Observed DNS</h3><p class="meta">No stored DNS evidence for this name yet.</p></section>`;
+  return `<section>
+    <h3>Observed DNS</h3>
+    <div class="dns-evidence-body" data-evidence-path="${escapeHtml(path)}">
+      <p class="meta">Open diagnostics to load stored DNS evidence.</p>
+    </div>
+  </section>`;
+}
+
+function renderDnsEvidence(payload) {
+  const observations = Array.isArray(payload?.observations) ? payload.observations : [];
+  if (!observations.length) return `<p class="meta">No stored DNS evidence for this name yet.</p>`;
+  return `<div class="dns-evidence-list">${observations.map((item) => {
+    const title = `${item.qname || ""} ${item.rrtype || ""}`.trim();
+    const meta = [
+      item.server ? `@${item.server}` : "",
+      item.source || "",
+      item.source_id || "",
+      item.rcode || item.status || "",
+      item.captured_at || ""
+    ].filter(Boolean).join(" - ");
+    return `<article class="dns-evidence-item">
+      <header><strong>${escapeHtml(title)}</strong><span>${escapeHtml(meta)}</span></header>
+      ${evidenceLines("Answer", item.answer)}
+      ${evidenceLines("Authority", item.authority)}
+      ${evidenceLines("Additional", item.additional)}
+      ${item.error ? `<p class="meta">Error: ${escapeHtml(item.error)}</p>` : ""}
+    </article>`;
+  }).join("")}</div>`;
+}
+
+function evidenceLines(label, lines) {
+  if (!Array.isArray(lines) || !lines.length) return "";
+  return `<div class="evidence-lines"><span>${escapeHtml(label)}</span>${lines.map(codeLine).join("")}</div>`;
+}
+
+function wireNameDetails() {
+  document.querySelectorAll(".name-detail[data-evidence-path]").forEach((details) => {
+    details.addEventListener("toggle", async () => {
+      if (!details.open || details.dataset.evidenceLoaded === "true") return;
+      const target = details.querySelector(".dns-evidence-body");
+      const path = details.dataset.evidencePath;
+      if (!target || !path) return;
+      target.innerHTML = `<p class="meta">Loading DNS evidence...</p>`;
+      try {
+        const payload = await loadJson(`data/${path}`);
+        target.innerHTML = renderDnsEvidence(payload);
+        details.dataset.evidenceLoaded = "true";
+      } catch (error) {
+        target.innerHTML = `<p class="meta">Could not load DNS evidence: ${escapeHtml(error.message)}</p>`;
+      }
+    });
+  });
+}
+
+function nameDetailRow(row, colspan) {
+  const name = String(row.name || "");
+  const records = resourceRecordSections(row);
+  const recordTypesText = recordTypes(row).join(", ");
+  const commands = dnsProbeCommands(row);
+  const compactNotice = !Array.isArray(row.ds_records) && hasRecordType(row, "DS")
+    ? `<p class="meta">Compact row: DS payload is not embedded in this collection.</p>`
+    : "";
+  const evidenceAttr = row.dns_evidence_path
+    ? ` data-evidence-path="${escapeHtml(row.dns_evidence_path)}"`
+    : "";
+  return `<tr class="name-detail-row"><td colspan="${colspan}">
+    <details class="name-detail"${evidenceAttr}>
+      <summary><span>Diagnostics</span><strong>${escapeHtml(name)}</strong></summary>
+      <div class="name-detail-grid">
+        <section>
+          <h3>Latest Resource</h3>
+          ${resourceMetadata(row)}
+          ${recordTypesText ? `<p class="meta">Types: ${escapeHtml(recordTypesText)}</p>` : ""}
+          <div class="resource-records">${records || `<p class="meta">No resource records in this row.</p>`}</div>
+          ${compactNotice}
+        </section>
+        <section>
+          <h3>Live Check</h3>
+          ${liveDiagnosticStatus(row)}
+          ${commands.length ? `<div class="dns-probes">${commands.map(codeLine).join("")}</div>` : ""}
+        </section>
+        ${dnsEvidenceSection(row)}
+      </div>
+    </details>
+  </td></tr>`;
+}
+
 function namesColumns(rowDetail) {
   const compactColumns = [
     {key: "name", label: "Name", render: nameCell, width: "10%"},
@@ -993,11 +1213,12 @@ async function renderNames(app) {
         ${namesActionContext(summary.next_actions || [], filter)}
         ${lookupNotice(pageData, "names")}
         ${namesPagination(pageData.collection, pageData.page)}
-        ${table(pageData.rows, columns, query ? "No names match this search." : "No rows in this page.", {wrapClass: "names-table-wrap", tableClass: "names-table"})}
+        ${table(pageData.rows, columns, query ? "No names match this search." : "No rows in this page.", {wrapClass: "names-table-wrap", tableClass: "names-table", detailRender: nameDetailRow})}
         ${namesPagination(pageData.collection, pageData.page)}
       </div>
-    </section>`;
+  </section>`;
   wireAutoSubmitFilter();
+  wireNameDetails();
 }
 
 async function boot() {

@@ -39,6 +39,12 @@ def lookup_name(db_path: str | Path, name: str) -> dict:
               n.name, n.state, n.expired, n.onchain_class, n.provider_guess,
               COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types,
               rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.ds_records, rs.has_ds,
+              rs.raw_size, rs.resource_version, rs.resource_hash, n.last_seen_height, n.updated_at,
+              CASE WHEN EXISTS(
+                SELECT 1
+                FROM dns_evidence de
+                WHERE de.name = n.name
+              ) THEN 'dns-evidence/' || n.name || '.json' ELSE NULL END AS dns_evidence_path,
               ls.dns_reachable, ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.https_status,
               ls.strict_hns_status, ls.doh_fallback_status, ls.failure_reason, ls.checked_at
             FROM names n

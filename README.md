@@ -68,7 +68,7 @@ Use a temporary or dedicated indexer VM with a persistent disk for HSD and the w
 
 Every generated snapshot includes source provenance, provider-rule provenance, provider/class/failure summaries, and live-check run settings in `data/summary.json`, including source type/hash, crawler version, provider rule version, provider rule hash, live-check rate limits, candidate counts, and checked counts. `data/manifest.json` records the export format version plus SHA-256 and byte-size entries for the public data files.
 
-The Names page is backed by paginated `data/names-pages/` JSON. `--names-limit=0` means the generated browse data covers the full snapshot. Optional download artifacts (`data/names.json`, `data/names.csv`, and `data/topology.sqlite.gz`) can still be generated explicitly with `--include-downloads`, but are not part of the production default.
+The Names page is backed by paginated `data/names-pages/` JSON. Each row has an expandable diagnostics panel with current HNS resource records, resource hash/size/version metadata, live-check status, low-level DNS probe commands where bootstrap addresses are available, and stored DNS evidence when the scanner or a crowd worker has submitted actual RRset observations. `--names-limit=0` means the generated browse data covers the full snapshot. Optional download artifacts (`data/names.json`, `data/names.csv`, and `data/topology.sqlite.gz`) can still be generated explicitly with `--include-downloads`, but are not part of the production default.
 
 Exact name search first tries the lightweight lookup API when it is available. On the static site it falls back to binary-searching the sorted `names-pages/all` collection, so a direct name lookup does not require loading the full 12M+ row export or storing an additional lookup index.
 
@@ -88,6 +88,7 @@ Generated site files:
 - `data/faq_answers.json`
 - `data/names-pages.json`
 - `data/names-pages/...`
+- `data/dns-evidence/...` when DNS observations exist
 
 Default production storage sizes are intentionally modest: 150 GB for the indexer data disk and 50 GB for the web artifact disk. The GCE pipeline and local nightly wrapper start HSD for update phases and stop it before live checks/site generation by default.
 
@@ -104,6 +105,7 @@ hns-topology incremental --db data/topology.sqlite --scan-block-height 123457
 hns-topology incremental --db data/topology.sqlite --changed-names-file changed_names.txt
 hns-topology reorg-check --db data/topology.sqlite --rollback
 hns-topology live-check --db data/topology.sqlite --limit 100 --concurrency 4 --min-delay-ms 250
+hns-topology import-dns-evidence --db data/topology.sqlite --file evidence.json --source crowd --source-id worker-1
 hns-topology export --db data/topology.sqlite --out public/data
 hns-topology generate-site --db data/topology.sqlite --out public
 hns-topology validate-release --db data/topology.sqlite --public-dir public --min-indexed-height 300000

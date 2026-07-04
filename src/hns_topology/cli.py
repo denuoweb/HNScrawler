@@ -1,18 +1,27 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
 
 from .archiver import archive_is_valid, archive_release, validate_archive_manifest
+from .classifier import normalize_name
 from .dane import (
     build_tlsa_records,
     load_certificate,
     parse_tlsa_zone_line,
     tlsa_record_matches_certificate,
 )
-from .db import connect, get_meta, init_db, recompute_provider_summary, set_meta
+from .db import (
+    connect,
+    get_meta,
+    init_db,
+    insert_dns_evidence_batch,
+    recompute_provider_summary,
+    set_meta,
+)
 from .exporter import export_all
 from .hsd_rpc import HsdRpcClient
 from .hsd_status import evaluate_hsd_readiness, hsd_is_ready
@@ -28,6 +37,7 @@ from .indexer import (
 )
 from .livecheck import LiveCheckConfig, count_live_check_candidates, run_live_checks
 from .lookup_api import run_server
+from .models import DnsEvidence
 from .provider_rules import ProviderRules
 from .site_generator import generate_site
 from .timeutil import utc_now
@@ -126,6 +136,16 @@ def build_parser() -> argparse.ArgumentParser:
     live.add_argument("--resolver")
     live.add_argument("--priority-name", action="append", default=[])
     live.set_defaults(func=cmd_live_check)
+
+    import_evidence = sub.add_parser(
+        "import-dns-evidence",
+        help="Import scanner or crowd-sourced DNS evidence JSON.",
+    )
+    import_evidence.add_argument("--db", required=True)
+    import_evidence.add_argument("--file", required=True)
+    import_evidence.add_argument("--source", default="crowd")
+    import_evidence.add_argument("--source-id", default="")
+    import_evidence.set_defaults(func=cmd_import_dns_evidence)
 
     export = sub.add_parser("export", help="Write JSON/CSV/SQLite.gz artifacts.")
     export.add_argument("--db", required=True)
@@ -493,6 +513,21 @@ def cmd_live_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_import_dns_evidence(args: argparse.Namespace) -> int:
+    payload = json.loads(Path(args.file).read_text(encoding="utf-8"))
+    evidence = _dns_evidence_from_payload(
+        payload,
+        source=args.source,
+        source_id=args.source_id,
+    )
+    with connect(args.db) as conn:
+        init_db(conn)
+        with conn:
+            insert_dns_evidence_batch(conn, evidence)
+    print(f"imported {len(evidence)} DNS evidence observations")
+    return 0
+
+
 def cmd_export(args: argparse.Namespace) -> int:
     with connect(args.db) as conn:
         init_db(conn)
@@ -615,3 +650,70 @@ def _client(args: argparse.Namespace) -> HsdRpcClient:
 
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _dns_evidence_from_payload(
+    payload,
+    *,
+    source: str,
+    source_id: str,
+) -> list[DnsEvidence]:
+    documents = payload if isinstance(payload, list) else [payload]
+    evidence: list[DnsEvidence] = []
+    for document in documents:
+        if not isinstance(document, dict):
+            continue
+        name = normalize_name(str(document.get("name") or ""))
+        observations = document.get("observations")
+        if not isinstance(observations, list):
+            observations = [document]
+        for item in observations:
+            if not isinstance(item, dict):
+                continue
+            item_name = normalize_name(str(item.get("name") or name))
+            if not item_name:
+                continue
+            qname = _evidence_fqdn(str(item.get("qname") or item_name))
+            rrtype = str(item.get("rrtype") or "").upper()
+            if not rrtype:
+                continue
+            evidence.append(
+                DnsEvidence(
+                    name=item_name,
+                    qname=qname,
+                    rrtype=rrtype,
+                    server=str(item.get("server") or ""),
+                    source=str(item.get("source") or source or "crowd"),
+                    source_id=str(item.get("source_id") or source_id or ""),
+                    status=str(item.get("status") or "ok"),
+                    rcode=item.get("rcode"),
+                    flags=item.get("flags"),
+                    answer=_string_list(item.get("answer")),
+                    authority=_string_list(item.get("authority")),
+                    additional=_string_list(item.get("additional")),
+                    elapsed_ms=_optional_int(item.get("elapsed_ms")),
+                    error=item.get("error"),
+                    captured_at=str(item.get("captured_at") or utc_now()),
+                )
+            )
+    return evidence
+
+
+def _string_list(value) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if item is not None]
+
+
+def _optional_int(value) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _evidence_fqdn(value: str) -> str:
+    text = value.strip().lower()
+    return text if text.endswith(".") else f"{text}."

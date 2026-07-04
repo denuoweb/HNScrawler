@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import gzip
+import json
 import math
 import shutil
 import sqlite3
@@ -109,6 +110,8 @@ def export_all(
     _remove_obsolete_data(out)
     write_json(out / "names-pages.json", write_names_pages(conn, out, limit=effective_names_limit, page_size=PAGE_SIZE))
     _log_export("wrote names-pages.json")
+    evidence_count = write_dns_evidence(conn, out)
+    _log_export(f"wrote dns evidence files={evidence_count}")
     if include_downloads:
         write_json(out / "names.json", build_names(conn, limit=effective_names_limit))
         _log_export("wrote names.json")
@@ -495,6 +498,8 @@ def build_names(
           n.name, n.state, n.expired, n.onchain_class, n.provider_guess,
           COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types,
           rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.ds_records, rs.has_ds,
+          rs.raw_size, rs.resource_version, rs.resource_hash, n.last_seen_height, n.updated_at,
+          { _dns_evidence_path_sql() },
           ls.dns_reachable, ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.https_status,
           ls.strict_hns_status, ls.doh_fallback_status, ls.failure_reason, ls.checked_at
         FROM names n
@@ -525,6 +530,67 @@ def write_names_pages(
     page_size: int,
 ) -> dict[str, Any]:
     return _write_names_pages_streamed(conn, out / "names-pages", limit=limit, page_size=page_size)
+
+
+def write_dns_evidence(conn: sqlite3.Connection, out: Path) -> int:
+    base_dir = out / "dns-evidence"
+    _remove_tree(base_dir, missing_ok=True)
+    names = [
+        row["name"]
+        for row in conn.execute(
+            """
+            SELECT DISTINCT name
+            FROM dns_evidence
+            ORDER BY name
+            """
+        )
+    ]
+    if not names:
+        return 0
+    base_dir.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        write_json(base_dir / f"{name}.json", build_dns_evidence(conn, name))
+    return len(names)
+
+
+def build_dns_evidence(conn: sqlite3.Connection, name: str) -> dict[str, Any]:
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM dns_evidence
+        WHERE name = ?
+        ORDER BY captured_at DESC, id DESC
+        """,
+        (name,),
+    ).fetchall()
+    seen: set[tuple[str, str, str, str, str]] = set()
+    observations: list[dict[str, Any]] = []
+    for row in rows:
+        key = (
+            row["qname"],
+            row["rrtype"],
+            row["server"] or "",
+            row["source"] or "",
+            row["source_id"] or "",
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        observations.append(_dns_evidence_row(row))
+    observations.sort(
+        key=lambda item: (
+            str(item.get("qname") or ""),
+            str(item.get("rrtype") or ""),
+            str(item.get("server") or ""),
+            str(item.get("source") or ""),
+            str(item.get("source_id") or ""),
+        )
+    )
+    return {
+        "name": name,
+        "observation_count": len(observations),
+        "observations": observations,
+    }
 
 
 def _write_names_pages_streamed(
@@ -669,7 +735,7 @@ def _name_collection_keys(conn: sqlite3.Connection) -> list[str]:
 
 def _name_row_columns(*, row_detail: str = "full") -> str:
     if row_detail == "compact":
-        return """
+        return f"""
       n.name, n.onchain_class, n.provider_guess,
       COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types, rs.has_ds,
       json_extract(rs.ns_names, '$[0]') AS first_ns,
@@ -677,12 +743,16 @@ def _name_row_columns(*, row_detail: str = "full") -> str:
       json_extract(rs.glue6, '$[0]') AS first_glue6,
       json_extract(rs.synth4, '$[0]') AS first_synth4,
       json_extract(rs.synth6, '$[0]') AS first_synth6,
+      rs.raw_size, rs.resource_version, rs.resource_hash, n.last_seen_height, n.updated_at,
+      {_dns_evidence_path_sql()},
       ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.failure_reason, ls.checked_at
     """
-    return """
+    return f"""
       n.name, n.state, n.expired, n.onchain_class, n.provider_guess,
       COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types,
       rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.ds_records, rs.has_ds,
+      rs.raw_size, rs.resource_version, rs.resource_hash, n.last_seen_height, n.updated_at,
+      {_dns_evidence_path_sql()},
       ls.dns_reachable, ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.https_status,
       ls.strict_hns_status, ls.doh_fallback_status, ls.failure_reason, ls.checked_at
     """
@@ -708,6 +778,12 @@ def _name_output_keys(*, row_detail: str = "full") -> list[str]:
             "first_glue6",
             "first_synth4",
             "first_synth6",
+            "raw_size",
+            "resource_version",
+            "resource_hash",
+            "last_seen_height",
+            "updated_at",
+            "dns_evidence_path",
             "dnssec_status",
             "tlsa_status",
             "dane_status",
@@ -761,6 +837,12 @@ def write_names_csv(conn: sqlite3.Connection, path: Path, *, limit: int) -> None
         "synth6",
         "ds_records",
         "has_ds",
+        "raw_size",
+        "resource_version",
+        "resource_hash",
+        "last_seen_height",
+        "updated_at",
+        "dns_evidence_path",
         "dns_reachable",
         "dnssec_status",
         "tlsa_status",
@@ -842,10 +924,14 @@ def _manifest_artifact_paths(out: Path, *, include_downloads: bool) -> list[str]
     paths = list(DATA_ARTIFACTS)
     if include_downloads:
         paths.extend(("names.json", "names.csv", "topology.sqlite.gz"))
-    for directory in ("names-pages",):
+    for directory in ("names-pages", "dns-evidence"):
         paths.extend(
             path.relative_to(out).as_posix()
             for path in sorted((out / directory).glob("*/*.json"))
+        )
+        paths.extend(
+            path.relative_to(out).as_posix()
+            for path in sorted((out / directory).glob("*.json"))
         )
     return paths
 
@@ -861,6 +947,7 @@ def _remove_obsolete_data(out: Path) -> None:
     for relative in ("classes.json", "providers.json", "broken.json", "dane.json", "dane-pages.json"):
         (out / relative).unlink(missing_ok=True)
     _remove_tree(out / "dane-pages", missing_ok=True)
+    _remove_tree(out / "dns-evidence", missing_ok=True)
 
 
 def _remove_tree(path: Path, *, missing_ok: bool = False) -> None:
@@ -909,6 +996,46 @@ def _csv_value(value: Any) -> Any:
             return ",".join(value)
         return dumps_json(value)
     return value
+
+
+def _dns_evidence_path_sql() -> str:
+    return """
+      CASE WHEN EXISTS(
+        SELECT 1
+        FROM dns_evidence de
+        WHERE de.name = n.name
+      ) THEN 'dns-evidence/' || n.name || '.json' ELSE NULL END AS dns_evidence_path
+    """
+
+
+def _dns_evidence_row(row: sqlite3.Row) -> dict[str, Any]:
+    result = {
+        "qname": row["qname"],
+        "rrtype": row["rrtype"],
+        "server": row["server"],
+        "source": row["source"],
+        "source_id": row["source_id"],
+        "status": row["status"],
+        "rcode": row["rcode"],
+        "flags": row["flags"],
+        "elapsed_ms": row["elapsed_ms"],
+        "error": row["error"],
+        "captured_at": row["captured_at"],
+        "answer": _loads_json_list(row["answer_json"]),
+        "authority": _loads_json_list(row["authority_json"]),
+        "additional": _loads_json_list(row["additional_json"]),
+    }
+    return {key: value for key, value in result.items() if value not in (None, "", [])}
+
+
+def _loads_json_list(value: str | None) -> list[Any]:
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []
 
 
 def _meta_int(conn: sqlite3.Connection, key: str) -> int | None:

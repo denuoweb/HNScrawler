@@ -56,6 +56,7 @@ class ResourceSummary:
     has_ds: bool
     has_txt: bool
     raw_size: int
+    resource_version: int | None
     resource_hash: str
     record_types: list[str]
     malformed: bool = False
@@ -101,6 +102,25 @@ class LiveStatus:
     failure_reason: str | None
     checked_at: str
     next_check_at: str
+
+
+@dataclass(frozen=True)
+class DnsEvidence:
+    name: str
+    qname: str
+    rrtype: str
+    server: str
+    source: str
+    source_id: str
+    status: str
+    rcode: str | None
+    flags: str | None
+    answer: list[str]
+    authority: list[str]
+    additional: list[str]
+    elapsed_ms: int | None
+    error: str | None
+    captured_at: str
 
 
 JsonDict = dict[str, Any]

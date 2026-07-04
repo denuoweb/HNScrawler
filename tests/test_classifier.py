@@ -14,6 +14,16 @@ def test_summarizes_direct_synth_records():
     assert classify_onchain(summary, expired=False, provider_guess="unknown/custom") == "DIRECT_SYNTH"
 
 
+def test_summarizes_resource_version():
+    summary = summarize_resource(
+        "versioned",
+        {"version": 0, "records": [{"type": "NS", "ns": "ns1.versioned."}]},
+    )
+
+    assert summary.resource_version == 0
+    assert summary.raw_size > 0
+
+
 def test_classifies_delegated_without_glue():
     summary = summarize_resource(
         "noglue",

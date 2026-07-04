@@ -309,6 +309,7 @@ def index_compact_name_batch(
                 int(has_synth),
                 int(has_txt),
                 int(row.get("raw_size") or 0),
+                _maybe_int(row.get("resource_version")),
                 resource_hash,
             )
         )
@@ -551,6 +552,7 @@ def _summary_from_compact_row(name: str, row: dict[str, Any]) -> ResourceSummary
         has_ds=bool(row.get("has_ds")) or bool(ds_records),
         has_txt=bool(row.get("has_txt")),
         raw_size=int(row.get("raw_size") or 0),
+        resource_version=_maybe_int(row.get("resource_version")),
         resource_hash=str(row.get("resource_hash") or _compact_row_hash(row)),
         record_types=record_types,
         malformed=bool(row.get("malformed")),

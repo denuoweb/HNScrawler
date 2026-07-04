@@ -58,7 +58,8 @@ Compact decoded resource summary.
 - `ds_records`: JSON array containing compact `keyTag`, `algorithm`, `digestType`, and normalized digest values
 - `has_ds`: boolean integer
 - `has_txt`: boolean integer
-- `raw_size`: canonical resource byte size
+- `raw_size`: HSD resource byte size from compact imports, or canonical JSON byte size for decoded RPC/fixture resources
+- `resource_version`: HSD resource version when present
 - `resource_hash`: duplicated for convenient joins and verification
 
 ## `live_status`
@@ -83,6 +84,28 @@ Latest live-check result per name.
 `strict_hns_status = working` means address discovery and HTTPS loading succeeded without using the fallback resolver. `SYNTH4`/`SYNTH6` and `GLUE4`/`GLUE6` records are used as nameserver bootstrap addresses for strict resolution; website `A`, `AAAA`, and `TLSA` records still come from authoritative DNS.
 
 `doh_fallback_status = required` means strict HNS address discovery failed and the checker found an address only through the configured fallback resolver path. The field name is retained for export stability; the value records resolver fallback dependency, not a guaranteed DoH transport.
+
+## `dns_evidence`
+
+Append-only DNS observations from the crawler or external workers.
+
+- `name`: normalized HNS name
+- `qname`: fully-qualified queried owner
+- `rrtype`: DNS type such as `A`, `AAAA`, `TLSA`, or `DNSKEY`
+- `server`: nameserver IP queried directly
+- `source`: observation source such as `scanner` or `crowd`
+- `source_id`: optional worker or submitter identifier
+- `status`: `ok`, `rcode`, `timeout`, or `error`
+- `rcode`: DNS response code when a response was received
+- `flags`: response flags as dnspython text
+- `answer_json`: JSON array of answer RRset lines
+- `authority_json`: JSON array of authority RRset lines
+- `additional_json`: JSON array of additional RRset lines
+- `elapsed_ms`: query duration
+- `error`: exception class for failed probes
+- `captured_at`: observation timestamp
+
+The report exports the latest observation per `(qname, rrtype, server, source, source_id)` into `data/dns-evidence/<name>.json`.
 
 ## `provider_summary`
 
@@ -124,6 +147,7 @@ Public exports are generated from SQLite:
 - `faq_answers.json`
 - `names-pages.json`
 - `names-pages/<collection>/page-<n>.json`
+- `dns-evidence/<name>.json` when scanner or crowd evidence exists
 
 The default public export does not write standalone Providers, Classes, Broken, DANE, CSV, SQLite, or full `names.json` artifacts. Provider, class, failure, and DANE summaries live in `summary.json`; rows are searched and filtered through the Names collections. `names.json`, `names.csv`, and `topology.sqlite.gz` are written only when `--include-downloads` is explicitly requested.
 
@@ -131,7 +155,7 @@ There is no standalone DANE row exporter in the production path. DANE-specific v
 
 `summary.broken` contains failure reason counts for the Names filter dropdown, not duplicated example rows. Example names for a failure reason come from the filtered Names collection.
 
-Names collections are ordered by normalized name. The browser uses that invariant for static exact-name lookup: if `/api/name` is unavailable, it binary-searches the sorted `all` collection by fetching only a small number of page files. Compact row arrays still include first NS/GLUE/SYNTH scalar fields for DANE generator handoff links.
+Names collections are ordered by normalized name. The browser uses that invariant for static exact-name lookup: if `/api/name` is unavailable, it binary-searches the sorted `all` collection by fetching only a small number of page files. Compact row arrays still include first NS/GLUE/SYNTH scalar fields plus resource hash, size, version, index height, and a DNS evidence path for DANE generator handoff links and diagnostics.
 
 `summary.json` includes `next_actions`, a small derived list for the Overview action panel and filtered Names queue context. Each item contains a count, a primary Names filter, a filter link, and the DANE generator intent to use for matching row-level handoffs. The list is deliberately derived from existing counters and filters so it does not create new row artifacts.
 

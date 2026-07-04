@@ -65,6 +65,17 @@ def live_check_args(db_path, **overrides):
     return argparse.Namespace(**values)
 
 
+def import_dns_evidence_args(db_path, evidence_path, **overrides):
+    values = {
+        "db": str(db_path),
+        "file": str(evidence_path),
+        "source": "crowd",
+        "source_id": "worker-1",
+    }
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
 class FakeCatchUpClient:
     url = "http://127.0.0.1:12037"
 
@@ -243,6 +254,7 @@ def test_live_check_records_rate_limit_metadata(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr("hns_topology.livecheck.check_name", fake_check_name)
+    monkeypatch.setattr("hns_topology.livecheck.collect_dns_evidence", lambda *args, **kwargs: [])
 
     result = cli.cmd_live_check(live_check_args(db_path))
 
@@ -260,3 +272,51 @@ def test_live_check_records_rate_limit_metadata(tmp_path, monkeypatch):
 
     checks = validate_release(db_path=db_path, public_dir=public_dir, require_live_checks=True)
     assert release_is_valid(checks), [check for check in checks if not check.ok]
+
+
+def test_import_dns_evidence_exports_static_observations(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    public_dir = tmp_path / "public"
+    evidence_path = tmp_path / "evidence.json"
+    evidence_path.write_text(
+        json.dumps(
+            {
+                "name": "secure",
+                "observations": [
+                    {
+                        "qname": "secure.",
+                        "rrtype": "DNSKEY",
+                        "server": "198.51.100.3",
+                        "status": "ok",
+                        "rcode": "NOERROR",
+                        "flags": "QR AA",
+                        "answer": ["secure. 300 IN DNSKEY 257 3 13 abc"],
+                        "captured_at": "2026-01-01T00:00:00Z",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+
+    result = cli.cmd_import_dns_evidence(import_dns_evidence_args(db_path, evidence_path))
+
+    with connect(db_path) as conn:
+        assert result == 0
+        generate_site(conn, db_path=db_path, out_dir=public_dir)
+
+    names_rows = json.loads(
+        (public_dir / "data/names-pages/all/page-1.json").read_text(encoding="utf-8")
+    )["rows"]
+    secure = next(row for row in names_rows if row["name"] == "secure")
+    evidence = json.loads(
+        (public_dir / "data" / secure["dns_evidence_path"]).read_text(encoding="utf-8")
+    )
+
+    assert secure["dns_evidence_path"] == "dns-evidence/secure.json"
+    assert evidence["observations"][0]["source"] == "crowd"
+    assert evidence["observations"][0]["source_id"] == "worker-1"
+    assert evidence["observations"][0]["answer"] == ["secure. 300 IN DNSKEY 257 3 13 abc"]

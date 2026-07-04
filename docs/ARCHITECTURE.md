@@ -80,7 +80,9 @@ Live checks are intentionally limited to promising names:
 - previously working names
 - user-submitted names, once that queue exists
 
-Checks are rate-limited and store only status metadata. Each live-check run records its candidate count, checked count, concurrency, minimum inter-check delay, timeout, recheck window, resolver setting, and start/finish timestamps in `snapshot_meta`.
+Checks are rate-limited and store status metadata plus DNS evidence observations. Each live-check run records its candidate count, checked count, concurrency, minimum inter-check delay, timeout, recheck window, resolver setting, and start/finish timestamps in `snapshot_meta`. For names with strict-HNS bootstrap addresses, the scanner also performs direct DNSSEC-enabled, non-recursive probes against the bootstrap nameserver for A, AAAA, TLSA, and DNSKEY data. These observations are append-only and are exported as per-name evidence JSON.
+
+External workers can submit the same evidence JSON through `hns-topology import-dns-evidence`. This gives the project a crowd-sourced path: independent scanners can publish actual RRset observations with `source` and `source_id`, while the public report shows the latest observation per query/source.
 
 ## Adoption Funnel
 

@@ -187,6 +187,7 @@ function summarizeResourceData(data, Resource, hsTypesByVal) {
     has_ds: false,
     has_txt: false,
     raw_size: data ? data.length : 0,
+    resource_version: null,
     resource_hash: sha256Hex(data || Buffer.alloc(0)),
     record_types: [],
     malformed: false
@@ -198,6 +199,8 @@ function summarizeResourceData(data, Resource, hsTypesByVal) {
   let resource;
   try {
     resource = Resource.decode(data);
+    if (Number.isInteger(resource.version))
+      summary.resource_version = resource.version;
   } catch (e) {
     summary.malformed = true;
     return summary;
