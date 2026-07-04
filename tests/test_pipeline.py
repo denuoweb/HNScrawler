@@ -139,6 +139,8 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
         "data/summary.json",
         "data/manifest.json",
         "data/names-pages.json",
+        "data/ip-addresses/198.51.100.2.json",
+        "data/ip-addresses/203.0.113.10.json",
     ]:
         assert (out / relative).exists()
     for relative in [
@@ -164,6 +166,8 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     providers = summary["providers"]
     names_pages = json.loads((out / "data/names-pages.json").read_text(encoding="utf-8"))
     names_page_rows = json.loads((out / "data/names-pages/all/page-1.json").read_text(encoding="utf-8"))["rows"]
+    delegated_ip_rows = json.loads((out / "data/ip-addresses/198.51.100.2.json").read_text(encoding="utf-8"))
+    direct_ip_rows = json.loads((out / "data/ip-addresses/203.0.113.10.json").read_text(encoding="utf-8"))
     names_page_names = [row["name"] for row in names_page_rows]
     direct_row = next(row for row in names_page_rows if row["name"] == "direct")
     namebase_provider = next(item for item in providers if item["provider_key"] == "namebase/default")
@@ -181,6 +185,8 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert "broken.json" not in manifest_artifacts
     assert "names-pages.json" in manifest_artifacts
     assert "names-pages/all/page-1.json" in manifest_artifacts
+    assert "ip-addresses/198.51.100.2.json" in manifest_artifacts
+    assert "ip-addresses/203.0.113.10.json" in manifest_artifacts
     assert "dane-pages.json" not in manifest_artifacts
     assert "names.json" not in manifest_artifacts
     assert "names.csv" not in manifest_artifacts
@@ -203,6 +209,12 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert direct_row["raw_size"] > 0
     assert direct_row["resource_hash"]
     assert direct_row["last_seen_height"] == 123456
+    assert delegated_ip_rows["ip"] == "198.51.100.2"
+    assert delegated_ip_rows["row_count"] == 1
+    assert [row["name"] for row in delegated_ip_rows["rows"]] == ["delegated"]
+    assert direct_ip_rows["ip"] == "203.0.113.10"
+    assert direct_ip_rows["row_count"] == 1
+    assert [row["name"] for row in direct_ip_rows["rows"]] == ["direct"]
     assert "classes" in summary
     assert "broken" in summary
     assert "examples" not in summary["broken"]

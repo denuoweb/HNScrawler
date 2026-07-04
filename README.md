@@ -68,9 +68,11 @@ Use a temporary or dedicated indexer VM with a persistent disk for HSD and the w
 
 Every generated snapshot includes source provenance, provider-rule provenance, provider/class/failure summaries, and live-check run settings in `data/summary.json`, including source type/hash, crawler version, provider rule version, provider rule hash, live-check rate limits, candidate counts, and checked counts. `data/manifest.json` records the export format version plus SHA-256 and byte-size entries for the public data files.
 
-The Names page is backed by paginated `data/names-pages/` JSON. Each row has an expandable diagnostics panel with current HNS resource records, resource hash/size/version metadata, live-check status, low-level DNS probe commands where bootstrap addresses are available, and stored DNS evidence when the scanner or a crowd worker has submitted actual RRset observations. `--names-limit=0` means the generated browse data covers the full snapshot. Optional download artifacts (`data/names.json`, `data/names.csv`, and `data/topology.sqlite.gz`) can still be generated explicitly with `--include-downloads`, but are not part of the production default.
+The Names page is backed by paginated `data/names-pages/` JSON. Each row has an expandable diagnostics panel with current HNS resource records, resource hash/size/version metadata, live-check status, low-level DNS probe commands where bootstrap addresses are available, and stored DNS evidence when the scanner or a crowd worker has submitted actual RRset observations. `data/ip-addresses/<ip>.json` lets an IP-literal search return every exported name using that GLUE or SYNTH address without scanning the full table. `--names-limit=0` means the generated browse data covers the full snapshot. Optional download artifacts (`data/names.json`, `data/names.csv`, and `data/topology.sqlite.gz`) can still be generated explicitly with `--include-downloads`, but are not part of the production default.
 
 Exact name search first tries the lightweight lookup API when it is available. On the static site it falls back to binary-searching the sorted `names-pages/all` collection, so a direct name lookup does not require loading the full 12M+ row export or storing an additional lookup index.
+
+IP address search detects IPv4 and IPv6 literals and loads the matching `data/ip-addresses/` artifact directly. This supports provider or crowd analysis such as finding all names that point at `44.231.6.183`.
 
 Overview provider and class summaries link back into existing Names filters where doing so is storage-safe. Class rows only link to existing action or status queues; the export does not create large class-specific duplicate page sets.
 
@@ -88,6 +90,7 @@ Generated site files:
 - `data/faq_answers.json`
 - `data/names-pages.json`
 - `data/names-pages/...`
+- `data/ip-addresses/...` for GLUE and SYNTH address lookups
 - `data/dns-evidence/...` when DNS observations exist
 
 Default production storage sizes are intentionally modest: 150 GB for the indexer data disk and 50 GB for the web artifact disk. The GCE pipeline and local nightly wrapper start HSD for update phases and stop it before live checks/site generation by default.

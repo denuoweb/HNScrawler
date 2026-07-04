@@ -10,6 +10,7 @@ const DANE_GENERATOR_BASE = window.__DANE_GENERATOR_BASE__ || "/dane-generator/"
 let nextPageFetchAt = 0;
 const collectionRowsCache = new Map();
 const collectionPageRowsCache = new Map();
+const ipAddressLookupCache = new Map();
 
 function sitePath(path) {
   if (/^(?:[a-z]+:)?\/\//i.test(path) || path.startsWith("/")) return path;
@@ -465,8 +466,46 @@ function normalizeLookupQuery(query) {
   return /^[a-z0-9-]{1,63}$/.test(name) ? name : "";
 }
 
+function normalizeIpQuery(query) {
+  const value = query.trim().toLowerCase();
+  if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(value)) {
+    const parts = value.split(".");
+    if (parts.every((part) => Number(part) <= 255)) {
+      return parts.map((part) => String(Number(part))).join(".");
+    }
+  }
+  if (value.includes(":") && /^[0-9a-f:.]+$/.test(value)) return value;
+  return "";
+}
+
 function isDaneRow(row) {
   return hasDs(row) || Boolean(row.tlsa_status) || Boolean(row.dane_status);
+}
+
+async function lookupIpAddress(query) {
+  const ip = normalizeIpQuery(query);
+  if (!ip) return null;
+  if (ipAddressLookupCache.has(ip)) return ipAddressLookupCache.get(ip);
+  const lookupPromise = loadJson(`data/ip-addresses/${encodeURIComponent(ip)}.json`)
+    .then((data) => {
+      const rows = Array.isArray(data.rows) ? data.rows : [];
+      return {
+        found: true,
+        query,
+        ip,
+        rowCount: Number(data.row_count || rows.length),
+        rows
+      };
+    })
+    .catch(() => ({
+      found: false,
+      query,
+      ip,
+      rowCount: 0,
+      rows: []
+    }));
+  ipAddressLookupCache.set(ip, lookupPromise);
+  return lookupPromise;
 }
 
 async function lookupExactNameFromApi(query, name) {
@@ -534,6 +573,41 @@ async function lookupExactName(query, index) {
 
 async function applySearchToPageData(pageData, query, options = {}) {
   if (!query) return {...pageData, search: null, lookup: null};
+  const ipLookup = await lookupIpAddress(query);
+  if (ipLookup) {
+    const allRows = options.daneOnly ? ipLookup.rows.filter(isDaneRow) : ipLookup.rows;
+    const allCollection = pageData.index?.collections?.all || pageData.collection;
+    const exportedCount = Number(allCollection.row_count || 0);
+    const totalCount = Number(allCollection.total_count || exportedCount);
+    const fullSnapshot = exportedCount === totalCount;
+    const pageSize = Number(pageData.collection.page_size || 0) || 100;
+    const pageCount = allRows.length ? Math.ceil(allRows.length / pageSize) : 0;
+    const page = pageCount > 0 ? Math.min(activePage(), pageCount) : 1;
+    const start = (page - 1) * pageSize;
+    return {
+      ...pageData,
+      collection: {
+        ...pageData.collection,
+        row_count: allRows.length,
+        page_count: pageCount,
+        row_detail: "full",
+        columns: null
+      },
+      page,
+      rows: allRows.slice(start, start + pageSize),
+      search: {
+        query,
+        matchedCount: allRows.length,
+        totalCount: "snapshot",
+        exact: false,
+        ip: true,
+        scoped: false,
+        fullSnapshot
+      },
+      lookup: null,
+      ipLookup
+    };
+  }
   const lookup = await lookupExactName(query, pageData.index);
   if (lookup && lookup.found && (!options.daneOnly || isDaneRow(lookup.row))) {
     return {
@@ -646,7 +720,9 @@ function searchControls({id, label, placeholder, query, search}) {
   const searchMeta = search
     ? `<p class="meta search-meta">${search.exact
       ? `${exactSource[0].toUpperCase()}${exactSource.slice(1)} "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} ${exactScope} row.`
-      : search.scoped
+      : search.ip
+        ? `IP search "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} ${exactScope} ${search.matchedCount === 1 ? "name" : "names"}.`
+        : search.scoped
         ? `Search "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} of ${fmt.format(search.totalCount)} loaded rows. Exact name lookup still checks ${exactScope}.`
         : `Search "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} of ${fmt.format(search.totalCount)} exported rows.`}</p>`
     : "";

@@ -11,6 +11,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from . import __version__
 from .db import get_meta, parse_json_columns, rows_to_dicts, table_count
@@ -110,6 +111,8 @@ def export_all(
     _remove_obsolete_data(out)
     write_json(out / "names-pages.json", write_names_pages(conn, out, limit=effective_names_limit, page_size=PAGE_SIZE))
     _log_export("wrote names-pages.json")
+    ip_address_count = write_ip_address_names(conn, out, limit=effective_names_limit)
+    _log_export(f"wrote ip address files={ip_address_count}")
     evidence_count = write_dns_evidence(conn, out)
     _log_export(f"wrote dns evidence files={evidence_count}")
     if include_downloads:
@@ -553,6 +556,93 @@ def write_dns_evidence(conn: sqlite3.Connection, out: Path) -> int:
     return len(names)
 
 
+def write_ip_address_names(conn: sqlite3.Connection, out: Path, *, limit: int) -> int:
+    base_dir = out / "ip-addresses"
+    _remove_tree(base_dir, missing_ok=True)
+    if limit <= 0:
+        return 0
+    base_dir.mkdir(parents=True, exist_ok=True)
+    cursor = conn.execute(
+        f"""
+        WITH exported_names AS (
+          SELECT n.name
+          FROM names n
+          JOIN resource_summary rs ON rs.name = n.name
+          ORDER BY n.name
+          LIMIT ?
+        ),
+        ip_names AS (
+          SELECT DISTINCT rs.name, lower(trim(CAST(ip_value.value AS TEXT))) AS ip
+          FROM resource_summary rs
+          JOIN exported_names en ON en.name = rs.name
+          JOIN json_each(COALESCE(rs.glue4, '[]')) AS ip_value
+          WHERE trim(CAST(ip_value.value AS TEXT)) != ''
+          UNION
+          SELECT DISTINCT rs.name, lower(trim(CAST(ip_value.value AS TEXT))) AS ip
+          FROM resource_summary rs
+          JOIN exported_names en ON en.name = rs.name
+          JOIN json_each(COALESCE(rs.glue6, '[]')) AS ip_value
+          WHERE trim(CAST(ip_value.value AS TEXT)) != ''
+          UNION
+          SELECT DISTINCT rs.name, lower(trim(CAST(ip_value.value AS TEXT))) AS ip
+          FROM resource_summary rs
+          JOIN exported_names en ON en.name = rs.name
+          JOIN json_each(COALESCE(rs.synth4, '[]')) AS ip_value
+          WHERE trim(CAST(ip_value.value AS TEXT)) != ''
+          UNION
+          SELECT DISTINCT rs.name, lower(trim(CAST(ip_value.value AS TEXT))) AS ip
+          FROM resource_summary rs
+          JOIN exported_names en ON en.name = rs.name
+          JOIN json_each(COALESCE(rs.synth6, '[]')) AS ip_value
+          WHERE trim(CAST(ip_value.value AS TEXT)) != ''
+        )
+        SELECT ip_names.ip, {_name_row_columns(row_detail="full")}
+        FROM ip_names
+        JOIN names n ON n.name = ip_names.name
+        JOIN resource_summary rs ON rs.name = n.name
+        LEFT JOIN live_status ls ON ls.name = n.name
+        LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
+        WHERE ip_names.ip != ''
+        ORDER BY ip_names.ip, n.name
+        """,
+        (limit,),
+    )
+    json_columns = _name_json_columns(row_detail="full")
+    current_ip: str | None = None
+    current_rows: list[dict[str, Any]] = []
+    file_count = 0
+    for row in cursor:
+        item = dict(row)
+        ip = item.pop("ip", "")
+        if current_ip is None:
+            current_ip = ip
+        if ip != current_ip:
+            _write_ip_address_file(base_dir, current_ip, current_rows)
+            file_count += 1
+            current_ip = ip
+            current_rows = []
+        current_rows.append(parse_json_columns(item, json_columns))
+    if current_ip is not None:
+        _write_ip_address_file(base_dir, current_ip, current_rows)
+        file_count += 1
+    return file_count
+
+
+def _write_ip_address_file(base_dir: Path, ip: str, rows: list[dict[str, Any]]) -> None:
+    write_json(
+        base_dir / _ip_address_filename(ip),
+        {
+            "ip": ip,
+            "row_count": len(rows),
+            "rows": rows,
+        },
+    )
+
+
+def _ip_address_filename(ip: str) -> str:
+    return f"{quote(ip, safe='')}.json"
+
+
 def build_dns_evidence(conn: sqlite3.Connection, name: str) -> dict[str, Any]:
     rows = conn.execute(
         """
@@ -924,7 +1014,7 @@ def _manifest_artifact_paths(out: Path, *, include_downloads: bool) -> list[str]
     paths = list(DATA_ARTIFACTS)
     if include_downloads:
         paths.extend(("names.json", "names.csv", "topology.sqlite.gz"))
-    for directory in ("names-pages", "dns-evidence"):
+    for directory in ("names-pages", "ip-addresses", "dns-evidence"):
         paths.extend(
             path.relative_to(out).as_posix()
             for path in sorted((out / directory).glob("*/*.json"))
@@ -947,6 +1037,7 @@ def _remove_obsolete_data(out: Path) -> None:
     for relative in ("classes.json", "providers.json", "broken.json", "dane.json", "dane-pages.json"):
         (out / relative).unlink(missing_ok=True)
     _remove_tree(out / "dane-pages", missing_ok=True)
+    _remove_tree(out / "ip-addresses", missing_ok=True)
     _remove_tree(out / "dns-evidence", missing_ok=True)
 
 
