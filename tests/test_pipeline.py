@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from hns_topology import exporter
 from hns_topology.db import connect, set_meta, upsert_live_status
 from hns_topology.exporter import build_faq_answers, build_summary
 from hns_topology.indexer import (
@@ -84,6 +85,7 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
         count = bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
         summary = build_summary(conn)
         answers = build_faq_answers(conn, summary)
+        resource_ip_count = conn.execute("SELECT COUNT(*) FROM resource_ip").fetchone()[0]
         namebase_provider = conn.execute(
             "SELECT ns_pattern, ip_pattern FROM provider_summary WHERE provider_key = ?",
             ("namebase/default",),
@@ -122,6 +124,7 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     assert {item["failure_reason"] for item in summary["broken"]["reasons"]} == set(FAILURE_REASONS)
     assert namebase_provider["ns_pattern"] == "suffix:namebase.io,suffix:parking.namebase.io"
     assert namebase_provider["ip_pattern"] == ""
+    assert resource_ip_count == 5
 
 
 def test_generate_site_writes_requested_artifacts(tmp_path):
@@ -227,6 +230,8 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert delegated_ip_index["row_detail"] == "ip_matches"
     assert delegated_ip_index["columns"] == ["name", "fields"]
     assert delegated_ip_index["field_counts"] == {"GLUE4": 1}
+    assert delegated_ip_index["requires_api"] is False
+    assert delegated_ip_index["static_row_limit"] == 100000
     assert [row["name"] for row in delegated_ip_rows] == ["delegated"]
     assert [row["fields"] for row in delegated_ip_rows] == [["GLUE4"]]
     assert direct_ip_index["ip"] == "203.0.113.10"
@@ -235,6 +240,8 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert direct_ip_index["row_detail"] == "ip_matches"
     assert direct_ip_index["columns"] == ["name", "fields"]
     assert direct_ip_index["field_counts"] == {"SYNTH4": 1}
+    assert direct_ip_index["requires_api"] is False
+    assert direct_ip_index["static_row_limit"] == 100000
     assert [row["name"] for row in direct_ip_rows] == ["direct"]
     assert [row["fields"] for row in direct_ip_rows] == [["SYNTH4"]]
     assert "classes" in summary
@@ -249,6 +256,24 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
 
     public_checks = validate_public_release(public_dir=out)
     assert release_is_valid(public_checks), [check for check in public_checks if not check.ok]
+
+
+def test_generate_site_caps_static_ip_lookup_pages(tmp_path, monkeypatch):
+    monkeypatch.setattr(exporter, "MAX_STATIC_IP_LOOKUP_ROWS", 0)
+    db_path = tmp_path / "topology.sqlite"
+    out = tmp_path / "public"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+        generate_site(conn, db_path=db_path, out_dir=out)
+
+    direct_ip_index = json.loads((out / "data/ip-addresses/203.0.113.10.json").read_text(encoding="utf-8"))
+
+    assert direct_ip_index["row_count"] == 1
+    assert direct_ip_index["page_count"] == 1
+    assert direct_ip_index["path_template"] is None
+    assert direct_ip_index["requires_api"] is True
+    assert not (out / "data/ip-addresses/203.0.113.10/page-1.json").exists()
 
 
 def test_generate_site_can_include_download_artifacts(tmp_path):

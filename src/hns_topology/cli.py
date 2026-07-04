@@ -161,7 +161,7 @@ def build_parser() -> argparse.ArgumentParser:
     site.add_argument("--include-downloads", action="store_true")
     site.set_defaults(func=cmd_generate_site)
 
-    lookup_api = sub.add_parser("serve-lookup", help="Serve exact-name lookup API.")
+    lookup_api = sub.add_parser("serve-lookup", help="Serve lookup API.")
     lookup_api.add_argument("--db", required=True)
     lookup_api.add_argument("--host", default="127.0.0.1")
     lookup_api.add_argument("--port", type=int, default=8787)

@@ -17,6 +17,7 @@ REQUIRED_TABLES = {
     "snapshot_meta",
     "names",
     "resource_summary",
+    "resource_ip",
     "live_status",
     "provider_summary",
     "block_history",

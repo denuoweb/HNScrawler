@@ -5,9 +5,9 @@ Denuo HNS Topology Report is a periodic snapshot system.
 It has two deployment surfaces:
 
 - Indexer VM: temporary or dedicated VM with a large disk for HSD, the compact working database, live checks, and static site generation.
-- Website VM: small public web server that serves generated static files and compressed downloads.
+- Website VM: small public web server that serves generated static files and, when enabled, a read-only lookup API backed by the SQLite snapshot.
 
-The website VM does not need HSD, does not need the HSD datadir, and does not serve a live API.
+The website VM does not need HSD or the HSD datadir. High-cardinality lookup paths should use the SQLite-backed API instead of publishing duplicated static row sets.
 
 ## Data Flow
 
@@ -17,8 +17,8 @@ HSD node
   -> stopped-node JSONL state export
   -> compact SQLite topology DB
   -> optional live DNS/DNSSEC/TLSA/HTTPS checks for promising names
-  -> static JSON/CSV/SQLite.gz exports
-  -> static report site
+  -> static JSON exports and optional SQLite-backed lookup API
+  -> report site
   -> release archive manifest, site tarball, and SQLite backup
   -> rsync to denuowebsite-vm
 ```

@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from .jsonutil import dumps_json
+from .jsonutil import dumps_json, loads_json_list
 from .models import DnsEvidence, LiveStatus, NameRecord, ResourceSummary
 
 SCHEMA_SQL = """
@@ -49,6 +49,14 @@ CREATE TABLE IF NOT EXISTS resource_summary (
   resource_version INTEGER,
   resource_hash TEXT,
   FOREIGN KEY(name) REFERENCES names(name) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS resource_ip (
+  name TEXT NOT NULL,
+  ip TEXT NOT NULL,
+  field TEXT NOT NULL,
+  PRIMARY KEY(name, ip, field),
+  FOREIGN KEY(name) REFERENCES resource_summary(name) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS live_status (
@@ -121,6 +129,7 @@ CREATE TABLE IF NOT EXISTS changed_name_rollbacks (
 CREATE INDEX IF NOT EXISTS idx_names_class ON names(onchain_class);
 CREATE INDEX IF NOT EXISTS idx_names_provider ON names(provider_guess);
 CREATE INDEX IF NOT EXISTS idx_names_expired ON names(expired);
+CREATE INDEX IF NOT EXISTS idx_resource_ip_ip_name ON resource_ip(ip, name);
 CREATE INDEX IF NOT EXISTS idx_live_failure ON live_status(failure_reason);
 CREATE INDEX IF NOT EXISTS idx_live_next_check ON live_status(next_check_at);
 CREATE INDEX IF NOT EXISTS idx_dns_evidence_name_captured ON dns_evidence(name, captured_at DESC);
@@ -158,6 +167,16 @@ RESOURCE_COLUMNS = (
     "resource_version",
     "resource_hash",
 )
+
+RESOURCE_COLUMN_INDEX = {column: index for index, column in enumerate(RESOURCE_COLUMNS)}
+RESOURCE_IP_FIELDS = (
+    ("GLUE4", "glue4"),
+    ("GLUE6", "glue6"),
+    ("SYNTH4", "synth4"),
+    ("SYNTH6", "synth6"),
+)
+RESOURCE_IP_INDEX_META_KEY = "resource_ip_index_version"
+RESOURCE_IP_INDEX_VERSION = "1"
 
 LIVE_COLUMNS = (
     "name",
@@ -276,15 +295,25 @@ def upsert_name_rows(conn: sqlite3.Connection, rows: Iterable[tuple[Any, ...]]) 
 
 
 def upsert_resource(conn: sqlite3.Connection, summary: ResourceSummary) -> None:
-    conn.execute(UPSERT_RESOURCE_SQL, _resource_params(summary))
+    params = _resource_params(summary)
+    conn.execute(UPSERT_RESOURCE_SQL, params)
+    _replace_resource_ip_rows(conn, params)
 
 
 def upsert_resources(conn: sqlite3.Connection, summaries: Iterable[ResourceSummary]) -> None:
-    conn.executemany(UPSERT_RESOURCE_SQL, (_resource_params(summary) for summary in summaries))
+    rows = [_resource_params(summary) for summary in summaries]
+    if not rows:
+        return
+    conn.executemany(UPSERT_RESOURCE_SQL, rows)
+    _replace_resource_ip_rows_batch(conn, rows)
 
 
 def upsert_resource_rows(conn: sqlite3.Connection, rows: Iterable[tuple[Any, ...]]) -> None:
-    conn.executemany(UPSERT_RESOURCE_SQL, rows)
+    row_list = list(rows)
+    if not row_list:
+        return
+    conn.executemany(UPSERT_RESOURCE_SQL, row_list)
+    _replace_resource_ip_rows_batch(conn, row_list)
 
 
 def upsert_live_status(conn: sqlite3.Connection, status: LiveStatus) -> None:
@@ -440,6 +469,7 @@ def rollback_to_height(
             conn.execute("DELETE FROM resource_summary WHERE name = ?", (name,))
         else:
             _upsert_raw_row(conn, "resource_summary", RESOURCE_COLUMNS, previous_resource)
+            _replace_resource_ip_rows_from_mapping(conn, previous_resource)
 
         if previous_live is None:
             conn.execute("DELETE FROM live_status WHERE name = ?", (name,))
@@ -551,6 +581,22 @@ def backfill_resource_flags(conn: sqlite3.Connection) -> int:
     return int(cursor.rowcount if cursor.rowcount is not None else 0)
 
 
+def rebuild_resource_ip_index(conn: sqlite3.Connection) -> None:
+    conn.execute("DELETE FROM resource_ip")
+    for field, column in RESOURCE_IP_FIELDS:
+        conn.execute(
+            f"""
+            INSERT OR IGNORE INTO resource_ip(name, ip, field)
+            SELECT rs.name, lower(trim(CAST(ip_value.value AS TEXT))) AS ip, ?
+            FROM resource_summary rs
+            JOIN json_each(COALESCE(rs.{column}, '[]')) AS ip_value
+            WHERE trim(CAST(ip_value.value AS TEXT)) != ''
+            """,
+            (field,),
+        )
+    set_meta(conn, RESOURCE_IP_INDEX_META_KEY, RESOURCE_IP_INDEX_VERSION)
+
+
 def table_count(conn: sqlite3.Connection, sql: str, params: tuple[Any, ...] = ()) -> int:
     row = conn.execute(sql, params).fetchone()
     return int(row[0] if row else 0)
@@ -593,6 +639,8 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
             "previous_resource_summary": "TEXT",
         },
     )
+    if get_meta(conn, RESOURCE_IP_INDEX_META_KEY) != RESOURCE_IP_INDEX_VERSION:
+        rebuild_resource_ip_index(conn)
 
 
 def _dns_evidence_params(evidence: DnsEvidence) -> tuple[Any, ...]:
@@ -656,6 +704,54 @@ def _resource_params(summary: ResourceSummary) -> tuple[Any, ...]:
         summary.resource_version,
         summary.resource_hash,
     )
+
+
+def _replace_resource_ip_rows_batch(conn: sqlite3.Connection, rows: Iterable[tuple[Any, ...]]) -> None:
+    row_list = list(rows)
+    if not row_list:
+        return
+    conn.executemany(
+        "DELETE FROM resource_ip WHERE name = ?",
+        ((row[RESOURCE_COLUMN_INDEX["name"]],) for row in row_list),
+    )
+    conn.executemany(
+        """
+        INSERT OR IGNORE INTO resource_ip(name, ip, field)
+        VALUES(?, ?, ?)
+        """,
+        _iter_resource_ip_rows(row_list),
+    )
+
+
+def _replace_resource_ip_rows(conn: sqlite3.Connection, row: tuple[Any, ...]) -> None:
+    _replace_resource_ip_rows_batch(conn, [row])
+
+
+def _replace_resource_ip_rows_from_mapping(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
+    values = tuple(row.get(column) for column in RESOURCE_COLUMNS)
+    _replace_resource_ip_rows(conn, values)
+
+
+def _iter_resource_ip_rows(rows: Iterable[tuple[Any, ...]]) -> Iterable[tuple[str, str, str]]:
+    for row in rows:
+        name = str(row[RESOURCE_COLUMN_INDEX["name"]] or "")
+        if not name:
+            continue
+        for field, column in RESOURCE_IP_FIELDS:
+            for value in _json_string_values(row[RESOURCE_COLUMN_INDEX[column]]):
+                ip = str(value).strip().lower()
+                if ip:
+                    yield name, ip, field
+
+
+def _json_string_values(value: Any) -> list[str]:
+    if isinstance(value, str):
+        parsed = loads_json_list(value)
+    elif isinstance(value, list):
+        parsed = value
+    else:
+        parsed = []
+    return [str(item) for item in parsed if item is not None]
 
 
 def _row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:

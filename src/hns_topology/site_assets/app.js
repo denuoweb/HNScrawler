@@ -482,9 +482,38 @@ function isDaneRow(row) {
   return hasDs(row) || Boolean(row.tlsa_status) || Boolean(row.dane_status);
 }
 
-async function lookupIpAddress(query, page) {
-  const ip = normalizeIpQuery(query);
-  if (!ip) return null;
+function normalizeIpLookupResult(result, query, ip, source) {
+  const rows = Array.isArray(result.rows) ? result.rows : [];
+  return {
+    found: result.found !== false,
+    query,
+    ip,
+    rowCount: Number(result.row_count || rows.length || 0),
+    pageCount: Number(result.page_count || 0),
+    pageSize: Number(result.page_size || 0) || 100,
+    page: Number(result.page || 1),
+    rowDetail: result.row_detail || "ip_matches",
+    columns: Array.isArray(result.columns) ? result.columns : null,
+    fieldCounts: result.field_counts || {},
+    requiresApi: Boolean(result.requires_api),
+    source,
+    rows: rows.map((row) => ({...row, matched_ip: row.matched_ip || ip}))
+  };
+}
+
+async function lookupIpAddressFromApi(query, ip, page) {
+  try {
+    const response = await fetch(sitePath(`api/ip?ip=${encodeURIComponent(ip)}&page=${encodeURIComponent(page)}`));
+    if (!response.ok && response.status !== 404) return null;
+    const result = await response.json();
+    if (result.error === "invalid_ip") return null;
+    return normalizeIpLookupResult(result, query, result.ip || ip, "api");
+  } catch (_error) {
+    return null;
+  }
+}
+
+async function lookupIpAddressFromStatic(query, ip, page) {
   if (!ipAddressLookupCache.has(ip)) {
     const lookupPromise = loadJson(`data/ip-addresses/${encodeURIComponent(ip)}.json`)
       .catch(() => null);
@@ -502,6 +531,8 @@ async function lookupIpAddress(query, page) {
       page: 1,
       rowDetail: "ip_matches",
       columns: null,
+      fieldCounts: {},
+      source: "static",
       rows: []
     };
   }
@@ -517,19 +548,25 @@ async function lookupIpAddress(query, page) {
         .then((pageData) => rowsFromPage(pageData, data))
         .catch(() => [])
       : [];
-  return {
-    found: true,
+  return normalizeIpLookupResult(
+    {
+      ...data,
+      found: true,
+      page: safePage,
+      rows
+    },
     query,
     ip,
-    rowCount,
-    pageCount,
-    pageSize,
-    page: safePage,
-    rowDetail: data.row_detail || "full",
-    columns: Array.isArray(data.columns) ? data.columns : null,
-    fieldCounts: data.field_counts || {},
-    rows: rows.map((row) => ({...row, matched_ip: ip}))
-  };
+    "static"
+  );
+}
+
+async function lookupIpAddress(query, page) {
+  const ip = normalizeIpQuery(query);
+  if (!ip) return null;
+  const apiLookup = await lookupIpAddressFromApi(query, ip, page);
+  if (apiLookup) return apiLookup;
+  return lookupIpAddressFromStatic(query, ip, page);
 }
 
 async function lookupExactNameFromApi(query, name) {
@@ -604,8 +641,9 @@ async function applySearchToPageData(pageData, query, options = {}) {
     const exportedCount = Number(allCollection.row_count || 0);
     const totalCount = Number(allCollection.total_count || exportedCount);
     const fullSnapshot = exportedCount === totalCount;
+    const requiresApi = Boolean(ipLookup.requiresApi && ipLookup.source !== "api");
     const rowCount = options.daneOnly ? rows.length : ipLookup.rowCount;
-    const pageCount = options.daneOnly ? (rows.length ? 1 : 0) : ipLookup.pageCount;
+    const pageCount = requiresApi ? 0 : options.daneOnly ? (rows.length ? 1 : 0) : ipLookup.pageCount;
     const page = options.daneOnly ? 1 : ipLookup.page;
     return {
       ...pageData,
@@ -625,6 +663,7 @@ async function applySearchToPageData(pageData, query, options = {}) {
         totalCount: "snapshot",
         exact: false,
         ip: true,
+        ipRequiresApi: requiresApi,
         scoped: false,
         fullSnapshot
       },
@@ -742,8 +781,10 @@ function searchControls({id, label, placeholder, query, search}) {
   const exactScope = search?.fullSnapshot === false ? "exported rows" : "full snapshot";
   const exactSource = search?.exactSource === "static" ? "static exact lookup" : "exact lookup";
   const searchMeta = search
-    ? `<p class="meta search-meta">${search.exact
+      ? `<p class="meta search-meta">${search.exact
       ? `${exactSource[0].toUpperCase()}${exactSource.slice(1)} "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} ${exactScope} row.`
+      : search.ipRequiresApi
+        ? `IP search "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} ${exactScope} ${search.matchedCount === 1 ? "name" : "names"}; listing this shared address requires the lookup API.`
       : search.ip
         ? `IP search "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} ${exactScope} ${search.matchedCount === 1 ? "name" : "names"}.`
         : search.scoped

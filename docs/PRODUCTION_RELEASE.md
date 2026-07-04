@@ -32,7 +32,7 @@
 - Provider rules version is committed.
 - Class counts are non-negative and active plus expired equals total.
 - Public `data/manifest.json` verifies every generated data artifact by byte size and SHA-256.
-- Public `topology.sqlite.gz` opens after decompression.
+- If `topology.sqlite.gz` is included, it opens after decompression.
 - `hns-topology validate-release` passes against the DB and generated public directory.
 - `hns-topology archive-release` or `scripts/archive-release.sh` writes a manifest, site tarball, and SQLite gzip backup.
 - `hns-topology validate-archive --manifest <manifest>` passes before moving archive artifacts to backup storage.
@@ -49,7 +49,7 @@
 
 ## Website Gate
 
-- Website VM receives only static `public/` artifacts.
+- Website VM receives bounded static `public/` artifacts, plus a read-only SQLite snapshot when the lookup API is enabled.
 - Generated files fit comfortably within available disk.
 - HTTPS is configured.
 - DANE/HNS deployment checklist in `docs/DANE_SITE.md` is complete before claiming the report site is DANE-compatible.

@@ -28,6 +28,7 @@ DATA_ARTIFACTS = (
 
 PAGE_SIZE = 1000
 DETAILED_NAME_COLLECTION_ROW_LIMIT = 100_000
+MAX_STATIC_IP_LOOKUP_ROWS = 100_000
 FAILURE_REASON_FILTER_PREFIX = "failure_reason:"
 PROVIDER_FILTER_PREFIX = "provider:"
 PROVIDER_TYPE_FILTER_PREFIX = "provider_type:"
@@ -562,104 +563,157 @@ def write_ip_address_names(conn: sqlite3.Connection, out: Path, *, limit: int) -
     if limit <= 0:
         return 0
     base_dir.mkdir(parents=True, exist_ok=True)
-    cursor = conn.execute(
-        """
-        WITH exported_names AS (
-          SELECT n.name
-          FROM names n
-          JOIN resource_summary rs ON rs.name = n.name
-          ORDER BY n.name
-          LIMIT ?
-        ),
-        ip_records AS (
-          SELECT rs.name, lower(trim(CAST(ip_value.value AS TEXT))) AS ip, 'GLUE4' AS field
-          FROM resource_summary rs
-          JOIN exported_names en ON en.name = rs.name
-          JOIN json_each(COALESCE(rs.glue4, '[]')) AS ip_value
-          WHERE trim(CAST(ip_value.value AS TEXT)) != ''
-          UNION ALL
-          SELECT rs.name, lower(trim(CAST(ip_value.value AS TEXT))) AS ip, 'GLUE6' AS field
-          FROM resource_summary rs
-          JOIN exported_names en ON en.name = rs.name
-          JOIN json_each(COALESCE(rs.glue6, '[]')) AS ip_value
-          WHERE trim(CAST(ip_value.value AS TEXT)) != ''
-          UNION ALL
-          SELECT rs.name, lower(trim(CAST(ip_value.value AS TEXT))) AS ip, 'SYNTH4' AS field
-          FROM resource_summary rs
-          JOIN exported_names en ON en.name = rs.name
-          JOIN json_each(COALESCE(rs.synth4, '[]')) AS ip_value
-          WHERE trim(CAST(ip_value.value AS TEXT)) != ''
-          UNION ALL
-          SELECT rs.name, lower(trim(CAST(ip_value.value AS TEXT))) AS ip, 'SYNTH6' AS field
-          FROM resource_summary rs
-          JOIN exported_names en ON en.name = rs.name
-          JOIN json_each(COALESCE(rs.synth6, '[]')) AS ip_value
-          WHERE trim(CAST(ip_value.value AS TEXT)) != ''
-        ),
-        ip_names AS (
-          SELECT ip, name, group_concat(DISTINCT field) AS fields
-          FROM ip_records
-          WHERE ip != ''
-          GROUP BY ip, name
-        )
-        SELECT ip, name, fields
-        FROM ip_names
-        ORDER BY ip, name
-        """,
-        (limit,),
-    )
     row_detail = "ip_matches"
     output_keys = ["name", "fields"]
-    current_ip: str | None = None
-    current_rows: list[dict[str, Any]] = []
-    current_row_count = 0
-    current_field_counts: dict[str, int] = {}
-    current_page = 1
     file_count = 0
-    for row in cursor:
-        item = dict(row)
-        ip = item.pop("ip", "")
-        if current_ip is None:
-            current_ip = ip
-        if ip != current_ip:
-            _finish_ip_address_pages(
+    total_names = table_count(conn, "SELECT COUNT(*) FROM names")
+    for item in _ip_address_counts(conn, limit=limit, total_names=total_names):
+        ip = item["ip"]
+        row_count = int(item["row_count"] or 0)
+        field_counts = _ip_address_field_counts(conn, ip, limit=limit, total_names=total_names)
+        if row_count > MAX_STATIC_IP_LOOKUP_ROWS:
+            _write_ip_address_index(
                 base_dir,
-                current_ip,
-                rows=current_rows,
-                row_count=current_row_count,
-                page=current_page,
+                ip,
+                row_count=row_count,
                 row_detail=row_detail,
                 output_keys=output_keys,
-                field_counts=current_field_counts,
+                field_counts=field_counts,
+                requires_api=True,
             )
             file_count += 1
-            current_ip = ip
-            current_rows = []
-            current_row_count = 0
-            current_field_counts = {}
-            current_page = 1
-        fields = sorted({field for field in str(item.pop("fields") or "").split(",") if field})
-        for field in fields:
-            current_field_counts[field] = current_field_counts.get(field, 0) + 1
-        current_rows.append({"name": item["name"], "fields": fields})
-        current_row_count += 1
-        if len(current_rows) >= PAGE_SIZE:
-            _write_ip_address_page(base_dir, current_ip, current_page, current_rows, output_keys=output_keys)
-            current_rows = []
-            current_page += 1
-    if current_ip is not None:
+            continue
+
+        current_rows: list[dict[str, Any]] = []
+        current_page = 1
+        for row in _ip_address_rows(conn, ip, limit=limit, total_names=total_names):
+            fields = sorted({field for field in str(row["fields"] or "").split(",") if field})
+            current_rows.append({"name": row["name"], "fields": fields})
+            if len(current_rows) >= PAGE_SIZE:
+                _write_ip_address_page(base_dir, ip, current_page, current_rows, output_keys=output_keys)
+                current_rows = []
+                current_page += 1
         _finish_ip_address_pages(
             base_dir,
-            current_ip,
+            ip,
             rows=current_rows,
-            row_count=current_row_count,
+            row_count=row_count,
             page=current_page,
             row_detail=row_detail,
             output_keys=output_keys,
-            field_counts=current_field_counts,
+            field_counts=field_counts,
         )
         file_count += 1
     return file_count
+
+
+def _ip_address_counts(
+    conn: sqlite3.Connection,
+    *,
+    limit: int,
+    total_names: int,
+) -> list[sqlite3.Row]:
+    if limit >= total_names:
+        return conn.execute(
+            """
+            SELECT ip, COUNT(DISTINCT name) AS row_count
+            FROM resource_ip
+            GROUP BY ip
+            ORDER BY ip
+            """
+        ).fetchall()
+    return conn.execute(
+        """
+        WITH exported_names AS (
+          SELECT name
+          FROM names
+          ORDER BY name
+          LIMIT ?
+        )
+        SELECT ri.ip, COUNT(DISTINCT ri.name) AS row_count
+        FROM resource_ip ri
+        JOIN exported_names en ON en.name = ri.name
+        GROUP BY ri.ip
+        ORDER BY ri.ip
+        """,
+        (limit,),
+    ).fetchall()
+
+
+def _ip_address_field_counts(
+    conn: sqlite3.Connection,
+    ip: str,
+    *,
+    limit: int,
+    total_names: int,
+) -> dict[str, int]:
+    if limit >= total_names:
+        rows = conn.execute(
+            """
+            SELECT field, COUNT(DISTINCT name) AS row_count
+            FROM resource_ip
+            WHERE ip = ?
+            GROUP BY field
+            ORDER BY field
+            """,
+            (ip,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            WITH exported_names AS (
+              SELECT name
+              FROM names
+              ORDER BY name
+              LIMIT ?
+            )
+            SELECT ri.field, COUNT(DISTINCT ri.name) AS row_count
+            FROM resource_ip ri
+            JOIN exported_names en ON en.name = ri.name
+            WHERE ri.ip = ?
+            GROUP BY ri.field
+            ORDER BY ri.field
+            """,
+            (limit, ip),
+        ).fetchall()
+    return {row["field"]: int(row["row_count"] or 0) for row in rows}
+
+
+def _ip_address_rows(
+    conn: sqlite3.Connection,
+    ip: str,
+    *,
+    limit: int,
+    total_names: int,
+) -> list[sqlite3.Row]:
+    if limit >= total_names:
+        return conn.execute(
+            """
+            SELECT name, group_concat(field) AS fields
+            FROM resource_ip
+            WHERE ip = ?
+            GROUP BY name
+            ORDER BY name
+            """,
+            (ip,),
+        ).fetchall()
+    return conn.execute(
+        """
+        WITH exported_names AS (
+          SELECT name
+          FROM names
+          ORDER BY name
+          LIMIT ?
+        )
+        SELECT ri.name, group_concat(ri.field) AS fields
+        FROM resource_ip ri
+        JOIN exported_names en ON en.name = ri.name
+        WHERE ri.ip = ?
+        GROUP BY ri.name
+        ORDER BY ri.name
+        """,
+        (limit, ip),
+    ).fetchall()
 
 
 def _finish_ip_address_pages(
@@ -675,20 +729,42 @@ def _finish_ip_address_pages(
 ) -> None:
     if rows:
         _write_ip_address_page(base_dir, ip, page, rows, output_keys=output_keys)
-    page_count = math.ceil(row_count / PAGE_SIZE) if row_count else 0
-    write_json(
-        base_dir / _ip_address_filename(ip),
-        {
-            "ip": ip,
-            "row_count": row_count,
-            "page_size": PAGE_SIZE,
-            "page_count": page_count,
-            "path_template": f"ip-addresses/{_ip_address_basename(ip)}/page-{{page}}.json",
-            "row_detail": row_detail,
-            "columns": output_keys,
-            "field_counts": dict(sorted(field_counts.items())),
-        },
+    _write_ip_address_index(
+        base_dir,
+        ip,
+        row_count=row_count,
+        row_detail=row_detail,
+        output_keys=output_keys,
+        field_counts=field_counts,
     )
+
+
+def _write_ip_address_index(
+    base_dir: Path,
+    ip: str,
+    *,
+    row_count: int,
+    row_detail: str,
+    output_keys: list[str],
+    field_counts: dict[str, int],
+    requires_api: bool = False,
+) -> None:
+    page_count = math.ceil(row_count / PAGE_SIZE) if row_count else 0
+    payload = {
+        "ip": ip,
+        "row_count": row_count,
+        "page_size": PAGE_SIZE,
+        "page_count": page_count,
+        "path_template": None
+        if requires_api
+        else f"ip-addresses/{_ip_address_basename(ip)}/page-{{page}}.json",
+        "row_detail": row_detail,
+        "columns": output_keys,
+        "field_counts": dict(sorted(field_counts.items())),
+        "requires_api": requires_api,
+        "static_row_limit": MAX_STATIC_IP_LOOKUP_ROWS,
+    }
+    write_json(base_dir / _ip_address_filename(ip), payload)
 
 
 def _write_ip_address_page(
@@ -701,7 +777,7 @@ def _write_ip_address_page(
 ) -> None:
     page_dir = base_dir / _ip_address_basename(ip)
     page_dir.mkdir(parents=True, exist_ok=True)
-    write_json(
+    write_compact_json(
         page_dir / f"page-{page}.json",
         {
             "page": page,
@@ -820,7 +896,7 @@ def _write_name_collection(
         page_payload: dict[str, Any] = {"page": 1, "rows": []}
         if row_detail == "compact":
             page_payload["columns"] = output_keys
-        write_json(collection_dir / "page-1.json", page_payload)
+        write_compact_json(collection_dir / "page-1.json", page_payload)
     else:
         cursor = conn.execute(
             f"""
@@ -848,7 +924,7 @@ def _write_name_collection(
             if row_detail == "compact":
                 page_payload["columns"] = output_keys
                 page_payload["rows"] = [[row.get(key) for key in output_keys] for row in rows]
-            write_json(collection_dir / f"page-{page}.json", page_payload)
+            write_compact_json(collection_dir / f"page-{page}.json", page_payload)
             page += 1
     _log_export(f"finished names-pages/{key}")
     return {
@@ -1040,6 +1116,10 @@ def gzip_sqlite(db_path: str | Path, out_path: Path) -> None:
 
 def write_json(path: Path, value: Any) -> None:
     path.write_text(dumps_pretty(value), encoding="utf-8")
+
+
+def write_compact_json(path: Path, value: Any) -> None:
+    path.write_text(dumps_json(value), encoding="utf-8")
 
 
 def build_manifest(

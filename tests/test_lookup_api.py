@@ -2,7 +2,7 @@ from pathlib import Path
 
 from hns_topology.db import connect
 from hns_topology.indexer import bootstrap_from_fixture
-from hns_topology.lookup_api import lookup_name, normalize_name
+from hns_topology.lookup_api import lookup_ip_address, lookup_name, normalize_ip, normalize_name
 from hns_topology.provider_rules import ProviderRules
 
 FIXTURE = Path("tests/fixtures/sample_hsd_names.json")
@@ -12,6 +12,12 @@ def test_normalize_name_accepts_common_hns_inputs():
     assert normalize_name("denuoweb/") == "denuoweb"
     assert normalize_name("hns://DenuoWeb/") == "denuoweb"
     assert normalize_name("https://denuoweb/path") == "denuoweb"
+
+
+def test_normalize_ip_accepts_common_ip_literals():
+    assert normalize_ip("044.231.006.183") == "44.231.6.183"
+    assert normalize_ip("2001:DB8::1") == "2001:db8::1"
+    assert normalize_ip("not an ip") == ""
 
 
 def test_lookup_name_returns_full_snapshot_row(tmp_path):
@@ -39,3 +45,21 @@ def test_lookup_name_rejects_invalid_names(tmp_path):
 
     assert result["found"] is False
     assert result["error"] == "invalid_name"
+
+
+def test_lookup_ip_address_returns_paginated_matches(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+
+    result = lookup_ip_address(db_path, "203.0.113.10", page=1)
+
+    assert result["found"] is True
+    assert result["ip"] == "203.0.113.10"
+    assert result["row_count"] == 1
+    assert result["page_count"] == 1
+    assert result["row_detail"] == "ip_matches"
+    assert result["columns"] == ["name", "fields"]
+    assert result["field_counts"] == {"SYNTH4": 1}
+    assert result["rows"] == [{"name": "direct", "fields": ["SYNTH4"], "matched_ip": "203.0.113.10"}]
