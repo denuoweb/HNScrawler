@@ -11,10 +11,10 @@ dist/
 build/
 data/
 public/
+logs/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
 *.sqlite.gz
 .env
 .DS_Store
-
