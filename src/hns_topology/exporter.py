@@ -90,6 +90,23 @@ FAQ_KEYS = (
     "stale_tlsa_only",
 )
 
+EXPORTED_NAME_FILTERS = (
+    "direct_ip_records",
+    "delegated_names",
+    "default_provider_names",
+    "likely_websites",
+    "strict_hns_ready",
+    "strict_hns_working",
+    "needs_fix",
+    "doh_fallback_required",
+    "ds_records",
+    "dnssec_candidates",
+    "needs_dane",
+    "dane_working",
+    "stale_tlsa_only",
+    "missing_glue_only",
+)
+
 
 def export_all(
     conn: sqlite3.Connection,
@@ -1061,12 +1078,7 @@ def _write_name_postings_collection(
         f"writing names-pages/{key} postings rows={row_count} total={total_count} "
         f"pages={page_count} truncated={total_count > row_count}"
     )
-    if row_count == 0:
-        write_compact_json(
-            collection_dir / "page-1.json",
-            {"page": 1, "row_encoding": "ordinal", "rows": []},
-        )
-    else:
+    if row_count > 0:
         cursor = conn.execute(
             f"""
             SELECT eno.ordinal
@@ -1111,6 +1123,19 @@ def _collection_dir_name(key: str) -> str:
 
 
 def _name_collection_keys(conn: sqlite3.Connection) -> list[str]:
+    failure_reasons = [
+        row["failure_reason"]
+        for row in conn.execute(
+            """
+            SELECT failure_reason
+            FROM live_status
+            WHERE failure_reason IS NOT NULL
+            GROUP BY failure_reason
+            ORDER BY failure_reason
+            """
+        )
+        if row["failure_reason"]
+    ]
     provider_keys = [
         row["provider_key"]
         for row in conn.execute(
@@ -1135,8 +1160,8 @@ def _name_collection_keys(conn: sqlite3.Connection) -> list[str]:
     ]
     return [
         "all",
-        *NAME_FILTERS,
-        *(f"{FAILURE_REASON_FILTER_PREFIX}{reason}" for reason in FAILURE_REASONS),
+        *EXPORTED_NAME_FILTERS,
+        *(f"{FAILURE_REASON_FILTER_PREFIX}{reason}" for reason in failure_reasons),
         *(f"{PROVIDER_FILTER_PREFIX}{provider_key}" for provider_key in provider_keys),
         *(f"{PROVIDER_TYPE_FILTER_PREFIX}{provider_type}" for provider_type in provider_types),
     ]

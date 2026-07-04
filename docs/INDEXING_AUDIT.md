@@ -41,7 +41,7 @@ Site generation now writes a complete release tree into a staging directory and 
 - Use one canonical sorted Names row store, with filter/provider/status postings into that store.
 - Keep high-cardinality UI views paginated and decode only the current page in the browser.
 
-Names filters now use that row-store pattern: `names-pages/all` is the canonical sorted row store, while filter, provider, provider-type, and failure collections are ordinal postings into that store. The browser resolves only the active postings page back to canonical rows.
+Names filters now use that row-store pattern: `names-pages/all` is the canonical sorted row store, while visible filter, provider, provider-type, and nonzero failure collections are ordinal postings into that store. The browser resolves only the active postings page back to canonical rows. Hidden legacy filters and zero-row failure-reason postings are not exported.
 
 If detailed diagnostics must show every resource record at production scale, store full resource detail once per canonical name row or in sharded on-demand detail files, not once per filter.
 

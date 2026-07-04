@@ -230,7 +230,9 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert names_pages["collections"]["all"]["row_source"] == "rows"
     assert names_pages["row_store"]["path_template"] == names_pages["collections"]["all"]["path_template"]
     assert names_page_names == sorted(names_page_names)
-    assert names_pages["collections"]["dane_rows"]["row_count"] == 1
+    assert "dane_rows" not in names_pages["collections"]
+    assert "missing_glue" not in names_pages["collections"]
+    assert "stale_tlsa" not in names_pages["collections"]
     assert names_pages["collections"]["ds_records"]["row_count"] == 1
     assert names_pages["collections"]["strict_hns_ready"]["row_count"] == 3
     assert names_pages["collections"]["needs_dane"]["row_count"] == 1

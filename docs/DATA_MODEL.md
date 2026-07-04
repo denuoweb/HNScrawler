@@ -166,7 +166,7 @@ There is no standalone DANE row exporter in the production path. DANE-specific v
 
 `summary.broken` contains failure reason counts for the Names filter dropdown, not duplicated example rows. Example names for a failure reason come from the filtered Names collection.
 
-Names collections are ordered by normalized name. The `all` collection is the canonical sorted row store. Other Names filters, provider queues, provider-type queues, and failure queues are compact ordinal postings into that row store rather than duplicate row payloads. The browser resolves only the current postings page back to canonical rows. Static exact-name lookup binary-searches the sorted `all` collection by fetching only a small number of page files when `/api/name` is unavailable.
+Names collections are ordered by normalized name. The `all` collection is the canonical sorted row store. Visible Names filters, provider queues, provider-type queues, and nonzero failure queues are compact ordinal postings into that row store rather than duplicate row payloads. The browser resolves only the current postings page back to canonical rows. Static exact-name lookup binary-searches the sorted `all` collection by fetching only a small number of page files when `/api/name` is unavailable.
 
 Compact canonical row arrays still include first NS/GLUE/SYNTH scalar fields plus resource hash, size, version, index height, and a DNS evidence path for DANE generator handoff links and diagnostics. Full resource arrays are embedded only when the collection is small enough to use full rows.
 
