@@ -185,6 +185,13 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     providers = summary["providers"]
     names_pages = json.loads((out / "data/names-pages.json").read_text(encoding="utf-8"))
     names_page_rows = json.loads((out / "data/names-pages/all/page-1.json").read_text(encoding="utf-8"))["rows"]
+    provider_postings_page = json.loads(
+        (
+            out
+            / "data"
+            / names_pages["collections"]["provider:namebase/default"]["path_template"].replace("{page}", "1")
+        ).read_text(encoding="utf-8")
+    )
     delegated_ip_index = json.loads((out / "data/ip-addresses/198.51.100.2.json").read_text(encoding="utf-8"))
     direct_ip_index = json.loads((out / "data/ip-addresses/203.0.113.10.json").read_text(encoding="utf-8"))
     delegated_ip_page = json.loads(
@@ -220,6 +227,8 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert "topology.sqlite.gz" not in manifest_artifacts
     assert names_pages["collections"]["all"]["row_count"] == 9
     assert names_pages["collections"]["all"]["page_count"] == 1
+    assert names_pages["collections"]["all"]["row_source"] == "rows"
+    assert names_pages["row_store"]["path_template"] == names_pages["collections"]["all"]["path_template"]
     assert names_page_names == sorted(names_page_names)
     assert names_pages["collections"]["dane_rows"]["row_count"] == 1
     assert names_pages["collections"]["ds_records"]["row_count"] == 1
@@ -227,6 +236,9 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert names_pages["collections"]["needs_dane"]["row_count"] == 1
     assert names_pages["collections"]["needs_fix"]["row_count"] == 2
     assert names_pages["collections"]["provider:namebase/default"]["row_count"] == 1
+    assert names_pages["collections"]["provider:namebase/default"]["row_source"] == "postings"
+    assert provider_postings_page["row_encoding"] == "ordinal"
+    assert provider_postings_page["rows"] == [6]
     assert "namebase__slash__default" in names_pages["collections"]["provider:namebase/default"]["path_template"]
     assert (out / "data" / names_pages["collections"]["provider:namebase/default"]["path_template"].replace("{page}", "1")).exists()
     assert "tlsa_status" in names_page_rows[0]

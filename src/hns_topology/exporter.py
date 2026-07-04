@@ -39,21 +39,17 @@ IP_FIELD_BITS = {
 }
 
 NAME_FILTERS = {
-    "direct_ip_records": "json_array_length(rs.synth4) > 0 OR json_array_length(rs.synth6) > 0",
-    "delegated_names": "json_array_length(rs.ns_names) > 0",
+    "direct_ip_records": "rs.has_synth = 1",
+    "delegated_names": "rs.has_ns = 1",
     "default_provider_names": "ps.provider_type = 'default_parking'",
     "ds_records": "rs.has_ds = 1",
-    "dnssec_candidates": "rs.has_ds = 1 AND json_array_length(rs.ns_names) > 0",
+    "dnssec_candidates": "rs.has_ds = 1 AND rs.has_ns = 1",
     "dane_rows": "rs.has_ds = 1 OR ls.tlsa_status IS NOT NULL OR ls.dane_status IS NOT NULL",
     "strict_hns_ready": (
-        "json_array_length(rs.synth4) > 0 OR json_array_length(rs.synth6) > 0 OR "
-        "(json_array_length(rs.ns_names) > 0 AND "
-        "(json_array_length(rs.glue4) > 0 OR json_array_length(rs.glue6) > 0))"
+        "rs.has_synth = 1 OR (rs.has_ns = 1 AND rs.has_glue = 1)"
     ),
     "likely_websites": (
-        "json_array_length(rs.synth4) > 0 OR json_array_length(rs.synth6) > 0 OR "
-        "json_array_length(rs.glue4) > 0 OR json_array_length(rs.glue6) > 0 OR "
-        "(rs.has_ds = 1 AND json_array_length(rs.ns_names) > 0)"
+        "rs.has_synth = 1 OR rs.has_glue = 1 OR (rs.has_ds = 1 AND rs.has_ns = 1)"
     ),
     "strict_hns_working": "ls.strict_hns_status = 'working'",
     "doh_fallback_required": "ls.doh_fallback_status IN ('required', 'doh_fallback_only')",
@@ -65,15 +61,13 @@ NAME_FILTERS = {
     "dane_working": "ls.dane_status = 'valid'",
     "needs_fix": (
         "ls.failure_reason IS NOT NULL OR "
-        "(json_array_length(rs.ns_names) > 0 AND json_array_length(rs.glue4) = 0 "
-        "AND json_array_length(rs.glue6) = 0 "
-        "AND COALESCE(ls.failure_reason, 'missing_glue') = 'missing_glue')"
+        "(rs.has_ns = 1 AND rs.has_glue = 0 AND "
+        "COALESCE(ls.failure_reason, 'missing_glue') = 'missing_glue')"
     ),
     "missing_glue": "ls.failure_reason = 'missing_glue'",
     "missing_glue_only": (
-        "json_array_length(rs.ns_names) > 0 AND json_array_length(rs.glue4) = 0 "
-        "AND json_array_length(rs.glue6) = 0 "
-        "AND COALESCE(ls.failure_reason, 'missing_glue') = 'missing_glue'"
+        "rs.has_ns = 1 AND rs.has_glue = 0 AND "
+        "COALESCE(ls.failure_reason, 'missing_glue') = 'missing_glue'"
     ),
     "stale_tlsa": "ls.failure_reason = 'stale_tlsa_spki_mismatch'",
     "stale_tlsa_only": "ls.failure_reason = 'stale_tlsa_spki_mismatch'",
@@ -882,53 +876,106 @@ def _write_names_pages_streamed(
         _remove_tree(base_dir)
     base_dir.mkdir(parents=True, exist_ok=True)
 
-    collections: dict[str, Any] = {}
-    keys = _name_collection_keys(conn)
-    _log_export(f"writing names-pages collections={len(keys)} page_size={page_size} limit={limit}")
-    for key in keys:
-        collections[key] = _write_name_collection(conn, base_dir, key, limit=limit, page_size=page_size)
-    _log_export("finished names-pages collections")
-    return {
-        "page_size": page_size,
-        "limit": limit,
-        "collections": collections,
-    }
+    total_names = table_count(conn, "SELECT COUNT(*) FROM names")
+    exported_names = min(total_names, max(0, limit))
+    row_detail = "full" if total_names <= DETAILED_NAME_COLLECTION_ROW_LIMIT else "compact"
+    output_keys = _name_output_keys(row_detail=row_detail)
+    _prepare_export_name_ordinals(conn, exported_names)
+    try:
+        collections: dict[str, Any] = {}
+        keys = _name_collection_keys(conn)
+        _log_export(
+            f"writing names-pages row_store rows={exported_names} total={total_names} "
+            f"row_detail={row_detail}"
+        )
+        collections["all"] = _write_name_row_store(
+            conn,
+            base_dir,
+            row_count=exported_names,
+            total_count=total_names,
+            row_detail=row_detail,
+            page_size=page_size,
+        )
+        _log_export(f"writing names-pages postings collections={len(keys) - 1}")
+        for key in keys:
+            if key == "all":
+                continue
+            collections[key] = _write_name_postings_collection(
+                conn,
+                base_dir,
+                key,
+                row_detail=row_detail,
+                page_size=page_size,
+            )
+        _log_export("finished names-pages collections")
+        return {
+            "page_size": page_size,
+            "limit": limit,
+            "row_store": {
+                "path_template": collections["all"]["path_template"],
+                "row_detail": row_detail,
+                "columns": output_keys if row_detail == "compact" else None,
+                "page_size": page_size,
+                "row_count": exported_names,
+                "page_count": collections["all"]["page_count"],
+            },
+            "collections": collections,
+        }
+    finally:
+        conn.execute("DROP TABLE IF EXISTS temp.export_name_ordinals")
 
 
-def _write_name_collection(
+def _prepare_export_name_ordinals(conn: sqlite3.Connection, limit: int) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp.export_name_ordinals")
+    conn.execute(
+        """
+        CREATE TEMP TABLE export_name_ordinals(
+          name TEXT PRIMARY KEY,
+          ordinal INTEGER NOT NULL
+        ) WITHOUT ROWID
+        """
+    )
+    if limit <= 0:
+        return
+    conn.execute(
+        """
+        INSERT INTO export_name_ordinals(name, ordinal)
+        SELECT name, ordinal
+        FROM (
+          SELECT
+            name,
+            row_number() OVER (ORDER BY name) - 1 AS ordinal
+          FROM names
+          ORDER BY name
+          LIMIT ?
+        )
+        """,
+        (limit,),
+    )
+
+
+def _write_name_row_store(
     conn: sqlite3.Connection,
     base_dir: Path,
-    key: str,
     *,
-    limit: int,
+    row_count: int,
+    total_count: int,
+    row_detail: str,
     page_size: int,
 ) -> dict[str, Any]:
+    key = "all"
     collection_dir = base_dir / _collection_dir_name(key)
     collection_dir.mkdir(parents=True, exist_ok=True)
     from_sql = _name_rows_from_sql()
-    where, params = _name_collection_where(key)
-    total_count = int(
-        conn.execute(
-            f"""
-            SELECT COUNT(*)
-            {from_sql}
-            WHERE {where}
-            """,
-            params,
-        ).fetchone()[0]
-        or 0
-    )
-    count = min(total_count, max(0, limit))
-    page_count = max(1, math.ceil(count / page_size)) if count else 0
-    row_detail = "full" if total_count <= DETAILED_NAME_COLLECTION_ROW_LIMIT else "compact"
+    page_count = max(1, math.ceil(row_count / page_size)) if row_count else 0
     _log_export(
-        f"writing names-pages/{key} rows={count} total={total_count} pages={page_count} "
-        f"truncated={total_count > count} row_detail={row_detail}"
+        f"writing names-pages/{key} rows={row_count} total={total_count} pages={page_count} "
+        f"truncated={total_count > row_count} row_detail={row_detail}"
     )
     row_columns = _name_row_columns(row_detail=row_detail)
     json_columns = _name_json_columns(row_detail=row_detail)
     output_keys = _name_output_keys(row_detail=row_detail)
-    if count == 0:
+    if row_count == 0:
         page_payload: dict[str, Any] = {"page": 1, "rows": []}
         if row_detail == "compact":
             page_payload["columns"] = output_keys
@@ -938,11 +985,9 @@ def _write_name_collection(
             f"""
             SELECT {row_columns}
             {from_sql}
-            WHERE {where}
+            JOIN export_name_ordinals eno ON eno.name = n.name
             ORDER BY n.name
-            LIMIT ?
-            """,
-            (*params, count),
+            """
         )
         page = 1
         while True:
@@ -964,12 +1009,98 @@ def _write_name_collection(
             page += 1
     _log_export(f"finished names-pages/{key}")
     return {
-        "row_count": count,
+        "row_count": row_count,
         "total_count": total_count,
         "page_size": page_size,
         "page_count": page_count,
         "path_template": f"{base_dir.name}/{_collection_dir_name(key)}/page-{{page}}.json",
-        "truncated": total_count > count,
+        "truncated": total_count > row_count,
+        "row_source": "rows",
+        "row_detail": row_detail,
+        "columns": output_keys if row_detail == "compact" else None,
+    }
+
+
+def _write_name_postings_collection(
+    conn: sqlite3.Connection,
+    base_dir: Path,
+    key: str,
+    *,
+    row_detail: str,
+    page_size: int,
+) -> dict[str, Any]:
+    collection_dir = base_dir / _collection_dir_name(key)
+    collection_dir.mkdir(parents=True, exist_ok=True)
+    from_sql = _name_rows_from_sql()
+    where, params = _name_collection_where(key)
+    total_count = int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*)
+            {from_sql}
+            WHERE {where}
+            """,
+            params,
+        ).fetchone()[0]
+        or 0
+    )
+    row_count = int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*)
+            {from_sql}
+            JOIN export_name_ordinals eno ON eno.name = n.name
+            WHERE {where}
+            """,
+            params,
+        ).fetchone()[0]
+        or 0
+    )
+    page_count = max(1, math.ceil(row_count / page_size)) if row_count else 0
+    _log_export(
+        f"writing names-pages/{key} postings rows={row_count} total={total_count} "
+        f"pages={page_count} truncated={total_count > row_count}"
+    )
+    if row_count == 0:
+        write_compact_json(
+            collection_dir / "page-1.json",
+            {"page": 1, "row_encoding": "ordinal", "rows": []},
+        )
+    else:
+        cursor = conn.execute(
+            f"""
+            SELECT eno.ordinal
+            {from_sql}
+            JOIN export_name_ordinals eno ON eno.name = n.name
+            WHERE {where}
+            ORDER BY n.name
+            """,
+            params,
+        )
+        page = 1
+        while True:
+            page_rows = cursor.fetchmany(page_size)
+            if not page_rows:
+                break
+            write_compact_json(
+                collection_dir / f"page-{page}.json",
+                {
+                    "page": page,
+                    "row_encoding": "ordinal",
+                    "rows": [int(row["ordinal"]) for row in page_rows],
+                },
+            )
+            page += 1
+    _log_export(f"finished names-pages/{key}")
+    output_keys = _name_output_keys(row_detail=row_detail)
+    return {
+        "row_count": row_count,
+        "total_count": total_count,
+        "page_size": page_size,
+        "page_count": page_count,
+        "path_template": f"{base_dir.name}/{_collection_dir_name(key)}/page-{{page}}.json",
+        "truncated": total_count > row_count,
+        "row_source": "postings",
         "row_detail": row_detail,
         "columns": output_keys if row_detail == "compact" else None,
     }

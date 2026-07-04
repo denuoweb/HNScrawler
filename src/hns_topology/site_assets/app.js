@@ -333,9 +333,14 @@ function liveCheckMeta(summary) {
 
 function collectionForFilter(index, filter) {
   if (filter && index.collections && index.collections[filter]) {
-    return {key: filter, collection: index.collections[filter]};
+    return {key: filter, collection: collectionWithRowStore(index, index.collections[filter])};
   }
-  return {key: "all", collection: index.collections.all};
+  return {key: "all", collection: collectionWithRowStore(index, index.collections.all)};
+}
+
+function collectionWithRowStore(index, collection) {
+  if (!collection || collection.row_source !== "postings") return collection;
+  return {...collection, row_store: index.row_store || index.collections?.all};
 }
 
 function pagePath(pathTemplate, page) {
@@ -344,6 +349,9 @@ function pagePath(pathTemplate, page) {
 
 function rowsFromPage(data, collection = {}) {
   const rows = Array.isArray(data.rows) ? data.rows : [];
+  if (data.row_encoding === "ordinal") {
+    return rows.map((ordinal) => ({ordinal: Number(ordinal)}));
+  }
   if (data.row_encoding === "name") {
     const mask = Number(data.field_mask ?? collection.default_field_mask ?? 0);
     const fields = ipFieldsFromMask(mask, collection.field_map);
@@ -413,12 +421,44 @@ async function loadPaginatedRows(indexPath, filter) {
   const data = collection.page_count > 0
     ? await loadPageJson(pagePath(collection.path_template, page))
     : {rows: []};
+  const rows = await rowsFromCollectionPage(data, collection);
   return {
     index,
     collection,
     page,
-    rows: rowsFromPage(data, collection)
+    rows
   };
+}
+
+async function rowsFromCollectionPage(data, collection = {}) {
+  if (collection.row_source === "postings" || data.row_encoding === "ordinal") {
+    const ordinals = rowsFromPage(data, collection)
+      .map((row) => Number(row.ordinal))
+      .filter((ordinal) => Number.isInteger(ordinal) && ordinal >= 0);
+    return loadRowsByOrdinals(collection.row_store, ordinals);
+  }
+  return rowsFromPage(data, collection);
+}
+
+async function loadRowsByOrdinals(rowStore, ordinals) {
+  if (!rowStore || !ordinals.length) return [];
+  const pageSize = Number(rowStore.page_size || 0) || 1000;
+  const byPage = new Map();
+  ordinals.forEach((ordinal, index) => {
+    const page = Math.floor(ordinal / pageSize) + 1;
+    const offset = ordinal % pageSize;
+    if (!byPage.has(page)) byPage.set(page, []);
+    byPage.get(page).push({index, offset});
+  });
+
+  const resolved = Array(ordinals.length);
+  await Promise.all(Array.from(byPage.entries()).map(async ([page, items]) => {
+    const rows = await loadCollectionPageRows(rowStore, page);
+    items.forEach(({index, offset}) => {
+      if (rows[offset]) resolved[index] = rows[offset];
+    });
+  }));
+  return resolved.filter(Boolean);
 }
 
 async function loadCollectionRows(collection) {
@@ -433,11 +473,12 @@ async function loadCollectionRows(collection) {
       const end = Math.min(start + COLLECTION_FETCH_BATCH_SIZE - 1, pageCount);
       const pages = [];
       for (let page = start; page <= end; page += 1) {
-        pages.push(loadJson(pagePath(collection.path_template, page)));
+        pages.push(loadJson(pagePath(collection.path_template, page))
+          .then((data) => rowsFromCollectionPage(data, collection)));
       }
       const pageResults = await Promise.all(pages);
-      pageResults.forEach((data) => {
-        rows.push(...rowsFromPage(data, collection));
+      pageResults.forEach((pageRows) => {
+        rows.push(...pageRows);
       });
     }
     return rows;
@@ -450,7 +491,7 @@ async function loadCollectionPageRows(collection, page) {
   const cacheKey = `${collection.path_template}:${page}`;
   if (collectionPageRowsCache.has(cacheKey)) return collectionPageRowsCache.get(cacheKey);
   const rowsPromise = loadJson(pagePath(collection.path_template, page))
-    .then((data) => rowsFromPage(data, collection));
+    .then((data) => rowsFromCollectionPage(data, collection));
   collectionPageRowsCache.set(cacheKey, rowsPromise);
   return rowsPromise;
 }

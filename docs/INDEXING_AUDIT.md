@@ -34,16 +34,15 @@ Bulk page JSON is written compactly instead of pretty-printed.
 
 Site generation now writes a complete release tree into a staging directory and swaps it into place only after export succeeds. That removes obsolete `.html` and `.json` artifacts by construction and avoids publishing a partially written tree after an interrupted run.
 
-## Next Architecture Step
-
-The same pattern should be applied to Names filters:
+## Current Names Export Shape
 
 - Keep SQLite as the source of truth during indexing and export.
 - Use static JSON for summary data and compact postings, not repeated row collections.
-- Replace duplicated Names filter pages with compact posting lists that reference one canonical row store.
-- Add query-specific indexes, for example `(provider_guess, name)`, before generating large filter postings.
+- Use one canonical sorted Names row store, with filter/provider/status postings into that store.
 - Keep high-cardinality UI views paginated and decode only the current page in the browser.
 
-The remaining large artifact risk is `data/names-pages`: filter pages still duplicate compact row payloads across overlapping collections. The lean target is one canonical sorted Names row store plus filter/provider/status postings into that store. If detailed diagnostics must show every resource record, store full resource detail once per canonical name row or in sharded on-demand detail files, not once per filter.
+Names filters now use that row-store pattern: `names-pages/all` is the canonical sorted row store, while filter, provider, provider-type, and failure collections are ordinal postings into that store. The browser resolves only the active postings page back to canonical rows.
 
-For production, the web VM can remain a static file server. The next reduction is to apply the same row-store plus postings approach to Names filters, where most of the remaining redundancy lives.
+If detailed diagnostics must show every resource record at production scale, store full resource detail once per canonical name row or in sharded on-demand detail files, not once per filter.
+
+For production, the web VM can remain a static file server. Further reductions should target posting compression, such as delta or range encoding for dense ordinal postings, and query-specific SQLite indexes if generation profiles show a remaining DB-side bottleneck.

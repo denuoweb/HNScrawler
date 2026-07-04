@@ -166,7 +166,9 @@ There is no standalone DANE row exporter in the production path. DANE-specific v
 
 `summary.broken` contains failure reason counts for the Names filter dropdown, not duplicated example rows. Example names for a failure reason come from the filtered Names collection.
 
-Names collections are ordered by normalized name. The browser uses that invariant for static exact-name lookup: if `/api/name` is unavailable, it binary-searches the sorted `all` collection by fetching only a small number of page files. Compact row arrays still include first NS/GLUE/SYNTH scalar fields plus resource hash, size, version, index height, and a DNS evidence path for DANE generator handoff links and diagnostics.
+Names collections are ordered by normalized name. The `all` collection is the canonical sorted row store. Other Names filters, provider queues, provider-type queues, and failure queues are compact ordinal postings into that row store rather than duplicate row payloads. The browser resolves only the current postings page back to canonical rows. Static exact-name lookup binary-searches the sorted `all` collection by fetching only a small number of page files when `/api/name` is unavailable.
+
+Compact canonical row arrays still include first NS/GLUE/SYNTH scalar fields plus resource hash, size, version, index height, and a DNS evidence path for DANE generator handoff links and diagnostics. Full resource arrays are embedded only when the collection is small enough to use full rows.
 
 IP address artifacts are keyed by URL-encoded address, for example `ip-addresses/44.231.6.183.json` or an encoded IPv6 literal. The index file contains the canonical query IP, `row_count`, `page_count`, `page_size`, row detail, field counts, columns, field-mask metadata, and a page path template. Page files contain compact postings for exported names whose `GLUE4`, `GLUE6`, `SYNTH4`, or `SYNTH6` values contain that address. When every row on a page has the same field mask, `row_encoding = name` stores only a JSON array of names. Mixed-field pages use `row_encoding = name_field_mask` with `[name, field_mask]` rows. They intentionally do not duplicate full or compact Names rows.
 
