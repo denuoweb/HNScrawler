@@ -7,6 +7,12 @@ const FAILURE_REASON_FILTER_PREFIX = "failure_reason:";
 const PROVIDER_FILTER_PREFIX = "provider:";
 const PROVIDER_TYPE_FILTER_PREFIX = "provider_type:";
 const DANE_GENERATOR_BASE = window.__DANE_GENERATOR_BASE__ || "/dane-generator/";
+const IP_FIELD_MAP = {
+  1: "GLUE4",
+  2: "GLUE6",
+  4: "SYNTH4",
+  8: "SYNTH6"
+};
 let nextPageFetchAt = 0;
 const collectionRowsCache = new Map();
 const collectionPageRowsCache = new Map();
@@ -338,9 +344,29 @@ function pagePath(pathTemplate, page) {
 
 function rowsFromPage(data, collection = {}) {
   const rows = Array.isArray(data.rows) ? data.rows : [];
+  if (data.row_encoding === "name") {
+    const mask = Number(data.field_mask ?? collection.default_field_mask ?? 0);
+    const fields = ipFieldsFromMask(mask, collection.field_map);
+    return rows.map((name) => ({name, field_mask: mask, fields}));
+  }
   const columns = Array.isArray(data.columns) ? data.columns : collection.columns;
   if (!Array.isArray(columns) || !rows.some((row) => Array.isArray(row))) return rows;
-  return rows.map((row) => Object.fromEntries(columns.map((key, index) => [key, row[index]])));
+  return rows.map((row) => {
+    const item = Object.fromEntries(columns.map((key, index) => [key, row[index]]));
+    if (data.row_encoding === "name_field_mask" || item.field_mask !== undefined) {
+      item.fields = ipFieldsFromMask(item.field_mask, collection.field_map);
+    }
+    return item;
+  });
+}
+
+function ipFieldsFromMask(maskValue, fieldMap = {}) {
+  const mask = Number(maskValue || 0);
+  const map = Object.keys(fieldMap || {}).length ? fieldMap : IP_FIELD_MAP;
+  return Object.entries(map)
+    .map(([bit, field]) => [Number(bit), field])
+    .filter(([bit]) => bit > 0 && (mask & bit) === bit)
+    .map(([, field]) => field);
 }
 
 function clampedPage(collection) {
@@ -482,7 +508,7 @@ function isDaneRow(row) {
   return hasDs(row) || Boolean(row.tlsa_status) || Boolean(row.dane_status);
 }
 
-function normalizeIpLookupResult(result, query, ip, source) {
+function normalizeIpLookupResult(result, query, ip) {
   const rows = Array.isArray(result.rows) ? result.rows : [];
   return {
     found: result.found !== false,
@@ -495,25 +521,14 @@ function normalizeIpLookupResult(result, query, ip, source) {
     rowDetail: result.row_detail || "ip_matches",
     columns: Array.isArray(result.columns) ? result.columns : null,
     fieldCounts: result.field_counts || {},
-    requiresApi: Boolean(result.requires_api),
-    source,
+    source: "static",
     rows: rows.map((row) => ({...row, matched_ip: row.matched_ip || ip}))
   };
 }
 
-async function lookupIpAddressFromApi(query, ip, page) {
-  try {
-    const response = await fetch(sitePath(`api/ip?ip=${encodeURIComponent(ip)}&page=${encodeURIComponent(page)}`));
-    if (!response.ok && response.status !== 404) return null;
-    const result = await response.json();
-    if (result.error === "invalid_ip") return null;
-    return normalizeIpLookupResult(result, query, result.ip || ip, "api");
-  } catch (_error) {
-    return null;
-  }
-}
-
-async function lookupIpAddressFromStatic(query, ip, page) {
+async function lookupIpAddress(query, page) {
+  const ip = normalizeIpQuery(query);
+  if (!ip) return null;
   if (!ipAddressLookupCache.has(ip)) {
     const lookupPromise = loadJson(`data/ip-addresses/${encodeURIComponent(ip)}.json`)
       .catch(() => null);
@@ -556,17 +571,8 @@ async function lookupIpAddressFromStatic(query, ip, page) {
       rows
     },
     query,
-    ip,
-    "static"
+    ip
   );
-}
-
-async function lookupIpAddress(query, page) {
-  const ip = normalizeIpQuery(query);
-  if (!ip) return null;
-  const apiLookup = await lookupIpAddressFromApi(query, ip, page);
-  if (apiLookup) return apiLookup;
-  return lookupIpAddressFromStatic(query, ip, page);
 }
 
 async function lookupExactNameFromApi(query, name) {
@@ -641,9 +647,8 @@ async function applySearchToPageData(pageData, query, options = {}) {
     const exportedCount = Number(allCollection.row_count || 0);
     const totalCount = Number(allCollection.total_count || exportedCount);
     const fullSnapshot = exportedCount === totalCount;
-    const requiresApi = Boolean(ipLookup.requiresApi && ipLookup.source !== "api");
     const rowCount = options.daneOnly ? rows.length : ipLookup.rowCount;
-    const pageCount = requiresApi ? 0 : options.daneOnly ? (rows.length ? 1 : 0) : ipLookup.pageCount;
+    const pageCount = options.daneOnly ? (rows.length ? 1 : 0) : ipLookup.pageCount;
     const page = options.daneOnly ? 1 : ipLookup.page;
     return {
       ...pageData,
@@ -663,7 +668,6 @@ async function applySearchToPageData(pageData, query, options = {}) {
         totalCount: "snapshot",
         exact: false,
         ip: true,
-        ipRequiresApi: requiresApi,
         scoped: false,
         fullSnapshot
       },
@@ -783,8 +787,6 @@ function searchControls({id, label, placeholder, query, search}) {
   const searchMeta = search
       ? `<p class="meta search-meta">${search.exact
       ? `${exactSource[0].toUpperCase()}${exactSource.slice(1)} "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} ${exactScope} row.`
-      : search.ipRequiresApi
-        ? `IP search "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} ${exactScope} ${search.matchedCount === 1 ? "name" : "names"}; listing this shared address requires the lookup API.`
       : search.ip
         ? `IP search "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} ${exactScope} ${search.matchedCount === 1 ? "name" : "names"}.`
         : search.scoped

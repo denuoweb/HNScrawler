@@ -2,7 +2,7 @@
 
 Generated snapshot reports for the current Handshake namespace topology.
 
-This project is intentionally not a live explorer, a full DNS warehouse, or a web crawler. It builds periodic snapshots from HSD-derived name state, classifies compact on-chain resource summaries, runs rate-limited live checks only for promising names, and publishes the report with bounded static data plus optional lookup API support.
+This project is intentionally not a live explorer, a full DNS warehouse, or a web crawler. It builds periodic snapshots from HSD-derived name state, classifies compact on-chain resource summaries, runs rate-limited live checks only for promising names, and publishes the report with bounded static data.
 
 ## What It Answers
 
@@ -72,7 +72,7 @@ The Names page is backed by paginated `data/names-pages/` JSON. Each row has an 
 
 Exact name search first tries the lightweight lookup API when it is available. On the static site it falls back to binary-searching the sorted `names-pages/all` collection, so a direct name lookup does not require loading the full 12M+ row export or storing an additional lookup index.
 
-IP address search detects IPv4 and IPv6 literals and first tries the lookup API. Static `data/ip-addresses/` files are a bounded fallback for small and medium result sets; provider-scale shared addresses are API-only so the report does not duplicate millions of rows.
+IP address search detects IPv4 and IPv6 literals in the Names page and loads compact `data/ip-addresses/` postings. Page files contain only names for the common single-field case, or name plus field-mask pairs when an address appears in multiple record fields. They do not duplicate full Names rows.
 
 Overview provider and class summaries link back into existing Names filters where doing so is storage-safe. Class rows only link to existing action or status queues; the export does not create large class-specific duplicate page sets.
 
@@ -90,7 +90,7 @@ Generated site files:
 - `data/faq_answers.json`
 - `data/names-pages.json`
 - `data/names-pages/...`
-- bounded `data/ip-addresses/...` fallback files for GLUE and SYNTH address lookups
+- compact `data/ip-addresses/...` postings for GLUE and SYNTH address lookups
 - `data/dns-evidence/...` when DNS observations exist
 
 Default production storage sizes are intentionally modest: 150 GB for the indexer data disk and 50 GB for the web artifact disk. The GCE pipeline and local nightly wrapper start HSD for update phases and stop it before live checks/site generation by default.

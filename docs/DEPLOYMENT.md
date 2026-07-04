@@ -64,7 +64,7 @@ scripts/gcloud-stop-indexer.sh
 
 Keep the persistent indexer disk until production recovery has been proven. Stop or delete the compute VM to avoid ongoing compute cost.
 
-The indexer disk is for HSD, the compact working database, live-check state, and generated artifacts while building. The production artifact disk on `denuoweb-vm` is for serving the finished static site, downloads, and the read-only SQLite snapshot used by the lookup API when enabled. Do not use the production artifact disk as the live HSD datadir.
+The indexer disk is for HSD, the compact working database, live-check state, and generated artifacts while building. The production artifact disk on `denuoweb-vm` is for serving the finished static site and downloads. Do not use the production artifact disk as the live HSD datadir.
 
 `scripts/gcloud-create-indexer.sh` is idempotent for interrupted cycles: it creates the persistent disk if missing, creates the VM if missing, reattaches the indexer disk if the VM exists without it, refuses to attach a disk already mounted on a different VM, and only starts the VM when it is not already running.
 
@@ -121,7 +121,7 @@ Current production shape:
 
 `scripts/gcloud-prepare-production-web.sh` creates or attaches `PROD_ARTIFACT_DISK`, mounts it, moves an existing non-symlink `DENUO_WEB_PATH` aside with a timestamped boot-disk backup name, creates the symlink to `PROD_ARTIFACT_SITE_DIR`, and then runs the production preflight. It refuses to run unless `CONFIRM_PRODUCTION_WEB=1`, or `DRY_RUN=1` for plan output.
 
-Keep full HSD data off the production web VM unless there is a deliberate later decision to colocate a pruned node. The intended production VM payload is the generated report, optional downloadable artifacts, and the read-only SQLite snapshot used by the lookup API when enabled.
+Keep full HSD data off the production web VM unless there is a deliberate later decision to colocate a pruned node. The intended production VM payload is the generated static report and optional downloadable artifacts.
 
 `scripts/publish-site.sh` refuses to publish through GCE unless `PROD_ARTIFACT_MOUNT` is mounted and the resolved `DENUO_WEB_PATH` is under that mount. It also stages incoming files under `REMOTE_TMP` on the artifact disk, not under `/tmp`, so large reports do not temporarily consume the production boot disk. `ALLOW_BOOT_DISK_PUBLISH=1` exists only as an emergency override and should not be used for normal Denuo deployment.
 

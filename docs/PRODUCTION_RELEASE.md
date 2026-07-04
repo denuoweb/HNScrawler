@@ -49,7 +49,7 @@
 
 ## Website Gate
 
-- Website VM receives bounded static `public/` artifacts, plus a read-only SQLite snapshot when the lookup API is enabled.
+- Website VM receives bounded static `public/` artifacts.
 - Generated files fit comfortably within available disk.
 - HTTPS is configured.
 - DANE/HNS deployment checklist in `docs/DANE_SITE.md` is complete before claiming the report site is DANE-compatible.

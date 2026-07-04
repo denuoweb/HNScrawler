@@ -1,7 +1,6 @@
 import json
 from pathlib import Path
 
-from hns_topology import exporter
 from hns_topology.db import connect, set_meta, upsert_live_status
 from hns_topology.exporter import build_faq_answers, build_summary
 from hns_topology.indexer import (
@@ -177,10 +176,6 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     direct_ip_page = json.loads(
         (out / "data" / direct_ip_index["path_template"].replace("{page}", "1")).read_text(encoding="utf-8")
     )
-    delegated_ip_rows = [
-        dict(zip(delegated_ip_page["columns"], row, strict=True)) for row in delegated_ip_page["rows"]
-    ]
-    direct_ip_rows = [dict(zip(direct_ip_page["columns"], row, strict=True)) for row in direct_ip_page["rows"]]
     names_page_names = [row["name"] for row in names_page_rows]
     direct_row = next(row for row in names_page_rows if row["name"] == "direct")
     namebase_provider = next(item for item in providers if item["provider_key"] == "namebase/default")
@@ -228,22 +223,23 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert delegated_ip_index["row_count"] == 1
     assert delegated_ip_index["page_count"] == 1
     assert delegated_ip_index["row_detail"] == "ip_matches"
-    assert delegated_ip_index["columns"] == ["name", "fields"]
+    assert delegated_ip_index["columns"] == ["name", "field_mask"]
+    assert delegated_ip_index["field_map"] == {"1": "GLUE4", "2": "GLUE6", "4": "SYNTH4", "8": "SYNTH6"}
     assert delegated_ip_index["field_counts"] == {"GLUE4": 1}
-    assert delegated_ip_index["requires_api"] is False
-    assert delegated_ip_index["static_row_limit"] == 100000
-    assert [row["name"] for row in delegated_ip_rows] == ["delegated"]
-    assert [row["fields"] for row in delegated_ip_rows] == [["GLUE4"]]
+    assert delegated_ip_index["default_field_mask"] == 1
+    assert delegated_ip_page["row_encoding"] == "name"
+    assert delegated_ip_page["field_mask"] == 1
+    assert delegated_ip_page["rows"] == ["delegated"]
     assert direct_ip_index["ip"] == "203.0.113.10"
     assert direct_ip_index["row_count"] == 1
     assert direct_ip_index["page_count"] == 1
     assert direct_ip_index["row_detail"] == "ip_matches"
-    assert direct_ip_index["columns"] == ["name", "fields"]
+    assert direct_ip_index["columns"] == ["name", "field_mask"]
     assert direct_ip_index["field_counts"] == {"SYNTH4": 1}
-    assert direct_ip_index["requires_api"] is False
-    assert direct_ip_index["static_row_limit"] == 100000
-    assert [row["name"] for row in direct_ip_rows] == ["direct"]
-    assert [row["fields"] for row in direct_ip_rows] == [["SYNTH4"]]
+    assert direct_ip_index["default_field_mask"] == 4
+    assert direct_ip_page["row_encoding"] == "name"
+    assert direct_ip_page["field_mask"] == 4
+    assert direct_ip_page["rows"] == ["direct"]
     assert "classes" in summary
     assert "broken" in summary
     assert "examples" not in summary["broken"]
@@ -256,24 +252,6 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
 
     public_checks = validate_public_release(public_dir=out)
     assert release_is_valid(public_checks), [check for check in public_checks if not check.ok]
-
-
-def test_generate_site_caps_static_ip_lookup_pages(tmp_path, monkeypatch):
-    monkeypatch.setattr(exporter, "MAX_STATIC_IP_LOOKUP_ROWS", 0)
-    db_path = tmp_path / "topology.sqlite"
-    out = tmp_path / "public"
-    rules = ProviderRules.from_file("configs/provider_rules.json")
-    with connect(db_path) as conn:
-        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
-        generate_site(conn, db_path=db_path, out_dir=out)
-
-    direct_ip_index = json.loads((out / "data/ip-addresses/203.0.113.10.json").read_text(encoding="utf-8"))
-
-    assert direct_ip_index["row_count"] == 1
-    assert direct_ip_index["page_count"] == 1
-    assert direct_ip_index["path_template"] is None
-    assert direct_ip_index["requires_api"] is True
-    assert not (out / "data/ip-addresses/203.0.113.10/page-1.json").exists()
 
 
 def test_generate_site_can_include_download_artifacts(tmp_path):
