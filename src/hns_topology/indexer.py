@@ -18,6 +18,7 @@ from .classifier import (
 from .db import (
     capture_rollback,
     init_db,
+    mark_resource_ip_index_current,
     prune_reorg_metadata,
     recompute_provider_summary,
     record_block_history,
@@ -92,6 +93,7 @@ def bootstrap_from_hsd(
             index_one_name(conn, item, resource, rules, height=height, updated_at=now)
             indexed += 1
         recompute_provider_summary(conn, rules.provider_types, now, rules.provider_patterns)
+        mark_resource_ip_index_current(conn)
     return indexed
 
 
@@ -130,6 +132,7 @@ def bootstrap_from_fixture(
             index_one_name(conn, name_info, resource, rules, height=height, updated_at=now)
             indexed += 1
         recompute_provider_summary(conn, rules.provider_types, now, rules.provider_patterns)
+        mark_resource_ip_index_current(conn)
     return indexed
 
 
@@ -229,6 +232,7 @@ def bootstrap_from_jsonl(
             set_meta(conn, "source_jsonl_format", str(metadata["export_format"]))
         set_meta(conn, "source_file_hash", digest.hexdigest())
         recompute_provider_summary(conn, rules.provider_types, now, rules.provider_patterns)
+        mark_resource_ip_index_current(conn)
     return indexed
 
 

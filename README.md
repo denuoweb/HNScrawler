@@ -74,6 +74,8 @@ Exact name search first tries the lightweight lookup API when it is available. O
 
 IP address search detects IPv4 and IPv6 literals in the Names page and loads compact `data/ip-addresses/` postings. Page files contain only names for the common single-field case, or name plus field-mask pairs when an address appears in multiple record fields. They do not duplicate full Names rows.
 
+`generate-site` builds into a fresh staging directory and swaps the completed tree into place, so removed pages or renamed JSON artifacts do not linger in `public/`. It requires the derived `resource_ip` index to already be current. Existing databases from before the IP index change should run `hns-topology rebuild-resource-ip --db data/topology.sqlite` once before export; this heavy backfill is deliberately not hidden inside site generation.
+
 Overview provider and class summaries link back into existing Names filters where doing so is storage-safe. Class rows only link to existing action or status queues; the export does not create large class-specific duplicate page sets.
 
 Broken/failure summaries keep only reason counts for the Names filter dropdown. Example rows are not duplicated into `summary.json`; use the filtered Names table instead.
@@ -109,6 +111,7 @@ hns-topology incremental --db data/topology.sqlite --changed-names-file changed_
 hns-topology reorg-check --db data/topology.sqlite --rollback
 hns-topology live-check --db data/topology.sqlite --limit 100 --concurrency 4 --min-delay-ms 250
 hns-topology import-dns-evidence --db data/topology.sqlite --file evidence.json --source crowd --source-id worker-1
+hns-topology rebuild-resource-ip --db data/topology.sqlite
 hns-topology export --db data/topology.sqlite --out public/data
 hns-topology generate-site --db data/topology.sqlite --out public
 hns-topology serve-lookup --db data/topology.sqlite --host 127.0.0.1 --port 8787

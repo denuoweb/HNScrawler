@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 from hns_topology import cli
-from hns_topology.db import connect, get_meta, init_db, set_meta
+from hns_topology.db import RESOURCE_IP_INDEX_META_KEY, connect, get_meta, init_db, set_meta
 from hns_topology.indexer import bootstrap_from_fixture
 from hns_topology.models import LiveStatus
 from hns_topology.provider_rules import ProviderRules
@@ -320,3 +320,23 @@ def test_import_dns_evidence_exports_static_observations(tmp_path):
     assert evidence["observations"][0]["source"] == "crowd"
     assert evidence["observations"][0]["source_id"] == "worker-1"
     assert evidence["observations"][0]["answer"] == ["secure. 300 IN DNSKEY 257 3 13 abc"]
+
+
+def test_rebuild_resource_ip_command_restores_derived_index(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+        conn.execute("DELETE FROM resource_ip")
+        conn.execute("DELETE FROM snapshot_meta WHERE key = ?", (RESOURCE_IP_INDEX_META_KEY,))
+        conn.commit()
+
+    result = cli.cmd_rebuild_resource_ip(argparse.Namespace(db=str(db_path)))
+
+    with connect(db_path) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM resource_ip").fetchone()[0]
+        version = get_meta(conn, RESOURCE_IP_INDEX_META_KEY)
+
+    assert result == 0
+    assert count == 5
+    assert version == "1"

@@ -14,7 +14,7 @@ from typing import Any
 from urllib.parse import quote
 
 from . import __version__
-from .db import get_meta, parse_json_columns, rows_to_dicts, table_count
+from .db import get_meta, parse_json_columns, require_resource_ip_index, rows_to_dicts, table_count
 from .fileutil import file_sha256
 from .jsonutil import dumps_json, dumps_pretty
 from .models import FAILURE_REASONS, ONCHAIN_CLASSES
@@ -107,6 +107,7 @@ def export_all(
 ) -> None:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
+    require_resource_ip_index(conn)
     summary = build_summary(conn)
     effective_names_limit = _effective_names_limit(summary, names_limit)
     _log_export(f"export start out={out} names_limit={names_limit} effective_names_limit={effective_names_limit}")

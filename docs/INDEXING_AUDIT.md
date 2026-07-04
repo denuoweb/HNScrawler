@@ -22,13 +22,15 @@ The browser is static-first. It loads `names-pages.json` and one page file for t
 
 ## Current Correction
 
-The database now has `resource_ip(name, ip, field)` with an `(ip, name)` index. Indexing keeps this table in sync with `resource_summary`, and old databases are backfilled once during schema migration.
+The database now has `resource_ip(name, ip, field)` with an `(ip, name)` index. Indexing keeps this table in sync with `resource_summary`. Existing databases are backfilled with the explicit `hns-topology rebuild-resource-ip` command; schema migration does not hide that production-scale rewrite inside unrelated commands.
 
 IP lookup is now built from a normalized `resource_ip` table into compact static postings consumed by the Names page.
 
 IP page files no longer duplicate Names rows. For the common single-field case, such as provider-scale `GLUE4` addresses, page files store only a JSON array of names plus a field mask in metadata. Mixed-field pages store `[name, field_mask]` pairs.
 
 Bulk page JSON is written compactly instead of pretty-printed.
+
+Site generation now writes a complete release tree into a staging directory and swaps it into place only after export succeeds. That removes obsolete `.html` and `.json` artifacts by construction and avoids publishing a partially written tree after an interrupted run.
 
 ## Next Architecture Step
 

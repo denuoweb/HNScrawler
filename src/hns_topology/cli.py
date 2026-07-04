@@ -19,6 +19,7 @@ from .db import (
     get_meta,
     init_db,
     insert_dns_evidence_batch,
+    rebuild_resource_ip_index,
     recompute_provider_summary,
     set_meta,
 )
@@ -146,6 +147,12 @@ def build_parser() -> argparse.ArgumentParser:
     import_evidence.add_argument("--source", default="crowd")
     import_evidence.add_argument("--source-id", default="")
     import_evidence.set_defaults(func=cmd_import_dns_evidence)
+
+    rebuild_ip = sub.add_parser(
+        "rebuild-resource-ip", help="Rebuild the derived resource IP index."
+    )
+    rebuild_ip.add_argument("--db", required=True)
+    rebuild_ip.set_defaults(func=cmd_rebuild_resource_ip)
 
     export = sub.add_parser("export", help="Write JSON/CSV/SQLite.gz artifacts.")
     export.add_argument("--db", required=True)
@@ -525,6 +532,15 @@ def cmd_import_dns_evidence(args: argparse.Namespace) -> int:
         with conn:
             insert_dns_evidence_batch(conn, evidence)
     print(f"imported {len(evidence)} DNS evidence observations")
+    return 0
+
+
+def cmd_rebuild_resource_ip(args: argparse.Namespace) -> int:
+    with connect(args.db) as conn:
+        init_db(conn)
+        with conn:
+            count = rebuild_resource_ip_index(conn)
+    print(f"rebuilt resource_ip index with {count} rows")
     return 0
 
 

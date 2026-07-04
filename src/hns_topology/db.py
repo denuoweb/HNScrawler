@@ -581,7 +581,24 @@ def backfill_resource_flags(conn: sqlite3.Connection) -> int:
     return int(cursor.rowcount if cursor.rowcount is not None else 0)
 
 
-def rebuild_resource_ip_index(conn: sqlite3.Connection) -> None:
+def resource_ip_index_is_current(conn: sqlite3.Connection) -> bool:
+    return get_meta(conn, RESOURCE_IP_INDEX_META_KEY) == RESOURCE_IP_INDEX_VERSION
+
+
+def mark_resource_ip_index_current(conn: sqlite3.Connection) -> None:
+    set_meta(conn, RESOURCE_IP_INDEX_META_KEY, RESOURCE_IP_INDEX_VERSION)
+
+
+def require_resource_ip_index(conn: sqlite3.Connection) -> None:
+    if resource_ip_index_is_current(conn):
+        return
+    raise RuntimeError(
+        "resource_ip derived index is missing or stale; run "
+        "`hns-topology rebuild-resource-ip --db <path>` before exporting the site"
+    )
+
+
+def rebuild_resource_ip_index(conn: sqlite3.Connection) -> int:
     conn.execute("DELETE FROM resource_ip")
     for field, column in RESOURCE_IP_FIELDS:
         conn.execute(
@@ -594,7 +611,8 @@ def rebuild_resource_ip_index(conn: sqlite3.Connection) -> None:
             """,
             (field,),
         )
-    set_meta(conn, RESOURCE_IP_INDEX_META_KEY, RESOURCE_IP_INDEX_VERSION)
+    mark_resource_ip_index_current(conn)
+    return table_count(conn, "SELECT COUNT(*) FROM resource_ip")
 
 
 def table_count(conn: sqlite3.Connection, sql: str, params: tuple[Any, ...] = ()) -> int:
@@ -639,8 +657,6 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
             "previous_resource_summary": "TEXT",
         },
     )
-    if get_meta(conn, RESOURCE_IP_INDEX_META_KEY) != RESOURCE_IP_INDEX_VERSION:
-        rebuild_resource_ip_index(conn)
 
 
 def _dns_evidence_params(evidence: DnsEvidence) -> tuple[Any, ...]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import tempfile
 from importlib import resources
 from pathlib import Path
 
@@ -32,6 +33,32 @@ def generate_site(
     include_downloads: bool = False,
 ) -> None:
     out = Path(out_dir)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{out.name}.tmp-", dir=out.parent))
+    try:
+        _generate_site_into(
+            conn,
+            db_path=db_path,
+            out_dir=staging,
+            names_limit=names_limit,
+            include_downloads=include_downloads,
+        )
+        _replace_tree(staging, out)
+        staging = None
+    finally:
+        if staging is not None:
+            shutil.rmtree(staging, ignore_errors=True)
+
+
+def _generate_site_into(
+    conn,
+    *,
+    db_path: str | Path,
+    out_dir: Path,
+    names_limit: int,
+    include_downloads: bool,
+) -> None:
+    out = out_dir
     data_dir = out / "data"
     out.mkdir(parents=True, exist_ok=True)
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -47,6 +74,25 @@ def generate_site(
         (out / filename).unlink(missing_ok=True)
     for filename, (page, title) in PAGES.items():
         (out / filename).write_text(_html(page=page, title=title), encoding="utf-8")
+
+
+def _replace_tree(staging: Path, out: Path) -> None:
+    backup: Path | None = None
+    if out.exists() or out.is_symlink():
+        backup = Path(tempfile.mkdtemp(prefix=f".{out.name}.old-", dir=out.parent))
+        backup.rmdir()
+        out.rename(backup)
+    try:
+        staging.rename(out)
+    except Exception:
+        if backup is not None and not out.exists():
+            backup.rename(out)
+        raise
+    if backup is not None:
+        if backup.is_dir() and not backup.is_symlink():
+            shutil.rmtree(backup)
+        else:
+            backup.unlink(missing_ok=True)
 
 
 def _copy_assets(out: Path) -> None:

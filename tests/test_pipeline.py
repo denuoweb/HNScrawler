@@ -129,6 +129,11 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
 def test_generate_site_writes_requested_artifacts(tmp_path):
     db_path = tmp_path / "topology.sqlite"
     out = tmp_path / "public"
+    (out / "data/dane-pages/all").mkdir(parents=True)
+    (out / "providers.html").write_text("old providers page", encoding="utf-8")
+    (out / "data/providers.json").write_text("{}", encoding="utf-8")
+    (out / "data/dane-pages/all/page-1.json").write_text("{}", encoding="utf-8")
+    (out / "data/unknown-old-file.json").write_text("{}", encoding="utf-8")
     rules = ProviderRules.from_file("configs/provider_rules.json")
     with connect(db_path) as conn:
         bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
@@ -158,6 +163,7 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
         "data/dane.json",
         "data/dane-pages.json",
         "data/dane-pages/all/page-1.json",
+        "data/unknown-old-file.json",
         "classes.html",
     ]:
         assert not (out / relative).exists()
@@ -252,6 +258,29 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
 
     public_checks = validate_public_release(public_dir=out)
     assert release_is_valid(public_checks), [check for check in public_checks if not check.ok]
+
+
+def test_generate_site_requires_current_resource_ip_index_and_preserves_existing_output(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    out = tmp_path / "public"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+        generate_site(conn, db_path=db_path, out_dir=out)
+        sentinel = out / "existing-release-marker.txt"
+        sentinel.write_text("existing release", encoding="utf-8")
+        conn.execute("DELETE FROM snapshot_meta WHERE key = ?", ("resource_ip_index_version",))
+        conn.commit()
+
+        try:
+            generate_site(conn, db_path=db_path, out_dir=out)
+        except RuntimeError as exc:
+            assert "rebuild-resource-ip" in str(exc)
+        else:
+            raise AssertionError("expected stale resource_ip guard")
+
+    assert sentinel.read_text(encoding="utf-8") == "existing release"
+    assert not list(tmp_path.glob(".public.tmp-*"))
 
 
 def test_generate_site_can_include_download_artifacts(tmp_path):
