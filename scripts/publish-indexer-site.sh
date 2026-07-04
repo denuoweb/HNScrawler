@@ -6,11 +6,14 @@ GCP_ZONE="${GCP_ZONE:-us-west1-b}"
 INDEXER_VM="${INDEXER_VM:-hns-topology-indexer}"
 INDEXER_REPO_DIR="${INDEXER_REPO_DIR:-/mnt/hnscrawler/HNScrawler}"
 INDEXER_PUBLIC_DIR="${INDEXER_PUBLIC_DIR:-/mnt/hnscrawler/public}"
+INDEXER_DB="${INDEXER_DB:-/mnt/hnscrawler/data/topology.sqlite}"
 MIN_INDEXED_HEIGHT="${MIN_INDEXED_HEIGHT:-${HSD_MIN_BLOCK_HEIGHT:-300000}}"
 DENUO_WEB_VM="${DENUO_WEB_VM:-denuoweb-vm}"
 DENUO_WEB_PATH="${DENUO_WEB_PATH:-/var/www/denuoweb/hns-topology}"
 DENUO_WEB_TARGET_TAGS="${DENUO_WEB_TARGET_TAGS:-denuoweb}"
 PROD_ARTIFACT_MOUNT="${PROD_ARTIFACT_MOUNT:-/mnt/hns-topology}"
+PROD_LOOKUP_DB="${PROD_LOOKUP_DB:-$PROD_ARTIFACT_MOUNT/topology.sqlite}"
+PUBLISH_LOOKUP_DB="${PUBLISH_LOOKUP_DB:-1}"
 ALLOW_BOOT_DISK_PUBLISH="${ALLOW_BOOT_DISK_PUBLISH:-0}"
 PUBLISH_FIREWALL_PRIORITY="${PUBLISH_FIREWALL_PRIORITY:-850}"
 PUBLISH_FIREWALL_RULE="${PUBLISH_FIREWALL_RULE:-hns-topology-publish-ssh-$(date +%s)-$$}"
@@ -116,6 +119,16 @@ if [[ -z "$publish_target" ]]; then
   exit 2
 fi
 
+if [[ "$PUBLISH_LOOKUP_DB" == "1" ]]; then
+  case "$PROD_LOOKUP_DB" in
+    "$PROD_ARTIFACT_MOUNT"/*) ;;
+    *)
+      echo "refusing lookup DB outside $PROD_ARTIFACT_MOUNT: $PROD_LOOKUP_DB" >&2
+      exit 2
+      ;;
+  esac
+fi
+
 log "generating temporary SSH key on $INDEXER_VM"
 publish_key_dir="$(dirname "$INDEXER_PUBLISH_KEY")"
 publish_public_key="$(gce_ssh "$INDEXER_VM" "set -euo pipefail
@@ -193,6 +206,34 @@ rsync -a \
   -e \"ssh -i '$INDEXER_PUBLISH_KEY' -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile='$INDEXER_PUBLISH_KNOWN_HOSTS'\" \
   '$INDEXER_PUBLIC_DIR/' \
   den@$web_private_ip:'$publish_target'/"
+
+if [[ "$PUBLISH_LOOKUP_DB" == "1" ]]; then
+  lookup_tmp="$PROD_LOOKUP_DB.new"
+  log "rsyncing lookup database $INDEXER_DB to $DENUO_WEB_VM:$PROD_LOOKUP_DB"
+  gce_ssh "$INDEXER_VM" "set -euo pipefail
+  test -f '$INDEXER_DB'
+  rsync -a \
+    --whole-file \
+    --chmod=Fu=rw,Fgo=r \
+    --chown=www-data:www-data \
+    --rsync-path='sudo rsync' \
+    -e \"ssh -i '$INDEXER_PUBLISH_KEY' -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile='$INDEXER_PUBLISH_KNOWN_HOSTS'\" \
+    '$INDEXER_DB' \
+    den@$web_private_ip:'$lookup_tmp'"
+
+  log "restarting lookup service on $DENUO_WEB_VM"
+  gce_ssh "$DENUO_WEB_VM" "set -euo pipefail
+  case '$PROD_LOOKUP_DB' in
+    '$PROD_ARTIFACT_MOUNT'/*) ;;
+    *) echo 'refusing lookup DB outside $PROD_ARTIFACT_MOUNT: $PROD_LOOKUP_DB' >&2; exit 2 ;;
+  esac
+  sudo systemctl stop hns-topology-lookup
+  sudo mv '$lookup_tmp' '$PROD_LOOKUP_DB'
+  sudo chown www-data:www-data '$PROD_LOOKUP_DB'
+  sudo chmod 640 '$PROD_LOOKUP_DB'
+  sudo rm -f '$PROD_LOOKUP_DB-shm' '$PROD_LOOKUP_DB-wal'
+  sudo systemctl start hns-topology-lookup"
+fi
 
 log "finalizing ownership on $DENUO_WEB_VM"
 gce_ssh "$DENUO_WEB_VM" "set -euo pipefail
