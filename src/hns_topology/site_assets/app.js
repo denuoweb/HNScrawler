@@ -154,7 +154,9 @@ function tableRows(rows, columns, options = {}) {
   return rows.map((row) => {
     const cells = columns.map((column) => `<td class="${escapeHtml(columnClass(column))}">${column.render ? column.render(row) : formatCell(row[column.key])}</td>`).join("");
     const detail = options.detailRender ? options.detailRender(row, columns.length) : "";
-    return `<tr>${cells}</tr>${detail}`;
+    const rowClass = typeof options.rowClass === "function" ? options.rowClass(row) : options.rowClass;
+    const rowAttrs = rowClass ? ` class="${escapeHtml(rowClass)}"` : "";
+    return `<tr${rowAttrs}>${cells}</tr>${detail}`;
   }).join("");
 }
 
@@ -1374,7 +1376,7 @@ function nameDetailRow(row, colspan) {
     : "";
   return `<tr class="name-detail-row"><td colspan="${colspan}">
     <details class="name-detail"${evidenceAttr}>
-      <summary><span>Diagnostics</span><strong>${escapeHtml(name)}</strong></summary>
+      <summary><span>Diagnostics for</span><strong>${escapeHtml(name)}</strong></summary>
       <div class="name-detail-grid">
         <section>
           <h3>Latest Resource</h3>
@@ -1466,7 +1468,12 @@ async function renderNames(app) {
         ${namesActionContext(summary.next_actions || [], filter)}
         ${lookupNotice(pageData, "names")}
         ${namesPagination(pageData.collection, pageData.page)}
-        ${table(pageData.rows, columns, query ? "No names match this search." : "No rows in this page.", {wrapClass: "names-table-wrap", tableClass: "names-table", detailRender})}
+        ${table(pageData.rows, columns, query ? "No names match this search." : "No rows in this page.", {
+          wrapClass: "names-table-wrap",
+          tableClass: "names-table",
+          detailRender,
+          rowClass: detailRender ? "name-summary-row" : ""
+        })}
         ${namesPagination(pageData.collection, pageData.page)}
       </div>
   </section>`;

@@ -405,25 +405,44 @@ main {
   max-width: none;
 }
 
+.names-table .name-summary-row > td {
+  border-top: 2px solid #c8d5e5;
+}
+
+.names-table .name-summary-row:first-child > td {
+  border-top-width: 1px;
+}
+
 .name-detail-row td {
-  padding: 0;
+  padding: 0 6px 10px;
+  border-bottom: 2px solid #c8d5e5;
   background: #fbfcfe;
 }
 
 .name-detail {
-  border-top: 1px solid var(--line);
+  overflow: hidden;
+  border: 1px solid #d4deeb;
+  border-left: 4px solid var(--blue);
+  border-radius: 0 0 6px 6px;
+  background: #ffffff;
 }
 
 .name-detail summary {
   min-height: 34px;
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
+  border-bottom: 1px solid transparent;
+  background: #eef5fc;
   color: var(--blue);
   font-size: 12px;
   font-weight: 760;
   cursor: pointer;
+}
+
+.name-detail[open] summary {
+  border-bottom-color: #d4deeb;
 }
 
 .name-detail summary strong {
@@ -435,7 +454,7 @@ main {
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr);
   gap: 14px;
-  padding: 0 10px 12px;
+  padding: 0 12px 12px;
 }
 
 .name-detail-grid section {
