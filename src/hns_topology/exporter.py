@@ -115,7 +115,6 @@ def export_all(
     _log_export("wrote summary.json")
     write_json(out / "faq_answers.json", build_faq_answers(conn, summary))
     _log_export("wrote faq_answers.json")
-    _remove_obsolete_data(out)
     write_json(out / "names-pages.json", write_names_pages(conn, out, limit=effective_names_limit, page_size=PAGE_SIZE))
     _log_export("wrote names-pages.json")
     ip_address_count = write_ip_address_names(conn, out, limit=effective_names_limit)
@@ -1224,14 +1223,6 @@ def _effective_names_limit(summary: dict[str, Any], names_limit: int) -> int:
     if names_limit <= 0:
         return total
     return min(total, names_limit)
-
-
-def _remove_obsolete_data(out: Path) -> None:
-    for relative in ("classes.json", "providers.json", "broken.json", "dane.json", "dane-pages.json"):
-        (out / relative).unlink(missing_ok=True)
-    _remove_tree(out / "dane-pages", missing_ok=True)
-    _remove_tree(out / "ip-addresses", missing_ok=True)
-    _remove_tree(out / "dns-evidence", missing_ok=True)
 
 
 def _remove_tree(path: Path, *, missing_ok: bool = False) -> None:

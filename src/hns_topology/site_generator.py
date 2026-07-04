@@ -12,15 +12,6 @@ PAGES = {
     "names.html": ("names", "Names"),
     "faq.html": ("faq", "Topology FAQ"),
 }
-GENERATED_HTML_FILES = {
-    "index.html",
-    "faq.html",
-    "providers.html",
-    "classes.html",
-    "names.html",
-    "broken.html",
-    "dane.html",
-}
 SITE_BASE_PATH = "/hns-topology/"
 
 
@@ -70,8 +61,6 @@ def _generate_site_into(
         include_downloads=include_downloads,
     )
     _copy_assets(out)
-    for filename in GENERATED_HTML_FILES - set(PAGES):
-        (out / filename).unlink(missing_ok=True)
     for filename, (page, title) in PAGES.items():
         (out / filename).write_text(_html(page=page, title=title), encoding="utf-8")
 
