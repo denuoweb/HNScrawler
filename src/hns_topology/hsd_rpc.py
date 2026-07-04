@@ -10,7 +10,7 @@ from typing import Any
 
 
 class HsdRpcError(RuntimeError):
-    pass
+    """Raised when an hsd JSON-RPC request fails."""
 
 
 class HsdRpcClient:

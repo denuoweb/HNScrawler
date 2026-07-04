@@ -154,7 +154,6 @@ Public exports are generated from SQLite:
 
 - `summary.json`
 - `manifest.json`
-- `faq_answers.json`
 - `names-pages.json`
 - `names-pages/<collection>/page-<n>.json`
 - compact `ip-addresses/<ip>.json` and `ip-addresses/<ip>/page-<n>.json` postings for GLUE and SYNTH address lookups
@@ -168,7 +167,7 @@ There is no standalone DANE row exporter in the production path. DANE-specific v
 
 `summary.top_resource_ips`, `summary.top_nameservers`, and `summary.known_hns_resolvers` are bounded diagnostic aggregates for the Overview page. They expose shared resource clusters and public resolver inventory without creating additional static row collections.
 
-Names collections are ordered by normalized name. The `all` collection is the canonical sorted row store. Visible Names filters, provider queues, provider-type queues, and nonzero failure queues are compact ordinal postings into that row store rather than duplicate row payloads. The browser resolves only the current postings page back to canonical rows. Static exact-name lookup binary-searches the sorted `all` collection by fetching only a small number of page files when `/api/name` is unavailable.
+Names collections are ordered by normalized name. The `all` collection is the canonical sorted row store. Nonzero visible Names filters, provider queues, and nonzero failure queues are compact ordinal postings into that row store rather than duplicate row payloads. Provider-type queues and zero-row filters are not exported; stale or zero-count filter URLs render as empty result sets in the browser. Static exact-name lookup binary-searches the sorted `all` collection by fetching only a small number of page files when `/api/name` is unavailable.
 
 Compact canonical row arrays still include first NS/GLUE/SYNTH scalar fields plus resource hash, size, version, index height, and a DNS evidence path for DANE generator handoff links and diagnostics. Full resource arrays are embedded only when the collection is small enough to use full rows.
 
@@ -179,6 +178,8 @@ The `resource_ip` table is a derived index. Bootstrap and incremental indexing k
 Provider-rule changes that only affect classification can be applied to an existing database with `hns-topology reclassify --db <path>`. That command scans stored compact `resource_summary` rows, recomputes `names.provider_guess` and `names.onchain_class`, updates provider-rule provenance, and refreshes `provider_summary` without re-fetching HSD resources or rebuilding `resource_ip`.
 
 `summary.json` includes `next_actions`, a small derived list for the Overview action panel and filtered Names queue context. Each item contains a count, a primary Names filter, a filter link, and the DANE generator intent to use for matching row-level handoffs. The list is deliberately derived from existing counters and filters so it does not create new row artifacts.
+
+`summary.overview_explainers` carries the metric definitions shown on the Overview page. It replaces the former standalone FAQ data artifact and intentionally omits example rows; use the linked Names filters for examples.
 
 `manifest.json` is the export contract for the static data directory. It records:
 

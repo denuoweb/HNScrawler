@@ -10,7 +10,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import quote
 
 from . import __version__
@@ -23,7 +23,6 @@ from .timeutil import utc_now
 
 DATA_ARTIFACTS = (
     "summary.json",
-    "faq_answers.json",
     "names-pages.json",
 )
 
@@ -31,7 +30,6 @@ PAGE_SIZE = 1000
 DETAILED_NAME_COLLECTION_ROW_LIMIT = 100_000
 FAILURE_REASON_FILTER_PREFIX = "failure_reason:"
 PROVIDER_FILTER_PREFIX = "provider:"
-PROVIDER_TYPE_FILTER_PREFIX = "provider_type:"
 IP_FIELD_BITS = {
     "GLUE4": 1,
     "GLUE6": 2,
@@ -44,13 +42,28 @@ ACTIONABLE_PROVIDER_SQL = (
 )
 ACTIONABLE_EXPORT_SQL = f"provider_type NOT IN ({NON_ACTIONABLE_PROVIDER_TYPES_SQL})"
 
+
+class NextActionSpec(NamedTuple):
+    key: str
+    label: str
+    count_key: str
+    filter_key: str
+    generator_intent: str
+    definition: str
+
+
+class OverviewExplainerSpec(NamedTuple):
+    key: str
+    label: str
+    count_key: str
+    definition: str
+
 NAME_FILTERS = {
     "direct_ip_records": "rs.has_synth = 1",
     "delegated_names": "rs.has_ns = 1",
     "default_provider_names": "ps.provider_type = 'default_parking'",
     "ds_records": "rs.has_ds = 1",
     "dnssec_candidates": "rs.has_ds = 1 AND rs.has_ns = 1",
-    "dane_rows": "rs.has_ds = 1 OR ls.tlsa_status IS NOT NULL OR ls.dane_status IS NOT NULL",
     "strict_hns_ready": (
         f"{ACTIONABLE_PROVIDER_SQL} AND "
         "(rs.has_synth = 1 OR (rs.has_ns = 1 AND rs.has_glue = 1))"
@@ -73,30 +86,141 @@ NAME_FILTERS = {
         "(rs.has_ns = 1 AND rs.has_glue = 0 AND "
         "COALESCE(ls.failure_reason, 'missing_glue') = 'missing_glue')"
     ),
-    "missing_glue": "ls.failure_reason = 'missing_glue'",
     "missing_glue_only": (
         "rs.has_ns = 1 AND rs.has_glue = 0 AND "
         "COALESCE(ls.failure_reason, 'missing_glue') = 'missing_glue'"
     ),
-    "stale_tlsa": "ls.failure_reason = 'stale_tlsa_spki_mismatch'",
     "stale_tlsa_only": "ls.failure_reason = 'stale_tlsa_spki_mismatch'",
 }
 
-FAQ_KEYS = (
-    "direct_ip_records",
-    "delegated_names",
-    "default_provider_names",
-    "ds_records",
-    "dnssec_candidates",
-    "likely_websites",
-    "strict_hns_ready",
-    "strict_hns_working",
-    "doh_fallback_required",
-    "needs_dane",
-    "dane_working",
-    "needs_fix",
-    "missing_glue_only",
-    "stale_tlsa_only",
+NEXT_ACTION_SPECS = (
+    NextActionSpec(
+        key="generate_tlsa",
+        label="Generate TLSA",
+        count_key="needs_dane",
+        filter_key="needs_dane",
+        generator_intent="generate_tlsa",
+        definition="DS or live-valid DNSSEC exists, but valid TLSA/DANE is not proven.",
+    ),
+    NextActionSpec(
+        key="fix_ns_glue",
+        label="Generate NS/GLUE setup",
+        count_key="missing_glue_only",
+        filter_key="missing_glue_only",
+        generator_intent="missing_glue",
+        definition="Delegated names need parent-side nameserver bootstrap before strict HNS can work.",
+    ),
+    NextActionSpec(
+        key="replace_tlsa",
+        label="Generate current TLSA",
+        count_key="stale_tlsa_only",
+        filter_key="stale_tlsa_only",
+        generator_intent="stale_tlsa",
+        definition="TLSA data did not match the current HTTPS certificate public key.",
+    ),
+    NextActionSpec(
+        key="plan_dnssec_dane",
+        label="Plan DNSSEC/DANE",
+        count_key="strict_hns_ready",
+        filter_key="strict_hns_ready",
+        generator_intent="dnssec_dane",
+        definition="Strict-HNS bootstrap material exists; sign the zone, publish DS, and add TLSA.",
+    ),
+    NextActionSpec(
+        key="verified_dane",
+        label="Verified DANE",
+        count_key="dane_working",
+        filter_key="dane_working",
+        generator_intent="",
+        definition="Latest live check matched DNSSEC, TLSA, and HTTPS certificate/SPKI.",
+    ),
+)
+
+OVERVIEW_EXPLAINER_SPECS = (
+    OverviewExplainerSpec(
+        key="direct_ip_records",
+        label="SYNTH nameserver bootstrap",
+        count_key="direct_ip_records",
+        definition="Current HNS resource data contains SYNTH4 or SYNTH6 nameserver bootstrap addresses. The authoritative DNS server still publishes website A, AAAA, and TLSA records.",
+    ),
+    OverviewExplainerSpec(
+        key="delegated_names",
+        label="Delegated nameservers",
+        count_key="delegated_names",
+        definition="Current HNS resource data contains NS, GLUE4, or GLUE6 nameserver data.",
+    ),
+    OverviewExplainerSpec(
+        key="default_provider_names",
+        label="Default provider infrastructure",
+        count_key="default_provider_names",
+        definition="Provider rules classify the resource as default parking or default hosted infrastructure.",
+    ),
+    OverviewExplainerSpec(
+        key="ds_records",
+        label="DS records",
+        count_key="ds_records",
+        definition="Current HNS resource data contains at least one DS record.",
+    ),
+    OverviewExplainerSpec(
+        key="dnssec_candidates",
+        label="DNSSEC candidates",
+        count_key="dnssec_candidates",
+        definition="Current HNS resource data contains DS plus delegated nameserver data.",
+    ),
+    OverviewExplainerSpec(
+        key="likely_websites",
+        label="Likely websites",
+        count_key="likely_websites",
+        definition="Active names with SYNTH nameserver bootstrap, GLUE-backed delegation, or DS-backed delegation.",
+    ),
+    OverviewExplainerSpec(
+        key="strict_hns_ready",
+        label="Strict HNS ready",
+        count_key="strict_hns_ready",
+        definition="Active names with SYNTH nameserver bootstrap or delegated nameserver data plus GLUE. This is readiness from HNS resource data, not proof the website currently loads.",
+    ),
+    OverviewExplainerSpec(
+        key="strict_hns_working",
+        label="Strict HNS working",
+        count_key="strict_hns_working",
+        definition="Latest live check marked strict_hns_status as working.",
+    ),
+    OverviewExplainerSpec(
+        key="doh_fallback_required",
+        label="Resolver fallback required",
+        count_key="doh_fallback_required",
+        definition="Latest live check could only find a website address through the configured fallback resolver, not through strict HNS bootstrap. This does not prove a specific DoH transport by itself.",
+    ),
+    OverviewExplainerSpec(
+        key="needs_dane",
+        label="Needs DANE",
+        count_key="needs_dane",
+        definition="Names with DS or live-valid DNSSEC where the latest data does not show valid DANE and TLSA is missing or still unknown.",
+    ),
+    OverviewExplainerSpec(
+        key="dane_working",
+        label="Valid DANE",
+        count_key="dane_working",
+        definition="Latest live check found a TLSA record matching the HTTPS certificate/SPKI.",
+    ),
+    OverviewExplainerSpec(
+        key="needs_fix",
+        label="Needs fix",
+        count_key="needs_fix",
+        definition="Names with a live-check failure reason, plus delegated names that are missing GLUE before live checks can prove anything stronger.",
+    ),
+    OverviewExplainerSpec(
+        key="missing_glue_only",
+        label="Missing GLUE only",
+        count_key="missing_glue_only",
+        definition="Delegated names with no GLUE4/GLUE6 and no stronger live-check failure.",
+    ),
+    OverviewExplainerSpec(
+        key="stale_tlsa_only",
+        label="Stale TLSA only",
+        count_key="stale_tlsa_only",
+        definition="Latest live check found TLSA data that does not match the current HTTPS certificate/SPKI.",
+    ),
 )
 
 EXPORTED_NAME_FILTERS = (
@@ -168,8 +292,6 @@ def export_all(
     _log_export(f"export start out={out} names_limit={names_limit} effective_names_limit={effective_names_limit}")
     write_json(out / "summary.json", summary)
     _log_export("wrote summary.json")
-    write_json(out / "faq_answers.json", build_faq_answers(conn, summary))
-    _log_export("wrote faq_answers.json")
     write_json(out / "names-pages.json", write_names_pages(conn, out, limit=effective_names_limit, page_size=PAGE_SIZE))
     _log_export("wrote names-pages.json")
     ip_address_count = write_ip_address_names(conn, out, limit=effective_names_limit)
@@ -330,177 +452,56 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
     summary["top_nameservers"] = build_top_nameservers(conn)
     summary["known_hns_resolvers"] = [dict(item) for item in KNOWN_HNS_RESOLVERS]
     summary["next_actions"] = build_next_actions(summary)
+    summary["overview_explainers"] = build_overview_explainers(summary)
     return summary
 
 
 def build_next_actions(summary: dict[str, Any]) -> list[dict[str, Any]]:
     return [
-        {
-            "key": "generate_tlsa",
-            "label": "Generate TLSA",
-            "count": int(summary["needs_dane"]),
-            "filter": "needs_dane",
-            "filter_link": "names.html?filter=needs_dane",
-            "generator_intent": "generate_tlsa",
-            "definition": "DS or live-valid DNSSEC exists, but valid TLSA/DANE is not proven.",
-        },
-        {
-            "key": "fix_ns_glue",
-            "label": "Generate NS/GLUE setup",
-            "count": int(summary["missing_glue_only"]),
-            "filter": "missing_glue_only",
-            "filter_link": "names.html?filter=missing_glue_only",
-            "generator_intent": "missing_glue",
-            "definition": "Delegated names need parent-side nameserver bootstrap before strict HNS can work.",
-        },
-        {
-            "key": "replace_tlsa",
-            "label": "Generate current TLSA",
-            "count": int(summary["stale_tlsa_only"]),
-            "filter": "stale_tlsa_only",
-            "filter_link": "names.html?filter=stale_tlsa_only",
-            "generator_intent": "stale_tlsa",
-            "definition": "TLSA data did not match the current HTTPS certificate public key.",
-        },
-        {
-            "key": "plan_dnssec_dane",
-            "label": "Plan DNSSEC/DANE",
-            "count": int(summary["strict_hns_ready"]),
-            "filter": "strict_hns_ready",
-            "filter_link": "names.html?filter=strict_hns_ready",
-            "generator_intent": "dnssec_dane",
-            "definition": "Strict-HNS bootstrap material exists; sign the zone, publish DS, and add TLSA.",
-        },
-        {
-            "key": "verified_dane",
-            "label": "Verified DANE",
-            "count": int(summary["dane_working"]),
-            "filter": "dane_working",
-            "filter_link": "names.html?filter=dane_working",
-            "generator_intent": "",
-            "definition": "Latest live check matched DNSSEC, TLSA, and HTTPS certificate/SPKI.",
-        },
+        _next_action_from_spec(spec, summary)
+        for spec in NEXT_ACTION_SPECS
+        if int(summary[spec.count_key]) > 0
     ]
 
 
-def build_faq_answers(conn: sqlite3.Connection, summary: dict[str, Any]) -> list[dict[str, Any]]:
+def build_overview_explainers(summary: dict[str, Any]) -> list[dict[str, Any]]:
     active = max(1, int(summary["active_names"]))
-    examples = build_faq_examples(conn)
-
-    def answer(key: str, question: str, count_key: str, definition: str, filter_link: str) -> dict[str, Any]:
-        count = int(summary[count_key])
-        return {
-            "key": key,
-            "question": question,
-            "count": count,
-            "percentage_of_active": round((count / active) * 100, 4),
-            "definition": definition,
-            "examples": examples.get(key, []),
-            "last_checked_height": summary["last_indexed_height"],
-            "last_checked_time": summary["generated_at"],
-            "filter_link": filter_link,
-        }
-
     return [
-        answer(
-            "direct_ip_records",
-            "How many HNS names use SYNTH nameserver bootstrap?",
-            "direct_ip_records",
-            "Current HNS resource data contains SYNTH4 or SYNTH6 nameserver bootstrap addresses. The authoritative DNS server still publishes website A, AAAA, and TLSA records.",
-            "names.html?filter=direct_ip_records",
-        ),
-        answer(
-            "delegated_names",
-            "How many delegate to real nameservers?",
-            "delegated_names",
-            "Current HNS resource data contains NS, GLUE4, or GLUE6 nameserver data.",
-            "names.html?filter=delegated_names",
-        ),
-        answer(
-            "default_provider_names",
-            "How many use Namebase-style/default nameservers?",
-            "default_provider_names",
-            "Provider rules classify the resource as default parking or default hosted infrastructure.",
-            "names.html?filter=default_provider_names",
-        ),
-        answer(
-            "ds_records",
-            "How many have DS records?",
-            "ds_records",
-            "Current HNS resource data contains at least one DS record.",
-            "names.html?filter=ds_records",
-        ),
-        answer(
-            "dnssec_candidates",
-            "How many are DNSSEC candidates?",
-            "dnssec_candidates",
-            "Current HNS resource data contains DS plus delegated nameserver data.",
-            "names.html?filter=dnssec_candidates",
-        ),
-        answer(
-            "likely_websites",
-            "How many are likely websites?",
-            "likely_websites",
-            "Active names with SYNTH nameserver bootstrap, GLUE-backed delegation, or DS-backed delegation.",
-            "names.html?filter=likely_websites",
-        ),
-        answer(
-            "strict_hns_ready",
-            "How many are strict-HNS ready from on-chain data?",
-            "strict_hns_ready",
-            "Active names with SYNTH nameserver bootstrap or delegated nameserver data plus GLUE. This is readiness from HNS resource data, not proof the website currently loads.",
-            "names.html?filter=strict_hns_ready",
-        ),
-        answer(
-            "strict_hns_working",
-            "How many actually load in strict HNS mode?",
-            "strict_hns_working",
-            "Latest live check marked strict_hns_status as working.",
-            "names.html?filter=strict_hns_working",
-        ),
-        answer(
-            "doh_fallback_required",
-            "How many require resolver fallback?",
-            "doh_fallback_required",
-            "Latest live check could only find a website address through the configured fallback resolver, not through strict HNS bootstrap. This does not prove a specific DoH transport by itself.",
-            "names.html?filter=doh_fallback_required",
-        ),
-        answer(
-            "needs_dane",
-            "Which names need a TLSA/DANE step next?",
-            "needs_dane",
-            "Names with DS or live-valid DNSSEC where the latest data does not show valid DANE and TLSA is missing or still unknown.",
-            "names.html?filter=needs_dane",
-        ),
-        answer(
-            "dane_working",
-            "How many have working DANE?",
-            "dane_working",
-            "Latest live check found a TLSA record matching the HTTPS certificate/SPKI.",
-            "names.html?filter=dane_working",
-        ),
-        answer(
-            "needs_fix",
-            "Which names need a DNS or DANE fix?",
-            "needs_fix",
-            "Names with a live-check failure reason, plus delegated names that are missing GLUE before live checks can prove anything stronger.",
-            "names.html?filter=needs_fix",
-        ),
-        answer(
-            "missing_glue_only",
-            "Which names are broken only because of missing GLUE?",
-            "missing_glue_only",
-            "Delegated names with no GLUE4/GLUE6 and no stronger live-check failure.",
-            "names.html?filter=missing_glue_only",
-        ),
-        answer(
-            "stale_tlsa_only",
-            "Which names are broken only because of stale TLSA?",
-            "stale_tlsa_only",
-            "Latest live check found TLSA data that does not match the current HTTPS certificate/SPKI.",
-            "names.html?filter=stale_tlsa_only",
-        ),
+        _overview_explainer_from_spec(spec, summary, active)
+        for spec in OVERVIEW_EXPLAINER_SPECS
     ]
+
+
+def _next_action_from_spec(spec: NextActionSpec, summary: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "key": spec.key,
+        "label": spec.label,
+        "count": int(summary[spec.count_key]),
+        "filter": spec.filter_key,
+        "filter_link": _filter_link(spec.filter_key),
+        "generator_intent": spec.generator_intent,
+        "definition": spec.definition,
+    }
+
+
+def _overview_explainer_from_spec(
+    spec: OverviewExplainerSpec,
+    summary: dict[str, Any],
+    active: int,
+) -> dict[str, Any]:
+    count = int(summary[spec.count_key])
+    return {
+        "key": spec.key,
+        "label": spec.label,
+        "count": count,
+        "percentage_of_active": round((count / active) * 100, 4),
+        "definition": spec.definition,
+        "filter_link": _filter_link(spec.key),
+    }
+
+
+def _filter_link(filter_key: str) -> str:
+    return f"names.html?filter={filter_key}"
 
 
 def build_classes(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -509,25 +510,6 @@ def build_classes(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         for row in conn.execute("SELECT onchain_class, COUNT(*) AS count FROM names GROUP BY onchain_class")
     }
     return [{"class": klass, "count": counts.get(klass, 0)} for klass in ONCHAIN_CLASSES]
-
-
-def build_faq_examples(conn: sqlite3.Connection) -> dict[str, list[str]]:
-    examples = {key: [] for key in FAQ_KEYS}
-    for key in FAQ_KEYS:
-        where = NAME_FILTERS.get(key)
-        if not where:
-            continue
-        rows = conn.execute(
-            f"""
-            SELECT n.name
-            {_name_rows_from_sql()}
-            WHERE COALESCE(n.expired, 0) = 0 AND {where}
-            ORDER BY n.name
-            LIMIT 5
-            """
-        ).fetchall()
-        examples[key] = [row["name"] for row in rows]
-    return examples
 
 
 def build_providers(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -1313,9 +1295,9 @@ def _posting_collection_where(key: str) -> tuple[str, tuple[Any, ...]]:
         return "expired = 0 AND provider_guess = ?", (
             key.removeprefix(PROVIDER_FILTER_PREFIX),
         )
-    if key.startswith(PROVIDER_TYPE_FILTER_PREFIX):
-        return "provider_type = ?", (key.removeprefix(PROVIDER_TYPE_FILTER_PREFIX),)
-    return f"expired = 0 AND ({POSTING_NAME_FILTERS.get(key, '1=1')})", ()
+    if key in POSTING_NAME_FILTERS:
+        return f"expired = 0 AND ({POSTING_NAME_FILTERS[key]})", ()
+    raise KeyError(f"unknown names posting collection: {key}")
 
 
 def _collection_dir_name(key: str) -> str:
@@ -1323,6 +1305,9 @@ def _collection_dir_name(key: str) -> str:
 
 
 def _name_collection_keys(conn: sqlite3.Connection) -> list[str]:
+    filter_keys = [
+        key for key in EXPORTED_NAME_FILTERS if _collection_has_exported_rows(conn, key)
+    ]
     failure_reasons = [
         row["failure_reason"]
         for row in conn.execute(
@@ -1347,24 +1332,28 @@ def _name_collection_keys(conn: sqlite3.Connection) -> list[str]:
         )
         if row["provider_key"]
     ]
-    provider_types = [
-        row["provider_type"]
-        for row in conn.execute(
-            """
-            SELECT DISTINCT COALESCE(provider_type, 'unknown') AS provider_type
-            FROM provider_summary
-            ORDER BY provider_type
-            """
-        )
-        if row["provider_type"]
-    ]
     return [
         "all",
-        *EXPORTED_NAME_FILTERS,
+        *filter_keys,
         *(f"{FAILURE_REASON_FILTER_PREFIX}{reason}" for reason in failure_reasons),
         *(f"{PROVIDER_FILTER_PREFIX}{provider_key}" for provider_key in provider_keys),
-        *(f"{PROVIDER_TYPE_FILTER_PREFIX}{provider_type}" for provider_type in provider_types),
     ]
+
+
+def _collection_has_exported_rows(conn: sqlite3.Connection, key: str) -> bool:
+    where, params = _posting_collection_where(key)
+    return (
+        conn.execute(
+            f"""
+            SELECT 1
+            FROM export_name_ordinals
+            WHERE {where}
+            LIMIT 1
+            """,
+            params,
+        ).fetchone()
+        is not None
+    )
 
 
 def _name_row_columns(*, row_detail: str = "full") -> str:
@@ -1447,11 +1436,9 @@ def _name_collection_where(key: str) -> tuple[str, tuple[Any, ...]]:
         return "COALESCE(n.expired, 0) = 0 AND n.provider_guess = ?", (
             key.removeprefix(PROVIDER_FILTER_PREFIX),
         )
-    if key.startswith(PROVIDER_TYPE_FILTER_PREFIX):
-        return "COALESCE(ps.provider_type, 'unknown') = ?", (
-            key.removeprefix(PROVIDER_TYPE_FILTER_PREFIX),
-        )
-    return f"COALESCE(n.expired, 0) = 0 AND ({NAME_FILTERS.get(key, '1=1')})", ()
+    if key in NAME_FILTERS:
+        return f"COALESCE(n.expired, 0) = 0 AND ({NAME_FILTERS[key]})", ()
+    raise KeyError(f"unknown names collection: {key}")
 
 
 def write_names_csv(conn: sqlite3.Connection, path: Path, *, limit: int) -> None:

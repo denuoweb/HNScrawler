@@ -97,8 +97,7 @@ main {
 }
 
 .metric,
-.panel,
-.faq-item {
+.panel {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -190,6 +189,47 @@ main {
 .funnel-stage small {
   color: var(--muted);
   font-size: 12px;
+  line-height: 1.35;
+}
+
+.explainer-panel {
+  grid-column: 1 / -1;
+}
+
+.explainer-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.explainer-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fbfcfe;
+}
+
+.explainer-item:hover {
+  border-color: var(--blue);
+  background: var(--panel);
+}
+
+.explainer-item span {
+  color: var(--ink);
+}
+
+.explainer-item strong {
+  color: var(--blue);
+}
+
+.explainer-item small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
   line-height: 1.35;
 }
 
@@ -698,27 +738,8 @@ th {
   background: #fff7e0;
 }
 
-.faq-list {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.faq-item {
-  padding: 16px;
-}
-
-.faq-count {
-  display: block;
-  margin: 12px 0 8px;
-  color: var(--blue);
-  font-size: 30px;
-  font-weight: 760;
-}
-
 .definition,
-.meta,
-.examples {
+.meta {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.45;
@@ -842,7 +863,7 @@ th {
 }
 
 .downloads a,
-.faq-item a {
+.explainer-item {
   color: var(--blue);
   text-decoration: none;
   font-weight: 700;
@@ -930,7 +951,7 @@ th {
   .grid,
   .funnel-grid,
   .names-layout,
-  .faq-list {
+  .explainer-list {
     grid-template-columns: 1fr;
   }
 

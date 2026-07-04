@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -133,7 +133,9 @@ CREATE TABLE IF NOT EXISTS changed_name_rollbacks (
   captured_at TEXT NOT NULL,
   PRIMARY KEY(height, name)
 );
+"""
 
+CORE_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_names_class ON names(onchain_class);
 CREATE INDEX IF NOT EXISTS idx_names_provider ON names(provider_guess);
 CREATE INDEX IF NOT EXISTS idx_names_expired ON names(expired);
@@ -217,45 +219,113 @@ DNS_EVIDENCE_COLUMNS = (
     "captured_at",
 )
 
-UPSERT_NAME_SQL = """
-    INSERT INTO names(
-      name, name_hash, state, renewal_height, expired, resource_hash, record_types,
-      onchain_class, provider_guess, last_seen_height, updated_at
-    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(name) DO UPDATE SET
-      name_hash=excluded.name_hash,
-      state=excluded.state,
-      renewal_height=excluded.renewal_height,
-      expired=excluded.expired,
-      resource_hash=excluded.resource_hash,
-      record_types=excluded.record_types,
-      onchain_class=excluded.onchain_class,
-      provider_guess=excluded.provider_guess,
-      last_seen_height=excluded.last_seen_height,
-      updated_at=excluded.updated_at
-    """
 
-UPSERT_RESOURCE_SQL = """
-    INSERT INTO resource_summary(
-      name, ns_names, glue4, glue6, synth4, synth6, ds_records, has_ds,
-      has_ns, has_glue, has_synth, has_txt, raw_size, resource_version, resource_hash
-    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(name) DO UPDATE SET
-      ns_names=excluded.ns_names,
-      glue4=excluded.glue4,
-      glue6=excluded.glue6,
-      synth4=excluded.synth4,
-      synth6=excluded.synth6,
-      ds_records=excluded.ds_records,
-      has_ds=excluded.has_ds,
-      has_ns=excluded.has_ns,
-      has_glue=excluded.has_glue,
-      has_synth=excluded.has_synth,
-      has_txt=excluded.has_txt,
-      raw_size=excluded.raw_size,
-      resource_version=excluded.resource_version,
-      resource_hash=excluded.resource_hash
-    """
+def _insert_sql(table: str, columns: tuple[str, ...]) -> str:
+    column_sql = ", ".join(columns)
+    placeholders = ", ".join("?" for _ in columns)
+    return f"INSERT INTO {table}({column_sql}) VALUES({placeholders})"
+
+
+def _upsert_sql(table: str, columns: tuple[str, ...], *, conflict_column: str = "name") -> str:
+    column_sql = ", ".join(columns)
+    placeholders = ", ".join("?" for _ in columns)
+    assignments = ", ".join(
+        f"{column}=excluded.{column}" for column in columns if column != conflict_column
+    )
+    return (
+        f"INSERT INTO {table}({column_sql}) VALUES({placeholders}) "
+        f"ON CONFLICT({conflict_column}) DO UPDATE SET {assignments}"
+    )
+
+
+SCHEMA_COLUMN_MIGRATIONS = {
+    "names": {
+        "name_hash": "TEXT NOT NULL DEFAULT ''",
+        "state": "TEXT",
+        "renewal_height": "INTEGER",
+        "expired": "INTEGER DEFAULT 0",
+        "resource_hash": "TEXT",
+        "record_types": "TEXT",
+        "onchain_class": "TEXT",
+        "provider_guess": "TEXT",
+        "last_seen_height": "INTEGER",
+        "updated_at": "TEXT",
+    },
+    "resource_summary": {
+        "ns_names": "TEXT",
+        "glue4": "TEXT",
+        "glue6": "TEXT",
+        "synth4": "TEXT",
+        "synth6": "TEXT",
+        "ds_records": "TEXT",
+        "has_ds": "INTEGER DEFAULT 0",
+        "has_ns": "INTEGER DEFAULT 0",
+        "has_glue": "INTEGER DEFAULT 0",
+        "has_synth": "INTEGER DEFAULT 0",
+        "has_txt": "INTEGER DEFAULT 0",
+        "raw_size": "INTEGER",
+        "resource_version": "INTEGER",
+        "resource_hash": "TEXT",
+    },
+    "live_status": {
+        "dns_reachable": "TEXT",
+        "dnssec_status": "TEXT",
+        "tlsa_status": "TEXT",
+        "dane_status": "TEXT",
+        "https_status": "TEXT",
+        "strict_hns_status": "TEXT",
+        "doh_fallback_status": "TEXT",
+        "failure_reason": "TEXT",
+        "checked_at": "TEXT",
+        "next_check_at": "TEXT",
+    },
+    "provider_summary": {
+        "provider_type": "TEXT",
+        "ns_pattern": "TEXT",
+        "ip_pattern": "TEXT",
+        "names_count": "INTEGER",
+        "likely_website_count": "INTEGER",
+        "working_count": "INTEGER",
+        "dane_count": "INTEGER",
+        "updated_at": "TEXT",
+    },
+    "dns_evidence": {
+        "qname": "TEXT",
+        "rrtype": "TEXT",
+        "server": "TEXT",
+        "source": "TEXT NOT NULL DEFAULT 'scanner'",
+        "source_id": "TEXT NOT NULL DEFAULT ''",
+        "status": "TEXT NOT NULL DEFAULT 'unknown'",
+        "rcode": "TEXT",
+        "flags": "TEXT",
+        "answer_json": "TEXT NOT NULL DEFAULT '[]'",
+        "authority_json": "TEXT NOT NULL DEFAULT '[]'",
+        "additional_json": "TEXT NOT NULL DEFAULT '[]'",
+        "elapsed_ms": "INTEGER",
+        "error": "TEXT",
+        "captured_at": "TEXT",
+    },
+    "changed_name_rollbacks": {
+        "previous_resource_hash": "TEXT",
+        "previous_classification": "TEXT",
+        "previous_live_status": "TEXT",
+        "previous_name_row": "TEXT",
+        "previous_resource_summary": "TEXT",
+        "block_hash_at_height": "TEXT NOT NULL DEFAULT ''",
+        "captured_at": "TEXT",
+    },
+}
+
+JSON_ARRAY_DEFAULT_COLUMNS = {
+    "names": ("record_types",),
+    "resource_summary": ("ns_names", "glue4", "glue6", "synth4", "synth6", "ds_records"),
+    "dns_evidence": ("answer_json", "authority_json", "additional_json"),
+}
+
+UPSERT_NAME_SQL = _upsert_sql("names", NAMES_COLUMNS)
+UPSERT_RESOURCE_SQL = _upsert_sql("resource_summary", RESOURCE_COLUMNS)
+UPSERT_LIVE_SQL = _upsert_sql("live_status", LIVE_COLUMNS)
+INSERT_DNS_EVIDENCE_SQL = _insert_sql("dns_evidence", DNS_EVIDENCE_COLUMNS)
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:
@@ -271,6 +341,7 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
     _migrate_schema(conn)
+    conn.executescript(CORE_INDEX_SQL)
     conn.commit()
 
 
@@ -324,58 +395,15 @@ def upsert_resource_rows(conn: sqlite3.Connection, rows: Iterable[tuple[Any, ...
 
 
 def upsert_live_status(conn: sqlite3.Connection, status: LiveStatus) -> None:
-    conn.execute(
-        """
-        INSERT INTO live_status(
-          name, dns_reachable, dnssec_status, tlsa_status, dane_status, https_status,
-          strict_hns_status, doh_fallback_status, failure_reason, checked_at, next_check_at
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(name) DO UPDATE SET
-          dns_reachable=excluded.dns_reachable,
-          dnssec_status=excluded.dnssec_status,
-          tlsa_status=excluded.tlsa_status,
-          dane_status=excluded.dane_status,
-          https_status=excluded.https_status,
-          strict_hns_status=excluded.strict_hns_status,
-          doh_fallback_status=excluded.doh_fallback_status,
-          failure_reason=excluded.failure_reason,
-          checked_at=excluded.checked_at,
-          next_check_at=excluded.next_check_at
-        """,
-        (
-            status.name,
-            status.dns_reachable,
-            status.dnssec_status,
-            status.tlsa_status,
-            status.dane_status,
-            status.https_status,
-            status.strict_hns_status,
-            status.doh_fallback_status,
-            status.failure_reason,
-            status.checked_at,
-            status.next_check_at,
-        ),
-    )
+    conn.execute(UPSERT_LIVE_SQL, _live_status_params(status))
 
 
 def insert_dns_evidence(conn: sqlite3.Connection, evidence: DnsEvidence) -> None:
-    conn.execute(
-        f"""
-        INSERT INTO dns_evidence({", ".join(DNS_EVIDENCE_COLUMNS)})
-        VALUES({", ".join("?" for _ in DNS_EVIDENCE_COLUMNS)})
-        """,
-        _dns_evidence_params(evidence),
-    )
+    conn.execute(INSERT_DNS_EVIDENCE_SQL, _dns_evidence_params(evidence))
 
 
 def insert_dns_evidence_batch(conn: sqlite3.Connection, evidence: Iterable[DnsEvidence]) -> None:
-    conn.executemany(
-        f"""
-        INSERT INTO dns_evidence({", ".join(DNS_EVIDENCE_COLUMNS)})
-        VALUES({", ".join("?" for _ in DNS_EVIDENCE_COLUMNS)})
-        """,
-        (_dns_evidence_params(item) for item in evidence),
-    )
+    conn.executemany(INSERT_DNS_EVIDENCE_SQL, (_dns_evidence_params(item) for item in evidence))
 
 
 def capture_rollback(
@@ -562,8 +590,9 @@ def recompute_provider_summary(
 def backfill_resource_flags(conn: sqlite3.Connection) -> int:
     cursor = conn.execute(
         """
-        UPDATE resource_summary
+        UPDATE resource_summary AS rs
         SET
+          has_ds = CASE WHEN COALESCE(json_array_length(ds_records), 0) > 0 THEN 1 ELSE 0 END,
           has_ns = CASE WHEN COALESCE(json_array_length(ns_names), 0) > 0 THEN 1 ELSE 0 END,
           has_glue = CASE
             WHEN COALESCE(json_array_length(glue4), 0) > 0
@@ -572,17 +601,32 @@ def backfill_resource_flags(conn: sqlite3.Connection) -> int:
           has_synth = CASE
             WHEN COALESCE(json_array_length(synth4), 0) > 0
               OR COALESCE(json_array_length(synth6), 0) > 0
+            THEN 1 ELSE 0 END,
+          has_txt = CASE
+            WHEN EXISTS (
+              SELECT 1
+              FROM names n, json_each(n.record_types) rt
+              WHERE n.name = rs.name AND rt.value = 'TXT'
+            )
             THEN 1 ELSE 0 END
         WHERE
-          COALESCE(has_ns, -1) != CASE WHEN COALESCE(json_array_length(ns_names), 0) > 0 THEN 1 ELSE 0 END
+          COALESCE(has_ds, -1) != CASE WHEN COALESCE(json_array_length(ds_records), 0) > 0 THEN 1 ELSE 0 END
+          OR COALESCE(has_ns, -1) != CASE WHEN COALESCE(json_array_length(ns_names), 0) > 0 THEN 1 ELSE 0 END
           OR COALESCE(has_glue, -1) != CASE
-            WHEN COALESCE(json_array_length(glue4), 0) > 0
-              OR COALESCE(json_array_length(glue6), 0) > 0
-            THEN 1 ELSE 0 END
+              WHEN COALESCE(json_array_length(glue4), 0) > 0
+                OR COALESCE(json_array_length(glue6), 0) > 0
+              THEN 1 ELSE 0 END
           OR COALESCE(has_synth, -1) != CASE
-            WHEN COALESCE(json_array_length(synth4), 0) > 0
-              OR COALESCE(json_array_length(synth6), 0) > 0
-            THEN 1 ELSE 0 END
+              WHEN COALESCE(json_array_length(synth4), 0) > 0
+                OR COALESCE(json_array_length(synth6), 0) > 0
+              THEN 1 ELSE 0 END
+          OR COALESCE(has_txt, -1) != CASE
+              WHEN EXISTS (
+                SELECT 1
+                FROM names n, json_each(n.record_types) rt
+                WHERE n.name = rs.name AND rt.value = 'TXT'
+              )
+              THEN 1 ELSE 0 END
         """
     )
     return int(cursor.rowcount if cursor.rowcount is not None else 0)
@@ -695,26 +739,12 @@ def parse_json_columns(row: dict[str, Any], columns: Iterable[str]) -> dict[str,
 
 
 def _migrate_schema(conn: sqlite3.Connection) -> None:
-    _ensure_columns(
-        conn,
-        "resource_summary",
-        {
-            "ds_records": "TEXT",
-            "has_ns": "INTEGER DEFAULT 0",
-            "has_glue": "INTEGER DEFAULT 0",
-            "has_synth": "INTEGER DEFAULT 0",
-            "resource_version": "INTEGER",
-        },
-    )
-    conn.execute("UPDATE resource_summary SET ds_records = '[]' WHERE ds_records IS NULL")
-    _ensure_columns(
-        conn,
-        "changed_name_rollbacks",
-        {
-            "previous_name_row": "TEXT",
-            "previous_resource_summary": "TEXT",
-        },
-    )
+    for table, columns in SCHEMA_COLUMN_MIGRATIONS.items():
+        _ensure_columns(conn, table, columns)
+    for table, columns in JSON_ARRAY_DEFAULT_COLUMNS.items():
+        for column in columns:
+            conn.execute(f"UPDATE {table} SET {column} = '[]' WHERE {column} IS NULL")
+    backfill_resource_flags(conn)
 
 
 def _dns_evidence_params(evidence: DnsEvidence) -> tuple[Any, ...]:
@@ -734,6 +764,22 @@ def _dns_evidence_params(evidence: DnsEvidence) -> tuple[Any, ...]:
         evidence.elapsed_ms,
         evidence.error,
         evidence.captured_at,
+    )
+
+
+def _live_status_params(status: LiveStatus) -> tuple[Any, ...]:
+    return (
+        status.name,
+        status.dns_reachable,
+        status.dnssec_status,
+        status.tlsa_status,
+        status.dane_status,
+        status.https_status,
+        status.strict_hns_status,
+        status.doh_fallback_status,
+        status.failure_reason,
+        status.checked_at,
+        status.next_check_at,
     )
 
 
@@ -801,12 +847,12 @@ def _replace_resource_ip_rows(conn: sqlite3.Connection, row: tuple[Any, ...]) ->
     _replace_resource_ip_rows_batch(conn, [row])
 
 
-def _replace_resource_ip_rows_from_mapping(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
+def _replace_resource_ip_rows_from_mapping(conn: sqlite3.Connection, row: Mapping[str, Any]) -> None:
     values = tuple(row.get(column) for column in RESOURCE_COLUMNS)
     _replace_resource_ip_rows(conn, values)
 
 
-def _resource_ip_rows_from_mapping(row: sqlite3.Row) -> list[tuple[str, str, str]]:
+def _resource_ip_rows_from_mapping(row: Mapping[str, Any]) -> list[tuple[str, str, str]]:
     name = str(row["name"] or "")
     if not name:
         return []
@@ -864,14 +910,4 @@ def _upsert_raw_row(
     columns: tuple[str, ...],
     values: dict[str, Any],
 ) -> None:
-    assignments = ", ".join(f"{column}=excluded.{column}" for column in columns if column != "name")
-    placeholders = ", ".join("?" for _ in columns)
-    column_sql = ", ".join(columns)
-    conn.execute(
-        f"""
-        INSERT INTO {table}({column_sql})
-        VALUES({placeholders})
-        ON CONFLICT(name) DO UPDATE SET {assignments}
-        """,
-        tuple(values.get(column) for column in columns),
-    )
+    conn.execute(_upsert_sql(table, columns), tuple(values.get(column) for column in columns))

@@ -42,12 +42,12 @@ Site generation now writes a complete release tree into a staging directory and 
 
 - Keep SQLite as the source of truth during indexing and export.
 - Use static JSON for summary data and compact postings, not repeated row collections.
-- Use one canonical sorted Names row store, with filter/provider/status postings into that store.
+- Use one canonical sorted Names row store, with nonzero filter/provider/status postings into that store.
 - Keep high-cardinality UI views paginated and decode only the current page in the browser.
 
-Names filters now use that row-store pattern: `names-pages/all` is the canonical sorted row store, while visible filter, provider, provider-type, and nonzero failure collections are ordinal postings into that store. The browser resolves only the active postings page back to canonical rows. Hidden legacy filters and zero-row failure-reason postings are not exported.
+Names filters now use that row-store pattern: `names-pages/all` is the canonical sorted row store, while nonzero visible filters, provider queues, and nonzero failure collections are ordinal postings into that store. The browser resolves only the active postings page back to canonical rows. Hidden legacy filters, zero-row filters, and provider-type queues are not exported.
 
-During export, the generator builds a temporary `export_name_ordinals` table with ordinal, provider, provider type, resource flags, and live-status fields for the exported name set. Posting collections are counted and streamed from that temporary export index, avoiding repeated joins across the production `names`, `resource_summary`, `live_status`, and `provider_summary` tables.
+During export, the generator builds a temporary `export_name_ordinals` table with ordinal, provider, provider type, resource flags, and live-status fields for the exported name set. Nonzero posting collections are counted and streamed from that temporary export index, avoiding repeated joins across the production `names`, `resource_summary`, `live_status`, and `provider_summary` tables.
 
 If detailed diagnostics must show every resource record at production scale, store full resource detail once per canonical name row or in sharded on-demand detail files, not once per filter.
 

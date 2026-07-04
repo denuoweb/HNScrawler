@@ -5,7 +5,6 @@ const COLLECTION_FETCH_BATCH_SIZE = 8;
 const SEARCH_FULL_SCAN_MAX_ROWS = 5000;
 const FAILURE_REASON_FILTER_PREFIX = "failure_reason:";
 const PROVIDER_FILTER_PREFIX = "provider:";
-const PROVIDER_TYPE_FILTER_PREFIX = "provider_type:";
 const DANE_GENERATOR_BASE = window.__DANE_GENERATOR_BASE__ || "/dane-generator/";
 const IP_FIELD_MAP = {
   1: "GLUE4",
@@ -107,14 +106,12 @@ function hasGlue(row) {
 function filterName(filter) {
   if (filter.startsWith(FAILURE_REASON_FILTER_PREFIX)) return prettyToken(filter.slice(FAILURE_REASON_FILTER_PREFIX.length));
   if (filter.startsWith(PROVIDER_FILTER_PREFIX)) return `provider ${filter.slice(PROVIDER_FILTER_PREFIX.length)}`;
-  if (filter.startsWith(PROVIDER_TYPE_FILTER_PREFIX)) return `provider ${prettyToken(filter.slice(PROVIDER_TYPE_FILTER_PREFIX.length))}`;
   return ({
     direct_ip_records: "SYNTH nameservers",
     delegated_names: "delegated names",
     default_provider_names: "default providers",
     ds_records: "DS records",
     dnssec_candidates: "DNSSEC candidates",
-    dane_rows: "DANE rows",
     strict_hns_ready: "strict HNS ready",
     likely_websites: "likely websites",
     strict_hns_working: "strict HNS working",
@@ -122,9 +119,7 @@ function filterName(filter) {
     needs_dane: "needs DANE",
     dane_working: "valid DANE",
     needs_fix: "needs fix",
-    missing_glue: "missing GLUE",
     missing_glue_only: "missing GLUE only",
-    stale_tlsa: "stale TLSA",
     stale_tlsa_only: "stale TLSA only"
   })[filter] || filter;
 }
@@ -385,12 +380,32 @@ function collectionForFilter(index, filter) {
   if (filter && index.collections && index.collections[filter]) {
     return {key: filter, collection: collectionWithRowStore(index, index.collections[filter])};
   }
+  if (filter) {
+    return {key: filter, collection: emptyCollectionForFilter(index, filter)};
+  }
   return {key: "all", collection: collectionWithRowStore(index, index.collections.all)};
 }
 
 function collectionWithRowStore(index, collection) {
   if (!collection || collection.row_source !== "postings") return collection;
   return {...collection, row_store: index.row_store || index.collections?.all};
+}
+
+function emptyCollectionForFilter(index, filter) {
+  const rowStore = index.row_store || index.collections?.all || {};
+  return {
+    row_count: 0,
+    total_count: 0,
+    page_size: Number(rowStore.page_size || index.page_size || 1000),
+    page_count: 0,
+    path_template: "",
+    truncated: false,
+    row_source: "postings",
+    row_detail: rowStore.row_detail || "full",
+    columns: rowStore.columns || null,
+    row_store: rowStore,
+    missing_filter: filter
+  };
 }
 
 function pagePath(pathTemplate, page) {
@@ -595,10 +610,6 @@ function normalizeIpQuery(query) {
   return "";
 }
 
-function isDaneRow(row) {
-  return hasDs(row) || Boolean(row.tlsa_status) || Boolean(row.dane_status);
-}
-
 function normalizeIpLookupResult(result, query, ip) {
   const rows = Array.isArray(result.rows) ? result.rows : [];
   return {
@@ -729,33 +740,29 @@ async function lookupExactName(query, index) {
   return lookupExactNameFromStatic(query, name, index);
 }
 
-async function applySearchToPageData(pageData, query, options = {}) {
+async function applySearchToPageData(pageData, query) {
   if (!query) return {...pageData, search: null, lookup: null};
   const ipLookup = await lookupIpAddress(query, activePage());
   if (ipLookup) {
-    const rows = options.daneOnly ? ipLookup.rows.filter(isDaneRow) : ipLookup.rows;
     const allCollection = pageData.index?.collections?.all || pageData.collection;
     const exportedCount = Number(allCollection.row_count || 0);
     const totalCount = Number(allCollection.total_count || exportedCount);
     const fullSnapshot = exportedCount === totalCount;
-    const rowCount = options.daneOnly ? rows.length : ipLookup.rowCount;
-    const pageCount = options.daneOnly ? (rows.length ? 1 : 0) : ipLookup.pageCount;
-    const page = options.daneOnly ? 1 : ipLookup.page;
     return {
       ...pageData,
       collection: {
         ...pageData.collection,
-        row_count: rowCount,
+        row_count: ipLookup.rowCount,
         page_size: ipLookup.pageSize,
-        page_count: pageCount,
+        page_count: ipLookup.pageCount,
         row_detail: ipLookup.rowDetail,
         columns: ipLookup.columns
       },
-      page,
-      rows,
+      page: ipLookup.page,
+      rows: ipLookup.rows,
       search: {
         query,
-        matchedCount: rowCount,
+        matchedCount: ipLookup.rowCount,
         totalCount: "snapshot",
         exact: false,
         ip: true,
@@ -767,7 +774,7 @@ async function applySearchToPageData(pageData, query, options = {}) {
     };
   }
   const lookup = await lookupExactName(query, pageData.index);
-  if (lookup && lookup.found && (!options.daneOnly || isDaneRow(lookup.row))) {
+  if (lookup && lookup.found) {
     return {
       ...pageData,
       collection: {
@@ -780,27 +787,6 @@ async function applySearchToPageData(pageData, query, options = {}) {
       search: {
         query,
         matchedCount: 1,
-        totalCount: "snapshot",
-        exact: true,
-        exactSource: lookup.source || "api",
-        fullSnapshot: lookup.fullSnapshot !== false
-      },
-      lookup
-    };
-  }
-  if (lookup && lookup.found && options.daneOnly) {
-    return {
-      ...pageData,
-      collection: {
-        ...pageData.collection,
-        row_count: 0,
-        page_count: 0
-      },
-      page: 1,
-      rows: [],
-      search: {
-        query,
-        matchedCount: 0,
         totalCount: "snapshot",
         exact: true,
         exactSource: lookup.source || "api",
@@ -896,11 +882,8 @@ function searchControls({id, label, placeholder, query, search}) {
   </form>`;
 }
 
-function lookupNotice(pageData, pageName) {
+function lookupNotice(pageData) {
   if (!pageData.lookup || !activeSearch()) return "";
-  if (pageData.lookup.found && pageName === "dane" && !isDaneRow(pageData.lookup.row)) {
-    return `<p class="meta search-meta">Exact lookup found ${escapeHtml(pageData.lookup.row.name)} in the full snapshot, but it is not a DANE candidate in the current data.</p>`;
-  }
   if (pageData.lookup.found) {
     if (pageData.lookup.source === "static") {
       const scope = pageData.lookup.fullSnapshot === false ? "the exported Names rows" : "the sorted static Names export";
@@ -923,24 +906,20 @@ function filterOptgroup(label, options, active) {
   return `<optgroup label="${escapeHtml(label)}">${options.map((item) => optionTag(item.value, item.label, active)).join("")}</optgroup>`;
 }
 
-function namesFilterControls({providers, broken, active}) {
-  const providerCounts = new Map();
-  providers.forEach((row) => {
-    const type = row.provider_type || "unknown";
-    providerCounts.set(type, (providerCounts.get(type) || 0) + Number(row.names_count || 0));
+function visibleSummaryOptions(options, summary, active) {
+  return options.filter((item) => {
+    if (!item.countKey) return true;
+    return Number(summary?.[item.countKey] || 0) > 0 || item.value === active;
   });
+}
+
+function namesFilterControls({summary, providers, broken, active}) {
   const providerOptions = providers
     .filter((row) => row.provider_key)
     .sort((a, b) => Number(b.names_count || 0) - Number(a.names_count || 0) || String(a.provider_key).localeCompare(String(b.provider_key)))
     .map((row) => ({
       value: `${PROVIDER_FILTER_PREFIX}${row.provider_key}`,
       label: `${row.provider_key} (${fmt.format(row.names_count || 0)})`
-    }));
-  const providerTypeOptions = Array.from(providerCounts.entries())
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .map(([type, count]) => ({
-      value: `${PROVIDER_TYPE_FILTER_PREFIX}${type}`,
-      label: `${prettyToken(type)} (${fmt.format(count)})`
     }));
   const failureOptions = (broken.reasons || [])
     .filter((row) => Number(row.count || 0) > 0)
@@ -950,21 +929,21 @@ function namesFilterControls({providers, broken, active}) {
     }));
   const generalOptions = [
     {value: "", label: "All names"},
-    {value: "direct_ip_records", label: "SYNTH nameservers"},
-    {value: "delegated_names", label: "Delegated names"},
-    {value: "default_provider_names", label: "Default providers"},
-    {value: "likely_websites", label: "Likely websites"},
-    {value: "strict_hns_ready", label: "Strict HNS ready"},
-    {value: "strict_hns_working", label: "Strict HNS working"},
-    {value: "needs_fix", label: "Needs fix"},
-    {value: "doh_fallback_required", label: "Resolver fallback required"}
+    {value: "direct_ip_records", label: "SYNTH nameservers", countKey: "direct_ip_records"},
+    {value: "delegated_names", label: "Delegated names", countKey: "delegated_names"},
+    {value: "default_provider_names", label: "Default providers", countKey: "default_provider_names"},
+    {value: "likely_websites", label: "Likely websites", countKey: "likely_websites"},
+    {value: "strict_hns_ready", label: "Strict HNS ready", countKey: "strict_hns_ready"},
+    {value: "strict_hns_working", label: "Strict HNS working", countKey: "strict_hns_working"},
+    {value: "needs_fix", label: "Needs fix", countKey: "needs_fix"},
+    {value: "doh_fallback_required", label: "Resolver fallback required", countKey: "doh_fallback_required"}
   ];
   const daneOptions = [
-    {value: "ds_records", label: "DS records"},
-    {value: "dnssec_candidates", label: "DNSSEC candidates"},
-    {value: "needs_dane", label: "Needs DANE"},
-    {value: "dane_working", label: "Valid DANE"},
-    {value: "stale_tlsa_only", label: "Stale TLSA"}
+    {value: "ds_records", label: "DS records", countKey: "ds_records"},
+    {value: "dnssec_candidates", label: "DNSSEC candidates", countKey: "dnssec_candidates"},
+    {value: "needs_dane", label: "Needs DANE", countKey: "needs_dane"},
+    {value: "dane_working", label: "Valid DANE", countKey: "dane_working"},
+    {value: "stale_tlsa_only", label: "Stale TLSA", countKey: "stale_tlsa_only"}
   ];
   const clearLink = active
     ? `<a class="search-clear" href="${escapeHtml(hrefWithoutParams(["filter", "page"]))}">Clear</a>`
@@ -974,11 +953,10 @@ function namesFilterControls({providers, broken, active}) {
     <label class="filter-field" for="names-filter">
       <span class="search-label">Filter</span>
       <select id="names-filter" name="filter">
-        ${filterOptgroup("General", generalOptions, active)}
-        ${filterOptgroup("DANE and DNSSEC", daneOptions, active)}
+        ${filterOptgroup("General", visibleSummaryOptions(generalOptions, summary, active), active)}
+        ${filterOptgroup("DANE and DNSSEC", visibleSummaryOptions(daneOptions, summary, active), active)}
         ${filterOptgroup("Failure Reasons", failureOptions, active)}
         ${filterOptgroup("Providers", providerOptions, active)}
-        ${filterOptgroup("Provider Types", providerTypeOptions, active)}
       </select>
     </label>
     ${clearLink}
@@ -1086,6 +1064,19 @@ function namesActionContext(actions = [], filter = "") {
   </section>`;
 }
 
+function overviewExplainers(explainers = []) {
+  if (!explainers.length) return "";
+  return `<article class="panel explainer-panel">
+    <h2>Metric Definitions</h2>
+    <div class="explainer-list">${explainers.map((item) => `
+      <a class="explainer-item" href="${escapeHtml(sitePath(item.filter_link || "names.html"))}">
+        <span>${escapeHtml(item.label || item.key || "")}</span>
+        <strong>${fmt.format(item.count ?? 0)}</strong>
+        <small>${escapeHtml(item.definition || "")}</small>
+      </a>`).join("")}</div>
+  </article>`;
+}
+
 async function renderOverview(app) {
   const summary = await loadJson("data/summary.json");
   const providers = summary.providers || [];
@@ -1097,6 +1088,7 @@ async function renderOverview(app) {
       ${topologySignals(summary)}
       <article class="panel"><h2>Provider Dominance</h2>${bars(providers, "provider_key", "names_count", 12, (value) => value, providerFilterHref)}</article>
       <article class="panel"><h2>On-Chain Classes</h2>${bars(classes, "class", "count", 12, classLabel, (row) => classFilterHref(row.class))}</article>
+      ${overviewExplainers(summary.overview_explainers || [])}
       <article class="panel"><h2>DANE</h2>
         <div class="stat-list">
           <a class="stat-line stat-link" href="${escapeHtml(sitePath("names.html?filter=ds_records"))}"><span>DS records</span><strong>${fmt.format(summary.ds_records)}</strong></a>
@@ -1116,22 +1108,6 @@ async function renderOverview(app) {
       <p class="meta">Source ${escapeHtml(summary.source_type || "unknown")} - rules v${summary.provider_rules_version ?? ""} ${escapeHtml((summary.provider_rules_hash || "").slice(0, 12))}</p>
       ${liveCheckMeta(summary)}</article>
     </section>`;
-}
-
-async function renderFaq(app) {
-  const [summary, answers] = await Promise.all([
-    loadJson("data/summary.json"),
-    loadJson("data/faq_answers.json")
-  ]);
-  app.innerHTML = `<section class="faq-list">${answers.map((item) => `
-    <article class="faq-item">
-      <h3>${escapeHtml(item.question)}</h3>
-      <span class="faq-count">${fmt.format(item.count)}</span>
-      <p class="definition">${escapeHtml(item.definition)}</p>
-      <p class="examples">Examples: ${escapeHtml((item.examples || []).join(", ") || "none in current export")}</p>
-      <p class="meta">${item.percentage_of_active}% of active names. Height ${item.last_checked_height ?? ""}.</p>
-      <a href="${escapeHtml(sitePath(item.filter_link))}">Filtered table</a>
-    </article>`).join("")}</section>`;
 }
 
 function pageLink(label, targetPage, disabled) {
@@ -1457,7 +1433,7 @@ async function renderNames(app) {
         <div class="panel-heading">
           <div><h2>Names</h2><p class="meta">${pageRangeMeta(pageData.collection, pageData.page, pageData.rows)} - height ${summary.last_indexed_height ?? ""}</p></div>
         </div>
-        ${namesFilterControls({providers, broken, active: filter})}
+        ${namesFilterControls({summary, providers, broken, active: filter})}
         ${searchControls({
           id: "names-search",
           label: "Search Names",
@@ -1466,7 +1442,7 @@ async function renderNames(app) {
           search: pageData.search
         })}
         ${namesActionContext(summary.next_actions || [], filter)}
-        ${lookupNotice(pageData, "names")}
+        ${lookupNotice(pageData)}
         ${namesPagination(pageData.collection, pageData.page)}
         ${table(pageData.rows, columns, query ? "No names match this search." : "No rows in this page.", {
           wrapClass: "names-table-wrap",
@@ -1487,7 +1463,6 @@ async function boot() {
   const app = document.getElementById("app");
   const renderers = {
     overview: renderOverview,
-    faq: renderFaq,
     names: renderNames
   };
   try {

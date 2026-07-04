@@ -10,7 +10,7 @@ from hns_topology.db import (
     set_meta,
     upsert_live_status,
 )
-from hns_topology.exporter import build_faq_answers, build_summary
+from hns_topology.exporter import build_summary
 from hns_topology.indexer import (
     UnpaginatedGetNamesError,
     bootstrap_from_fixture,
@@ -92,7 +92,6 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     with connect(db_path) as conn:
         count = bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
         summary = build_summary(conn)
-        answers = build_faq_answers(conn, summary)
         resource_ip_count = conn.execute("SELECT COUNT(*) FROM resource_ip").fetchone()[0]
         resource_ip_version = get_meta(conn, RESOURCE_IP_INDEX_META_KEY)
         resource_ip_indexes = {row["name"] for row in conn.execute("PRAGMA index_list(resource_ip)")}
@@ -127,9 +126,11 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     assert summary["source_file_hash"]
     assert summary["provider_rules_version"] == 4
     assert summary["provider_rules_hash"]
-    assert any(item["key"] == "direct_ip_records" for item in answers)
-    assert any(item["key"] == "needs_dane" for item in answers)
-    assert any(item["key"] == "needs_fix" for item in answers)
+    explainers = {item["key"]: item for item in summary["overview_explainers"]}
+    assert explainers["direct_ip_records"]["filter_link"] == "names.html?filter=direct_ip_records"
+    assert explainers["needs_dane"]["count"] == 1
+    assert "valid DANE" in explainers["needs_dane"]["definition"]
+    assert explainers["needs_fix"]["count"] == 2
     assert "examples" not in summary["broken"]
     assert {item["failure_reason"] for item in summary["broken"]["reasons"]} == set(FAILURE_REASONS)
     assert {item["ip"] for item in summary["top_resource_ips"]} >= {
@@ -155,7 +156,9 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     out = tmp_path / "public"
     (out / "data/dane-pages/all").mkdir(parents=True)
     (out / "providers.html").write_text("old providers page", encoding="utf-8")
+    (out / "faq.html").write_text("old faq page", encoding="utf-8")
     (out / "data/providers.json").write_text("{}", encoding="utf-8")
+    (out / "data/faq_answers.json").write_text("[]", encoding="utf-8")
     (out / "data/dane-pages/all/page-1.json").write_text("{}", encoding="utf-8")
     (out / "data/unknown-old-file.json").write_text("{}", encoding="utf-8")
     rules = ProviderRules.from_file("configs/provider_rules.json")
@@ -165,7 +168,6 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
 
     for relative in [
         "index.html",
-        "faq.html",
         "names.html",
         "data/summary.json",
         "data/manifest.json",
@@ -178,8 +180,10 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     for relative in [
         "providers.html",
         "broken.html",
+        "faq.html",
         "dane.html",
         "data/providers.json",
+        "data/faq_answers.json",
         "data/broken.json",
         "data/classes.json",
         "data/names.json",
@@ -226,6 +230,7 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert manifest["export"]["names_truncated"] is False
     assert manifest["export"]["download_artifacts_included"] is False
     assert "summary.json" in manifest_artifacts
+    assert "faq_answers.json" not in manifest_artifacts
     assert "providers.json" not in manifest_artifacts
     assert "classes.json" not in manifest_artifacts
     assert "broken.json" not in manifest_artifacts
@@ -247,6 +252,9 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert "dane_rows" not in names_pages["collections"]
     assert "missing_glue" not in names_pages["collections"]
     assert "stale_tlsa" not in names_pages["collections"]
+    assert "dane_working" not in names_pages["collections"]
+    assert "doh_fallback_required" not in names_pages["collections"]
+    assert "provider_type:self_hosted" not in names_pages["collections"]
     assert names_pages["collections"]["ds_records"]["row_count"] == 1
     assert names_pages["collections"]["strict_hns_ready"]["row_count"] == 3
     assert names_pages["collections"]["needs_dane"]["row_count"] == 1
@@ -293,6 +301,11 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert "examples" not in summary["broken"]
     assert "next_actions" in summary
     assert {item["filter"] for item in summary["next_actions"]} <= set(names_pages["collections"])
+    assert {item["key"] for item in summary["next_actions"]} == {
+        "generate_tlsa",
+        "fix_ns_glue",
+        "plan_dnssec_dane",
+    }
     assert namebase_provider["ns_pattern"] == "suffix:namebase.io,suffix:parking.namebase.io"
 
     checks = validate_release(db_path=db_path, public_dir=out)
@@ -436,13 +449,13 @@ def test_release_validator_catches_manifest_checksum_mismatch(tmp_path):
         bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
         generate_site(conn, db_path=db_path, out_dir=out)
 
-    (out / "data/faq_answers.json").write_text("[]\n", encoding="utf-8")
+    (out / "data/names-pages.json").write_text("{}\n", encoding="utf-8")
     checks = validate_release(db_path=db_path, public_dir=out)
 
     assert not release_is_valid(checks)
     failed = {check.name: check.detail for check in checks if not check.ok}
     assert "manifest_artifacts" in failed
-    assert "faq_answers.json" in failed["manifest_artifacts"]
+    assert "names-pages.json" in failed["manifest_artifacts"]
 
 
 def test_release_validator_catches_manifest_export_count_mismatch(tmp_path):

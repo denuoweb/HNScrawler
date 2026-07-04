@@ -10,7 +10,6 @@ from .exporter import export_all
 PAGES = {
     "index.html": ("overview", "HNS Topology"),
     "names.html": ("names", "Names"),
-    "faq.html": ("faq", "Topology FAQ"),
 }
 SITE_BASE_PATH = "/hns-topology/"
 
@@ -98,7 +97,6 @@ def _html(*, page: str, title: str) -> str:
         for filename, (name, label) in [
             ("index.html", ("overview", "Overview")),
             ("names.html", ("names", "Names")),
-            ("faq.html", ("faq", "FAQ")),
         ]
     )
     return f"""<!doctype html>

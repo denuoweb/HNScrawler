@@ -84,14 +84,14 @@ Broken/failure summaries keep only reason counts for the Names filter dropdown. 
 
 `summary.json` also includes a compact `next_actions` list that powers the Overview action panel and the filtered Names queue context. These entries reuse existing Names filters and DANE generator intents instead of creating separate action-specific artifacts.
 
+Metric definitions that previously lived on the FAQ page are embedded in `summary.json` as `overview_explainers` and rendered directly on the Overview page.
+
 Generated site files:
 
 - `index.html`
 - `names.html`
-- `faq.html`
 - `data/summary.json`
 - `data/manifest.json`
-- `data/faq_answers.json`
 - `data/names-pages.json`
 - `data/names-pages/...`
 - compact `data/ip-addresses/...` postings for GLUE and SYNTH address lookups

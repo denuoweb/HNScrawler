@@ -39,13 +39,11 @@ REQUIRED_META_KEYS = (
 
 REQUIRED_PUBLIC_FILES = (
     "index.html",
-    "faq.html",
     "names.html",
     "styles.css",
     "app.js",
     "data/summary.json",
     "data/manifest.json",
-    "data/faq_answers.json",
     "data/names-pages.json",
 )
 
@@ -53,7 +51,6 @@ PUBLIC_JSON_FILES = tuple(path for path in REQUIRED_PUBLIC_FILES if path.endswit
 FORBIDDEN_PUBLIC_SUFFIXES = (".key", ".pem")
 REQUIRED_MANIFEST_ARTIFACTS = (
     "summary.json",
-    "faq_answers.json",
     "names-pages.json",
 )
 OPTIONAL_MANIFEST_ARTIFACTS = (

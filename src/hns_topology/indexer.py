@@ -38,7 +38,7 @@ from .timeutil import utc_now
 
 
 class UnpaginatedGetNamesError(RuntimeError):
-    pass
+    """Raised when hsd getnames does not appear to support pagination."""
 
 
 @dataclass(frozen=True)
