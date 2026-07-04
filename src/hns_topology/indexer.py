@@ -338,6 +338,7 @@ def index_changed_names(
     height: int,
     block_hash: str,
     reorg_keep_blocks: int = 300,
+    refresh_provider_summary: bool = True,
 ) -> int:
     now = utc_now()
     indexed = 0
@@ -368,7 +369,8 @@ def index_changed_names(
         set_meta(conn, "crawler_version", __version__)
         _set_provider_rule_meta(conn, rules)
         prune_reorg_metadata(conn, reorg_keep_blocks, height)
-        recompute_provider_summary(conn, rules.provider_types, now, rules.provider_patterns)
+        if refresh_provider_summary:
+            recompute_provider_summary(conn, rules.provider_types, now, rules.provider_patterns)
     return indexed
 
 

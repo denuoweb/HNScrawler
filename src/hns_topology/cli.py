@@ -437,6 +437,10 @@ def _cmd_incremental_catch_up(
     )
     total_changed = 0
     scanned = 0
+    print(
+        f"catching up {block_count} blocks from height {last_height + 1} through {to_height}",
+        flush=True,
+    )
     for height in range(last_height + 1, to_height + 1):
         block = client.get_block_by_height(height)
         extraction = extract_changed_name_refs_from_block(block, name_by_hash=client.get_name_by_hash)
@@ -469,9 +473,19 @@ def _cmd_incremental_catch_up(
                 height=height,
                 block_hash=block_hash,
                 reorg_keep_blocks=args.reorg_keep_blocks,
+                refresh_provider_summary=False,
             )
         total_changed += count
         scanned += 1
+        if scanned == 1 or scanned % 25 == 0 or height == to_height:
+            print(
+                f"catch-up progress scanned={scanned}/{block_count} "
+                f"height={height} changed={total_changed}",
+                flush=True,
+            )
+    with connect(args.db) as conn:
+        recompute_provider_summary(conn, rules.provider_types, utc_now(), rules.provider_patterns)
+        conn.commit()
     print(f"caught up {scanned} blocks through height {to_height}; indexed {total_changed} names")
     return 0
 
