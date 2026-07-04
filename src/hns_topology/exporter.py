@@ -107,6 +107,34 @@ EXPORTED_NAME_FILTERS = (
     "missing_glue_only",
 )
 
+POSTING_NAME_FILTERS = {
+    "direct_ip_records": "has_synth = 1",
+    "delegated_names": "has_ns = 1",
+    "default_provider_names": "provider_type = 'default_parking'",
+    "ds_records": "has_ds = 1",
+    "dnssec_candidates": "has_ds = 1 AND has_ns = 1",
+    "strict_hns_ready": "has_synth = 1 OR (has_ns = 1 AND has_glue = 1)",
+    "likely_websites": "has_synth = 1 OR has_glue = 1 OR (has_ds = 1 AND has_ns = 1)",
+    "strict_hns_working": "strict_hns_status = 'working'",
+    "doh_fallback_required": "doh_fallback_status IN ('required', 'doh_fallback_only')",
+    "needs_dane": (
+        "(has_ds = 1 OR dnssec_status = 'valid') "
+        "AND COALESCE(dane_status, '') != 'valid' "
+        "AND COALESCE(tlsa_status, 'missing') IN ('missing', 'unknown', '')"
+    ),
+    "dane_working": "dane_status = 'valid'",
+    "needs_fix": (
+        "failure_reason IS NOT NULL OR "
+        "(has_ns = 1 AND has_glue = 0 AND "
+        "COALESCE(failure_reason, 'missing_glue') = 'missing_glue')"
+    ),
+    "missing_glue_only": (
+        "has_ns = 1 AND has_glue = 0 AND "
+        "COALESCE(failure_reason, 'missing_glue') = 'missing_glue'"
+    ),
+    "stale_tlsa_only": "failure_reason = 'stale_tlsa_spki_mismatch'",
+}
+
 
 def export_all(
     conn: sqlite3.Connection,
@@ -923,6 +951,7 @@ def _write_names_pages_streamed(
                 key,
                 row_detail=row_detail,
                 page_size=page_size,
+                full_export=exported_names == total_names,
             )
         _log_export("finished names-pages collections")
         return {
@@ -948,7 +977,20 @@ def _prepare_export_name_ordinals(conn: sqlite3.Connection, limit: int) -> None:
         """
         CREATE TEMP TABLE export_name_ordinals(
           name TEXT PRIMARY KEY,
-          ordinal INTEGER NOT NULL
+          ordinal INTEGER NOT NULL,
+          expired INTEGER NOT NULL,
+          provider_guess TEXT,
+          provider_type TEXT NOT NULL,
+          has_ds INTEGER NOT NULL,
+          has_ns INTEGER NOT NULL,
+          has_glue INTEGER NOT NULL,
+          has_synth INTEGER NOT NULL,
+          dnssec_status TEXT,
+          tlsa_status TEXT,
+          dane_status TEXT,
+          strict_hns_status TEXT,
+          doh_fallback_status TEXT,
+          failure_reason TEXT
         ) WITHOUT ROWID
         """
     )
@@ -956,18 +998,63 @@ def _prepare_export_name_ordinals(conn: sqlite3.Connection, limit: int) -> None:
         return
     conn.execute(
         """
-        INSERT INTO export_name_ordinals(name, ordinal)
-        SELECT name, ordinal
+        INSERT INTO export_name_ordinals(
+          name, ordinal, expired, provider_guess, provider_type, has_ds, has_ns,
+          has_glue, has_synth, dnssec_status, tlsa_status, dane_status,
+          strict_hns_status, doh_fallback_status, failure_reason
+        )
+        SELECT
+          name, ordinal, expired, provider_guess, provider_type, has_ds, has_ns,
+          has_glue, has_synth, dnssec_status, tlsa_status, dane_status,
+          strict_hns_status, doh_fallback_status, failure_reason
         FROM (
           SELECT
-            name,
-            row_number() OVER (ORDER BY name) - 1 AS ordinal
-          FROM names
-          ORDER BY name
+            n.name,
+            row_number() OVER (ORDER BY n.name) - 1 AS ordinal,
+            COALESCE(n.expired, 0) AS expired,
+            n.provider_guess,
+            COALESCE(ps.provider_type, 'unknown') AS provider_type,
+            COALESCE(rs.has_ds, 0) AS has_ds,
+            COALESCE(rs.has_ns, 0) AS has_ns,
+            COALESCE(rs.has_glue, 0) AS has_glue,
+            COALESCE(rs.has_synth, 0) AS has_synth,
+            ls.dnssec_status,
+            ls.tlsa_status,
+            ls.dane_status,
+            ls.strict_hns_status,
+            ls.doh_fallback_status,
+            ls.failure_reason
+          FROM names n
+          JOIN resource_summary rs ON rs.name = n.name
+          LEFT JOIN live_status ls ON ls.name = n.name
+          LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
+          ORDER BY n.name
           LIMIT ?
         )
         """,
         (limit,),
+    )
+    conn.execute("CREATE INDEX temp.idx_export_ordinals_ordinal ON export_name_ordinals(ordinal)")
+    conn.execute(
+        "CREATE INDEX temp.idx_export_ordinals_provider ON export_name_ordinals(provider_guess, ordinal)"
+    )
+    conn.execute(
+        "CREATE INDEX temp.idx_export_ordinals_provider_type ON export_name_ordinals(provider_type, ordinal)"
+    )
+    conn.execute(
+        "CREATE INDEX temp.idx_export_ordinals_failure ON export_name_ordinals(failure_reason, ordinal)"
+    )
+    conn.execute(
+        "CREATE INDEX temp.idx_export_ordinals_ns ON export_name_ordinals(has_ns, ordinal)"
+    )
+    conn.execute(
+        "CREATE INDEX temp.idx_export_ordinals_synth ON export_name_ordinals(has_synth, ordinal)"
+    )
+    conn.execute(
+        "CREATE INDEX temp.idx_export_ordinals_ds ON export_name_ordinals(has_ds, ordinal)"
+    )
+    conn.execute(
+        "CREATE INDEX temp.idx_export_ordinals_dane ON export_name_ordinals(dane_status, ordinal)"
     )
 
 
@@ -1045,34 +1132,23 @@ def _write_name_postings_collection(
     *,
     row_detail: str,
     page_size: int,
+    full_export: bool,
 ) -> dict[str, Any]:
     collection_dir = base_dir / _collection_dir_name(key)
     collection_dir.mkdir(parents=True, exist_ok=True)
-    from_sql = _name_rows_from_sql()
-    where, params = _name_collection_where(key)
-    total_count = int(
-        conn.execute(
-            f"""
-            SELECT COUNT(*)
-            {from_sql}
-            WHERE {where}
-            """,
-            params,
-        ).fetchone()[0]
-        or 0
-    )
+    where, params = _posting_collection_where(key)
     row_count = int(
         conn.execute(
             f"""
             SELECT COUNT(*)
-            {from_sql}
-            JOIN export_name_ordinals eno ON eno.name = n.name
+            FROM export_name_ordinals
             WHERE {where}
             """,
             params,
         ).fetchone()[0]
         or 0
     )
+    total_count = row_count if full_export else _base_collection_count(conn, key)
     page_count = max(1, math.ceil(row_count / page_size)) if row_count else 0
     _log_export(
         f"writing names-pages/{key} postings rows={row_count} total={total_count} "
@@ -1081,11 +1157,10 @@ def _write_name_postings_collection(
     if row_count > 0:
         cursor = conn.execute(
             f"""
-            SELECT eno.ordinal
-            {from_sql}
-            JOIN export_name_ordinals eno ON eno.name = n.name
+            SELECT ordinal
+            FROM export_name_ordinals
             WHERE {where}
-            ORDER BY n.name
+            ORDER BY ordinal
             """,
             params,
         )
@@ -1118,6 +1193,36 @@ def _write_name_postings_collection(
     }
 
 
+def _base_collection_count(conn: sqlite3.Connection, key: str) -> int:
+    from_sql = _name_rows_from_sql()
+    where, params = _name_collection_where(key)
+    return int(
+        conn.execute(
+            f"""
+            SELECT COUNT(*)
+            {from_sql}
+            WHERE {where}
+            """,
+            params,
+        ).fetchone()[0]
+        or 0
+    )
+
+
+def _posting_collection_where(key: str) -> tuple[str, tuple[Any, ...]]:
+    if key.startswith(FAILURE_REASON_FILTER_PREFIX):
+        return "expired = 0 AND failure_reason = ?", (
+            key.removeprefix(FAILURE_REASON_FILTER_PREFIX),
+        )
+    if key.startswith(PROVIDER_FILTER_PREFIX):
+        return "expired = 0 AND provider_guess = ?", (
+            key.removeprefix(PROVIDER_FILTER_PREFIX),
+        )
+    if key.startswith(PROVIDER_TYPE_FILTER_PREFIX):
+        return "provider_type = ?", (key.removeprefix(PROVIDER_TYPE_FILTER_PREFIX),)
+    return f"expired = 0 AND ({POSTING_NAME_FILTERS.get(key, '1=1')})", ()
+
+
 def _collection_dir_name(key: str) -> str:
     return key.replace("/", "__slash__")
 
@@ -1128,7 +1233,7 @@ def _name_collection_keys(conn: sqlite3.Connection) -> list[str]:
         for row in conn.execute(
             """
             SELECT failure_reason
-            FROM live_status
+            FROM export_name_ordinals
             WHERE failure_reason IS NOT NULL
             GROUP BY failure_reason
             ORDER BY failure_reason
