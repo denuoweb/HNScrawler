@@ -100,7 +100,7 @@ NEXT_ACTION_SPECS = (
         count_key="needs_dane",
         filter_key="needs_dane",
         generator_intent="generate_tlsa",
-        definition="DS or live-valid DNSSEC exists, but valid TLSA/DANE is not proven.",
+        definition="DS or live-valid DNSSEC exists, but direct TLSA/DANE is not proven by the indexer.",
     ),
     NextActionSpec(
         key="fix_ns_glue",
@@ -128,11 +128,11 @@ NEXT_ACTION_SPECS = (
     ),
     NextActionSpec(
         key="verified_dane",
-        label="Verified DANE",
+        label="Direct DANE verified",
         count_key="dane_working",
         filter_key="dane_working",
         generator_intent="",
-        definition="Latest live check matched DNSSEC, TLSA, and HTTPS certificate/SPKI.",
+        definition="Latest indexer live check matched direct delegated DNSSEC, exact TLSA, and HTTPS certificate/SPKI. This is not an Android/browser compatibility proof.",
     ),
 )
 
@@ -195,13 +195,13 @@ OVERVIEW_EXPLAINER_SPECS = (
         key="needs_dane",
         label="Needs DANE",
         count_key="needs_dane",
-        definition="Names with DS or live-valid DNSSEC where the latest data does not show valid DANE and TLSA is missing or still unknown.",
+        definition="Names with DS or live-valid DNSSEC where the latest data does not show direct DANE and TLSA is missing or still unknown.",
     ),
     OverviewExplainerSpec(
         key="dane_working",
-        label="Valid DANE",
+        label="Direct DANE",
         count_key="dane_working",
-        definition="Latest live check found a TLSA record matching the HTTPS certificate/SPKI.",
+        definition="Latest indexer live check matched direct delegated DNSSEC, exact TLSA, and HTTPS certificate/SPKI. This is not an Android/browser compatibility proof.",
     ),
     OverviewExplainerSpec(
         key="needs_fix",

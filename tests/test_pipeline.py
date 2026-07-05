@@ -129,7 +129,7 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     explainers = {item["key"]: item for item in summary["overview_explainers"]}
     assert explainers["direct_ip_records"]["filter_link"] == "names.html?filter=direct_ip_records"
     assert explainers["needs_dane"]["count"] == 1
-    assert "valid DANE" in explainers["needs_dane"]["definition"]
+    assert "direct DANE" in explainers["needs_dane"]["definition"]
     assert explainers["needs_fix"]["count"] == 2
     assert "examples" not in summary["broken"]
     assert {item["failure_reason"] for item in summary["broken"]["reasons"]} == set(FAILURE_REASONS)

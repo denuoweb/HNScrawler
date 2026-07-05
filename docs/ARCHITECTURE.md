@@ -86,15 +86,15 @@ External workers can submit the same evidence JSON through `hns-topology import-
 
 ## Adoption Funnel
 
-The public report is organized around next action, not just raw classification. On-chain data produces opportunity buckets such as likely websites, strict-HNS-ready names, DS records, DNSSEC candidates, missing-GLUE names, and provider groups. Live checks add status buckets such as strict HNS working, resolver fallback required, stale TLSA, DNSSEC mismatch, and valid DANE.
+The public report is organized around next action, not just raw classification. On-chain data produces opportunity buckets such as likely websites, strict-HNS-ready names, DS records, DNSSEC candidates, missing-GLUE names, and provider groups. Live checks add status buckets such as strict HNS working, resolver fallback required, stale TLSA, DNSSEC mismatch, and direct DANE.
 
 Names is the canonical search surface. Rows carry enough status to derive one next step:
 
-- DS present but no valid TLSA/DANE: generate TLSA.
+- DS present but no direct TLSA/DANE: generate TLSA.
 - Missing GLUE: generate or review NS/GLUE setup.
 - DS/DNSKEY mismatch or DNSSEC failure: regenerate/check DS.
 - Stale TLSA: generate current TLSA from the served certificate/public key.
-- Valid DANE: show the verified badge.
+- Direct DANE: show the direct DANE badge.
 
 The DANE Record Generator is the record-production surface. Report action links use `/dane-generator/` query parameters such as `domain`, `intent`, `mode`, `nameserver`, `ns4`, and `ns6` to prefill that workflow.
 
@@ -121,4 +121,4 @@ The `doh_fallback_status` field records whether the checker had to use the confi
 
 HTTPS certificate capture is independent from WebPKI validation. The checker first tries a normal verified TLS connection. If WebPKI validation fails, it retries with certificate verification disabled only to capture the peer certificate/SPKI for TLSA matching. A matching TLSA record can therefore produce `dane_status = valid` even when `https_status = tls_unverified`.
 
-For names with on-chain DS records, live checks compare the HNS resource DS data to delegated DNSKEY records and validate the DNSKEY RRset signature when an RRSIG is present. DANE is only marked valid when DNSSEC status is valid and the TLSA association matches the HTTPS certificate/SPKI.
+For names with on-chain DS records, live checks compare the HNS resource DS data to delegated DNSKEY records and validate the DNSKEY RRset signature when an RRSIG is present. DANE is only marked valid when DNSSEC status is valid and the exact TLSA association matches the HTTPS certificate/SPKI from the indexer vantage. That exported status is a direct indexer DANE result, not a browser compatibility proof.

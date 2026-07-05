@@ -117,7 +117,7 @@ function filterName(filter) {
     strict_hns_working: "strict HNS working",
     doh_fallback_required: "resolver fallback required",
     needs_dane: "needs DANE",
-    dane_working: "valid DANE",
+    dane_working: "direct DANE",
     needs_fix: "needs fix",
     missing_glue_only: "missing GLUE only",
     stale_tlsa_only: "stale TLSA only"
@@ -293,8 +293,8 @@ function rowAction(row) {
   if (row.dane_status === "valid") {
     return {
       type: "badge",
-      label: "Verified DANE",
-      detail: "DNSSEC, TLSA, and HTTPS matched in the latest live check.",
+      label: "Direct DANE verified",
+      detail: "Direct delegated DNSSEC, exact TLSA, and HTTPS matched in latest indexer live check.",
       href: sitePath(`names.html?filter=dane_working&q=${encodeURIComponent(row.name || "")}`)
     };
   }
@@ -367,7 +367,7 @@ function snapshot(summary) {
     ${metric("Active names", summary.active_names, `${fmt.format(summary.expired_names)} expired`, "names.html")}
     ${metric("SYNTH NS", summary.synth_nameserver_records ?? summary.direct_ip_records, pct(summary.synth_nameserver_records ?? summary.direct_ip_records, summary.active_names), "names.html?filter=direct_ip_records")}
     ${metric("DS records", summary.ds_records, pct(summary.ds_records, summary.active_names), "names.html?filter=ds_records")}
-    ${metric("Valid DANE", summary.dane_working, `${fmt.format(summary.strict_hns_working)} strict HNS working`, "names.html?filter=dane_working")}
+    ${metric("Direct DANE", summary.dane_working, `${fmt.format(summary.strict_hns_working)} strict HNS working`, "names.html?filter=dane_working")}
   </section>`;
 }
 
@@ -942,7 +942,7 @@ function namesFilterControls({summary, providers, broken, active}) {
     {value: "ds_records", label: "DS records", countKey: "ds_records"},
     {value: "dnssec_candidates", label: "DNSSEC candidates", countKey: "dnssec_candidates"},
     {value: "needs_dane", label: "Needs DANE", countKey: "needs_dane"},
-    {value: "dane_working", label: "Valid DANE", countKey: "dane_working"},
+    {value: "dane_working", label: "Direct DANE", countKey: "dane_working"},
     {value: "stale_tlsa_only", label: "Stale TLSA", countKey: "stale_tlsa_only"}
   ];
   const clearLink = active
@@ -995,13 +995,13 @@ function adoptionFunnel(summary) {
       label: "Needs DANE",
       value: summary.needs_dane,
       filter: "needs_dane",
-      note: "DS exists but valid TLSA is not proven."
+      note: "DS exists but direct TLSA is not proven."
     },
     {
-      label: "Valid DANE",
+      label: "Direct DANE",
       value: summary.dane_working,
       filter: "dane_working",
-      note: "DNSSEC, TLSA, and HTTPS matched."
+      note: "Indexer matched DNSSEC, TLSA, and HTTPS."
     },
     {
       label: "Needs fix",
@@ -1093,7 +1093,7 @@ async function renderOverview(app) {
         <div class="stat-list">
           <a class="stat-line stat-link" href="${escapeHtml(sitePath("names.html?filter=ds_records"))}"><span>DS records</span><strong>${fmt.format(summary.ds_records)}</strong></a>
           <a class="stat-line stat-link" href="${escapeHtml(sitePath("names.html?filter=needs_dane"))}"><span>Needs DANE</span><strong>${fmt.format(summary.needs_dane)}</strong></a>
-          <a class="stat-line stat-link" href="${escapeHtml(sitePath("names.html?filter=dane_working"))}"><span>Valid DANE</span><strong>${fmt.format(summary.dane_working)}</strong></a>
+          <a class="stat-line stat-link" href="${escapeHtml(sitePath("names.html?filter=dane_working"))}"><span>Direct DANE</span><strong>${fmt.format(summary.dane_working)}</strong></a>
         </div>
       </article>
       <article class="panel"><h2>Fix Queues</h2>

@@ -11,7 +11,7 @@ This project is intentionally not a live explorer, a full DNS warehouse, or a we
 - How many use default provider infrastructure?
 - How many have DS records and are DNSSEC candidates?
 - How many are likely websites?
-- How many load in strict HNS mode, require fallback, or have working DANE?
+- How many load in strict HNS mode, require fallback, or have direct indexer-verified DANE?
 - Which providers dominate HNS?
 - Which names are broken by missing glue or stale TLSA?
 
@@ -24,8 +24,8 @@ The Overview is shaped as an adoption funnel:
 - Can become a site: likely website candidates.
 - Strict HNS ready: SYNTH nameserver bootstrap or delegated names with GLUE.
 - DNSSEC ready: names with DS plus delegated nameserver data.
-- Needs DANE: DS or live-valid DNSSEC exists, but valid TLSA/DANE is not proven.
-- Valid DANE: latest live check matched DNSSEC, TLSA, and HTTPS certificate/SPKI.
+- Needs DANE: DS or live-valid DNSSEC exists, but direct TLSA/DANE is not proven by the indexer.
+- Direct DANE: latest indexer live check matched direct delegated DNSSEC, exact TLSA, and HTTPS certificate/SPKI. This is not an Android/browser compatibility proof.
 - Needs fix: missing GLUE or a live-check failure reason.
 
 The Names page is the main work surface. Each row shows the next action and links to `/dane-generator/` with query parameters such as `domain`, `intent`, `mode`, `ns4`, and `ns6` so the generator can prefill the relevant setup path.
