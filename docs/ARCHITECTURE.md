@@ -1,6 +1,6 @@
 # Architecture
 
-Denuo HNS Topology Report is a periodic snapshot system.
+Denuo HNS DANE Compliance is a periodic snapshot system for finding, triaging, and verifying Handshake names on the DNSSEC + TLSA path.
 
 It has two deployment surfaces:
 
@@ -15,10 +15,10 @@ The website VM does not need HSD or the HSD datadir. High-cardinality lookup pat
 HSD node
   -> current name state
   -> stopped-node JSONL state export
-  -> compact SQLite topology DB
+  -> compact SQLite compliance DB
   -> optional live DNS/DNSSEC/TLSA/HTTPS checks for promising names
   -> static JSON exports
-  -> static report site
+  -> static compliance site
   -> release archive manifest, site tarball, and SQLite backup
   -> rsync to denuowebsite-vm
 ```
@@ -84,21 +84,36 @@ Checks are rate-limited and store status metadata plus DNS evidence observations
 
 External workers can submit the same evidence JSON through `hns-topology import-dns-evidence`. This gives the project a crowd-sourced path: independent scanners can publish actual RRset observations with `source` and `source_id`, while the public report shows the latest observation per query/source.
 
-## Adoption Funnel
+## DANE Compliance Pipeline
 
-The public report is organized around next action, not just raw classification. On-chain data produces opportunity buckets such as likely websites, strict-HNS-ready names, DS records, DNSSEC candidates, missing-GLUE names, and provider groups. Live checks add status buckets such as strict HNS working, resolver fallback required, stale TLSA, DNSSEC mismatch, and direct DANE.
+The public site is organized around DANE progress and generator handoff, not just raw classification. On-chain data and live-check results collapse into one exported `compliance_stage` per active name. Legacy counters such as DS records, DNSSEC candidates, strict HNS working, and needs DANE remain as search and summary facets, but the stage is the canonical workflow state.
 
-Names is the canonical search surface. Rows carry enough status to derive one next step:
+The stage vocabulary is deliberately mutually exclusive:
 
-- DS present but no direct TLSA/DANE: generate TLSA.
-- Missing GLUE: generate or review NS/GLUE setup.
-- DS/DNSKEY mismatch or DNSSEC failure: regenerate/check DS.
-- Stale TLSA: generate current TLSA from the served certificate/public key.
-- Direct DANE: show the direct DANE badge.
+- `dane_verified`: DNSSEC, TLSA, and HTTPS certificate/SPKI matched.
+- `tlsa_gap`: DNSSEC is present or live-valid, but matching TLSA is missing or unproven.
+- `stale_tlsa`: TLSA exists but no longer matches the served certificate/public key.
+- `dnssec_broken`: parent DS, delegated DNSKEY, or signatures need repair.
+- `missing_glue`: delegation lacks parent-side nameserver bootstrap addresses.
+- `bootstrap_ready`: HNS bootstrap exists; sign DNSSEC, publish DS, and add TLSA.
+- `resolver_fallback`: strict HNS bootstrap failed and fallback resolver data was required.
+- `service_blocked`: HTTPS or another live-check condition blocked DANE proof.
+- `non_actionable`: expired, parked/default, resolver infrastructure, empty, or unsupported resources.
 
-The DANE Record Generator is the record-production surface. Report action links use `/dane-generator/` query parameters such as `domain`, `intent`, `mode`, `nameserver`, `ns4`, and `ns6` to prefill that workflow.
+Name Audit is the canonical search surface. Rows carry that stage plus enough status to derive one next step:
 
-Large Names collections use compact row arrays to keep the public artifact set small. Compact rows still include first NS/GLUE/SYNTH scalar fields so generator handoff links can prefill the authoritative nameserver path without reintroducing separate Providers, DANE, or Broken-pages exports.
+- `tlsa_gap`: generate TLSA.
+- `missing_glue`: create or review NS/GLUE setup.
+- `dnssec_broken`: regenerate/check DS.
+- `stale_tlsa`: replace TLSA from the served certificate/public key.
+- `bootstrap_ready`: plan DNSSEC and DANE setup.
+- `dane_verified`: show the DANE compliance badge.
+
+Expanded rows lead with a Compliance Checklist: parent delegation, HNS bootstrap, DNSSEC chain, TLSA owner, HTTPS SPKI match, and resolver fallback. The checklist reuses exported row fields instead of adding a second audit artifact, so each name reads as a DANE audit result while the static data model stays compact.
+
+The DANE Record Generator is the record-production surface. Report action links are built only through `generator_handoff.js`, which defines the supported `/dane-generator/` query contract. The stable fields are `domain`, `domain_type`, `intent`, `mode`, `nameserver`, `ns4`, and `ns6`; evidence-backed fields `a`, `aaaa`, `port`, `dnskey`, `pem`, and `cert` are included when present on the row or supplied by the caller.
+
+Large Names collections use compact row arrays to keep the public artifact set small. Compact rows still include `compliance_stage` plus first NS/GLUE/SYNTH scalar fields so generator handoff links can prefill the authoritative nameserver path without reintroducing separate Providers, DANE, or Broken-pages exports.
 
 ## Provider Rules
 

@@ -14,6 +14,12 @@ from typing import Any, NamedTuple
 from urllib.parse import quote
 
 from . import __version__
+from .compliance import (
+    COMPLIANCE_STAGE_DEFINITIONS,
+    COMPLIANCE_STAGE_LABELS,
+    COMPLIANCE_STAGES,
+    compliance_stage_case,
+)
 from .db import get_meta, parse_json_columns, require_resource_ip_index, rows_to_dicts, table_count
 from .fileutil import file_sha256
 from .infra import KNOWN_HNS_RESOLVERS, NON_ACTIONABLE_PROVIDER_TYPES, resource_ip_role
@@ -30,6 +36,7 @@ PAGE_SIZE = 1000
 DETAILED_NAME_COLLECTION_ROW_LIMIT = 100_000
 FAILURE_REASON_FILTER_PREFIX = "failure_reason:"
 PROVIDER_FILTER_PREFIX = "provider:"
+COMPLIANCE_STAGE_FILTER_PREFIX = "stage:"
 IP_FIELD_BITS = {
     "GLUE4": 1,
     "GLUE6": 2,
@@ -46,8 +53,7 @@ ACTIONABLE_EXPORT_SQL = f"provider_type NOT IN ({NON_ACTIONABLE_PROVIDER_TYPES_S
 class NextActionSpec(NamedTuple):
     key: str
     label: str
-    count_key: str
-    filter_key: str
+    stage: str
     generator_intent: str
     definition: str
 
@@ -96,35 +102,38 @@ NAME_FILTERS = {
 NEXT_ACTION_SPECS = (
     NextActionSpec(
         key="generate_tlsa",
-        label="Generate TLSA",
-        count_key="needs_dane",
-        filter_key="needs_dane",
+        label="Generate TLSA record",
+        stage="tlsa_gap",
         generator_intent="generate_tlsa",
-        definition="DS or live-valid DNSSEC exists, but direct TLSA/DANE is not proven by the indexer.",
+        definition="DNSSEC is present or live-valid, but the indexer has not proven a matching HTTPS TLSA association.",
     ),
     NextActionSpec(
         key="fix_ns_glue",
-        label="Generate NS/GLUE setup",
-        count_key="missing_glue_only",
-        filter_key="missing_glue_only",
+        label="Create NS/GLUE handoff",
+        stage="missing_glue",
         generator_intent="missing_glue",
-        definition="Delegated names need parent-side nameserver bootstrap before strict HNS can work.",
+        definition="Delegated names need parent-side nameserver bootstrap before HNS resolution can reach the signed TLSA zone.",
     ),
     NextActionSpec(
         key="replace_tlsa",
-        label="Generate current TLSA",
-        count_key="stale_tlsa_only",
-        filter_key="stale_tlsa_only",
+        label="Replace stale TLSA",
+        stage="stale_tlsa",
         generator_intent="stale_tlsa",
         definition="TLSA data did not match the current HTTPS certificate public key.",
     ),
     NextActionSpec(
+        key="repair_dnssec",
+        label="Repair DNSSEC chain",
+        stage="dnssec_broken",
+        generator_intent="dnssec_fix",
+        definition="Parent DS, delegated DNSKEY, or signatures need repair before TLSA can validate.",
+    ),
+    NextActionSpec(
         key="plan_dnssec_dane",
-        label="Plan DNSSEC/DANE",
-        count_key="strict_hns_ready",
-        filter_key="strict_hns_ready",
+        label="Plan DNSSEC + DANE",
+        stage="bootstrap_ready",
         generator_intent="dnssec_dane",
-        definition="Strict-HNS bootstrap material exists; sign the zone, publish DS, and add TLSA.",
+        definition="HNS bootstrap material exists; sign the authoritative zone, publish DS at the parent, and add TLSA.",
     ),
 )
 
@@ -187,13 +196,13 @@ OVERVIEW_EXPLAINER_SPECS = (
         key="needs_dane",
         label="Needs DANE",
         count_key="needs_dane",
-        definition="Names with DS or live-valid DNSSEC where the latest data does not show direct DANE and TLSA is missing or still unknown.",
+        definition="Names with DS or live-valid DNSSEC where matching HTTPS TLSA data is missing or still unproven.",
     ),
     OverviewExplainerSpec(
         key="dane_working",
-        label="Direct DANE",
+        label="DANE verified",
         count_key="dane_working",
-        definition="Latest indexer live check matched direct delegated DNSSEC, exact TLSA, and HTTPS certificate/SPKI. This is not an Android/browser compatibility proof.",
+        definition="Latest indexer live check matched DNSSEC, exact TLSA, and HTTPS certificate/SPKI. This is not an Android/browser compatibility proof.",
     ),
     OverviewExplainerSpec(
         key="needs_fix",
@@ -266,6 +275,38 @@ POSTING_NAME_FILTERS = {
     ),
     "stale_tlsa_only": "failure_reason = 'stale_tlsa_spki_mismatch'",
 }
+
+
+def _name_compliance_stage_sql() -> str:
+    return compliance_stage_case(
+        expired="n.expired",
+        provider_type="ps.provider_type",
+        has_ds="rs.has_ds",
+        has_ns="rs.has_ns",
+        has_glue="rs.has_glue",
+        has_synth="rs.has_synth",
+        dnssec_status="ls.dnssec_status",
+        tlsa_status="ls.tlsa_status",
+        dane_status="ls.dane_status",
+        doh_fallback_status="ls.doh_fallback_status",
+        failure_reason="ls.failure_reason",
+    )
+
+
+def _export_compliance_stage_sql() -> str:
+    return compliance_stage_case(
+        expired="expired",
+        provider_type="provider_type",
+        has_ds="has_ds",
+        has_ns="has_ns",
+        has_glue="has_glue",
+        has_synth="has_synth",
+        dnssec_status="dnssec_status",
+        tlsa_status="tlsa_status",
+        dane_status="dane_status",
+        doh_fallback_status="doh_fallback_status",
+        failure_reason="failure_reason",
+    )
 
 
 def export_all(
@@ -443,16 +484,53 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
     summary["top_resource_ips"] = build_top_resource_ips(conn)
     summary["top_nameservers"] = build_top_nameservers(conn)
     summary["known_hns_resolvers"] = [dict(item) for item in KNOWN_HNS_RESOLVERS]
+    summary["compliance_stages"] = build_compliance_stages(conn)
+    summary["compliance_stage_counts"] = {
+        item["stage"]: int(item["count"]) for item in summary["compliance_stages"]
+    }
     summary["next_actions"] = build_next_actions(summary)
     summary["overview_explainers"] = build_overview_explainers(summary)
     return summary
 
 
 def build_next_actions(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    stage_counts = summary.get("compliance_stage_counts", {})
     return [
-        _next_action_from_spec(spec, summary)
+        _next_action_from_spec(spec, stage_counts)
         for spec in NEXT_ACTION_SPECS
-        if int(summary[spec.count_key]) > 0
+        if int(stage_counts.get(spec.stage, 0)) > 0
+    ]
+
+
+def build_compliance_stages(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    stage_sql = _name_compliance_stage_sql()
+    counts = {
+        row["compliance_stage"]: int(row["count"] or 0)
+        for row in conn.execute(
+            f"""
+            SELECT compliance_stage, COUNT(*) AS count
+            FROM (
+              SELECT {stage_sql} AS compliance_stage
+              FROM names n
+              JOIN resource_summary rs ON rs.name = n.name
+              LEFT JOIN live_status ls ON ls.name = n.name
+              LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
+              WHERE COALESCE(n.expired, 0) = 0
+            )
+            GROUP BY compliance_stage
+            """
+        )
+    }
+    return [
+        {
+            "stage": stage,
+            "label": COMPLIANCE_STAGE_LABELS[stage],
+            "count": counts.get(stage, 0),
+            "definition": COMPLIANCE_STAGE_DEFINITIONS[stage],
+            "filter": _stage_filter(stage),
+            "filter_link": _stage_filter_link(stage),
+        }
+        for stage in COMPLIANCE_STAGES
     ]
 
 
@@ -464,13 +542,14 @@ def build_overview_explainers(summary: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def _next_action_from_spec(spec: NextActionSpec, summary: dict[str, Any]) -> dict[str, Any]:
+def _next_action_from_spec(spec: NextActionSpec, stage_counts: dict[str, Any]) -> dict[str, Any]:
     return {
         "key": spec.key,
         "label": spec.label,
-        "count": int(summary[spec.count_key]),
-        "filter": spec.filter_key,
-        "filter_link": _filter_link(spec.filter_key),
+        "count": int(stage_counts.get(spec.stage, 0)),
+        "stage": spec.stage,
+        "filter": _stage_filter(spec.stage),
+        "filter_link": _stage_filter_link(spec.stage),
         "generator_intent": spec.generator_intent,
         "definition": spec.definition,
     }
@@ -494,6 +573,14 @@ def _overview_explainer_from_spec(
 
 def _filter_link(filter_key: str) -> str:
     return f"names.html?filter={filter_key}"
+
+
+def _stage_filter(stage: str) -> str:
+    return f"{COMPLIANCE_STAGE_FILTER_PREFIX}{stage}"
+
+
+def _stage_filter_link(stage: str) -> str:
+    return _filter_link(_stage_filter(stage))
 
 
 def build_classes(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -609,6 +696,7 @@ def build_names(
     offset: int = 0,
     where: str = "1=1",
 ) -> list[dict[str, Any]]:
+    compliance_stage_sql = _name_compliance_stage_sql()
     rows = conn.execute(
         f"""
         SELECT
@@ -617,6 +705,7 @@ def build_names(
           rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.ds_records, rs.has_ds,
           rs.raw_size, rs.resource_version, rs.resource_hash, n.last_seen_height, n.updated_at,
           { _dns_evidence_path_sql() },
+          {compliance_stage_sql} AS compliance_stage,
           ls.dns_reachable, ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.https_status,
           ls.strict_hns_status, ls.doh_fallback_status, ls.failure_reason, ls.checked_at
         FROM names n
@@ -1059,23 +1148,25 @@ def _prepare_export_name_ordinals(conn: sqlite3.Connection, limit: int) -> None:
           dane_status TEXT,
           strict_hns_status TEXT,
           doh_fallback_status TEXT,
-          failure_reason TEXT
+          failure_reason TEXT,
+          compliance_stage TEXT NOT NULL
         ) WITHOUT ROWID
         """
     )
     if limit <= 0:
         return
     conn.execute(
-        """
+        f"""
         INSERT INTO export_name_ordinals(
           name, ordinal, expired, provider_guess, provider_type, has_ds, has_ns,
           has_glue, has_synth, dnssec_status, tlsa_status, dane_status,
-          strict_hns_status, doh_fallback_status, failure_reason
+          strict_hns_status, doh_fallback_status, failure_reason, compliance_stage
         )
         SELECT
           name, ordinal, expired, provider_guess, provider_type, has_ds, has_ns,
           has_glue, has_synth, dnssec_status, tlsa_status, dane_status,
-          strict_hns_status, doh_fallback_status, failure_reason
+          strict_hns_status, doh_fallback_status, failure_reason,
+          {_export_compliance_stage_sql()} AS compliance_stage
         FROM (
           SELECT
             n.name,
@@ -1124,6 +1215,9 @@ def _prepare_export_name_ordinals(conn: sqlite3.Connection, limit: int) -> None:
     )
     conn.execute(
         "CREATE INDEX temp.idx_export_ordinals_dane ON export_name_ordinals(dane_status, ordinal)"
+    )
+    conn.execute(
+        "CREATE INDEX temp.idx_export_ordinals_compliance ON export_name_ordinals(compliance_stage, ordinal)"
     )
 
 
@@ -1283,6 +1377,10 @@ def _posting_collection_where(key: str) -> tuple[str, tuple[Any, ...]]:
         return "expired = 0 AND failure_reason = ?", (
             key.removeprefix(FAILURE_REASON_FILTER_PREFIX),
         )
+    if key.startswith(COMPLIANCE_STAGE_FILTER_PREFIX):
+        return "expired = 0 AND compliance_stage = ?", (
+            key.removeprefix(COMPLIANCE_STAGE_FILTER_PREFIX),
+        )
     if key.startswith(PROVIDER_FILTER_PREFIX):
         return "expired = 0 AND provider_guess = ?", (
             key.removeprefix(PROVIDER_FILTER_PREFIX),
@@ -1313,6 +1411,19 @@ def _name_collection_keys(conn: sqlite3.Connection) -> list[str]:
         )
         if row["failure_reason"]
     ]
+    compliance_stages = [
+        row["compliance_stage"]
+        for row in conn.execute(
+            """
+            SELECT compliance_stage
+            FROM export_name_ordinals
+            WHERE expired = 0
+            GROUP BY compliance_stage
+            ORDER BY compliance_stage
+            """
+        )
+        if row["compliance_stage"]
+    ]
     provider_keys = [
         row["provider_key"]
         for row in conn.execute(
@@ -1327,6 +1438,7 @@ def _name_collection_keys(conn: sqlite3.Connection) -> list[str]:
     return [
         "all",
         *filter_keys,
+        *(f"{COMPLIANCE_STAGE_FILTER_PREFIX}{stage}" for stage in compliance_stages),
         *(f"{FAILURE_REASON_FILTER_PREFIX}{reason}" for reason in failure_reasons),
         *(f"{PROVIDER_FILTER_PREFIX}{provider_key}" for provider_key in provider_keys),
     ]
@@ -1351,26 +1463,29 @@ def _collection_has_exported_rows(conn: sqlite3.Connection, key: str) -> bool:
 def _name_row_columns(*, row_detail: str = "full") -> str:
     if row_detail == "compact":
         return f"""
-      n.name, n.onchain_class, n.provider_guess,
-      COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types, rs.has_ds,
-      json_extract(rs.ns_names, '$[0]') AS first_ns,
-      json_extract(rs.glue4, '$[0]') AS first_glue4,
-      json_extract(rs.glue6, '$[0]') AS first_glue6,
-      json_extract(rs.synth4, '$[0]') AS first_synth4,
-      json_extract(rs.synth6, '$[0]') AS first_synth6,
-      rs.raw_size, rs.resource_version, rs.resource_hash, n.last_seen_height, n.updated_at,
-      {_dns_evidence_path_sql()},
-      ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.failure_reason, ls.checked_at
-    """
+          n.name, n.onchain_class, n.provider_guess,
+          COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types, rs.has_ds,
+          json_extract(rs.ns_names, '$[0]') AS first_ns,
+          json_extract(rs.glue4, '$[0]') AS first_glue4,
+          json_extract(rs.glue6, '$[0]') AS first_glue6,
+          json_extract(rs.synth4, '$[0]') AS first_synth4,
+          json_extract(rs.synth6, '$[0]') AS first_synth6,
+          rs.raw_size, rs.resource_version, rs.resource_hash, n.last_seen_height, n.updated_at,
+          {_dns_evidence_path_sql()},
+          eno.compliance_stage AS compliance_stage,
+          ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.https_status,
+          ls.strict_hns_status, ls.doh_fallback_status, ls.failure_reason, ls.checked_at
+        """
     return f"""
-      n.name, n.state, n.expired, n.onchain_class, n.provider_guess,
-      COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types,
-      rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.ds_records, rs.has_ds,
-      rs.raw_size, rs.resource_version, rs.resource_hash, n.last_seen_height, n.updated_at,
-      {_dns_evidence_path_sql()},
-      ls.dns_reachable, ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.https_status,
-      ls.strict_hns_status, ls.doh_fallback_status, ls.failure_reason, ls.checked_at
-    """
+          n.name, n.state, n.expired, n.onchain_class, n.provider_guess,
+          COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types,
+          rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.ds_records, rs.has_ds,
+          rs.raw_size, rs.resource_version, rs.resource_hash, n.last_seen_height, n.updated_at,
+          {_dns_evidence_path_sql()},
+          eno.compliance_stage AS compliance_stage,
+          ls.dns_reachable, ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.https_status,
+          ls.strict_hns_status, ls.doh_fallback_status, ls.failure_reason, ls.checked_at
+        """
 
 
 def _name_json_columns(*, row_detail: str = "full") -> list[str]:
@@ -1399,9 +1514,13 @@ def _name_output_keys(*, row_detail: str = "full") -> list[str]:
             "last_seen_height",
             "updated_at",
             "dns_evidence_path",
+            "compliance_stage",
             "dnssec_status",
             "tlsa_status",
             "dane_status",
+            "https_status",
+            "strict_hns_status",
+            "doh_fallback_status",
             "failure_reason",
             "checked_at",
         ]
@@ -1423,6 +1542,10 @@ def _name_collection_where(key: str) -> tuple[str, tuple[Any, ...]]:
     if key.startswith(FAILURE_REASON_FILTER_PREFIX):
         return "COALESCE(n.expired, 0) = 0 AND ls.failure_reason = ?", (
             key.removeprefix(FAILURE_REASON_FILTER_PREFIX),
+        )
+    if key.startswith(COMPLIANCE_STAGE_FILTER_PREFIX):
+        return f"COALESCE(n.expired, 0) = 0 AND {_name_compliance_stage_sql()} = ?", (
+            key.removeprefix(COMPLIANCE_STAGE_FILTER_PREFIX),
         )
     if key.startswith(PROVIDER_FILTER_PREFIX):
         return "COALESCE(n.expired, 0) = 0 AND n.provider_guess = ?", (
@@ -1456,6 +1579,7 @@ def write_names_csv(conn: sqlite3.Connection, path: Path, *, limit: int) -> None
         "last_seen_height",
         "updated_at",
         "dns_evidence_path",
+        "compliance_stage",
         "dns_reachable",
         "dnssec_status",
         "tlsa_status",

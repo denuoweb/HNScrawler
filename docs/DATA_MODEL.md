@@ -95,6 +95,22 @@ Latest live-check result per name.
 
 `doh_fallback_status = required` means strict HNS address discovery failed and the checker found an address only through the configured fallback resolver path. The field name is retained for export stability; the value records resolver fallback dependency, not a guaranteed DoH transport.
 
+## Compliance Stage
+
+`compliance_stage` is a derived export field, not a stored source table column. Export and lookup queries compute it from `names.expired`, provider type, `resource_summary` bootstrap flags, and `live_status` DNSSEC/TLSA/DANE/failure fields. It is the canonical per-name DANE workflow state used by summary cards, action queues, Names filters, and generator handoff labels.
+
+The stable stage vocabulary is:
+
+- `dane_verified`
+- `tlsa_gap`
+- `stale_tlsa`
+- `dnssec_broken`
+- `missing_glue`
+- `bootstrap_ready`
+- `resolver_fallback`
+- `service_blocked`
+- `non_actionable`
+
 ## `dns_evidence`
 
 Append-only DNS observations from the crawler or external workers.
@@ -161,15 +177,15 @@ Public exports are generated from SQLite:
 
 The default public export does not write standalone Providers, Classes, Broken, DANE, CSV, SQLite, or full `names.json` artifacts. Provider, class, failure, and DANE summaries live in `summary.json`; rows are searched and filtered through the Names collections. `names.json`, `names.csv`, and `topology.sqlite.gz` are written only when `--include-downloads` is explicitly requested.
 
-There is no standalone DANE row exporter in the production path. DANE-specific views such as DS records, needs DANE, stale TLSA, and direct DANE are Names filters.
+There is no standalone DANE row exporter in the production path. The first-class DANE workflow state is `compliance_stage`, with nonzero `stage:<stage>` Names postings generated from the canonical row store. Older DANE-specific facets such as DS records, needs DANE, stale TLSA, and DANE verified remain Names filters for compatibility and investigation.
 
 `summary.broken` contains failure reason counts for the Names filter dropdown, not duplicated example rows. Example names for a failure reason come from the filtered Names collection.
 
-`summary.top_resource_ips`, `summary.top_nameservers`, and `summary.known_hns_resolvers` are bounded diagnostic aggregates for the Overview page. They expose shared resource clusters and public resolver inventory without creating additional static row collections.
+`summary.top_resource_ips`, `summary.top_nameservers`, and `summary.known_hns_resolvers` are bounded diagnostic aggregates for the Compliance page. They expose shared nameserver IP evidence, delegation hosts, and public resolver inventory without creating additional static row collections.
 
 Names collections are ordered by normalized name. The `all` collection is the canonical sorted row store. Nonzero visible Names filters, provider queues, and nonzero failure queues are compact ordinal postings into that row store rather than duplicate row payloads. Provider-type queues and zero-row filters are not exported; stale or zero-count filter URLs render as empty result sets in the browser. Static exact-name lookup binary-searches the sorted `all` collection by fetching only a small number of page files when `/api/name` is unavailable.
 
-Compact canonical row arrays still include first NS/GLUE/SYNTH scalar fields plus resource hash, size, version, index height, and a DNS evidence path for DANE generator handoff links and diagnostics. Full resource arrays are embedded only when the collection is small enough to use full rows.
+Compact canonical row arrays still include `compliance_stage`, first NS/GLUE/SYNTH scalar fields, DNSSEC/TLSA/DANE/HTTPS/strict-HNS/fallback status fields, resource hash, size, version, index height, and a DNS evidence path for DANE generator handoff links and row-level compliance checklist diagnostics. Full resource arrays are embedded only when the collection is small enough to use full rows.
 
 IP address artifacts are keyed by URL-encoded address, for example `ip-addresses/44.231.6.183.json` or an encoded IPv6 literal. The index file contains the canonical query IP, `row_count`, `page_count`, `page_size`, row detail, field counts, columns, field-mask metadata, and a page path template. Page files contain compact postings for exported names whose `GLUE4`, `GLUE6`, `SYNTH4`, or `SYNTH6` values contain that address. When every row on a page has the same field mask, `row_encoding = name` stores only a JSON array of names. Mixed-field pages use `row_encoding = name_field_mask` with `[name, field_mask]` rows. They intentionally do not duplicate full or compact Names rows.
 
@@ -177,9 +193,9 @@ The `resource_ip` table is a derived index. Bootstrap and incremental indexing k
 
 Provider-rule changes that only affect classification can be applied to an existing database with `hns-topology reclassify --db <path>`. That command scans stored compact `resource_summary` rows, recomputes `names.provider_guess` and `names.onchain_class`, updates provider-rule provenance, and refreshes `provider_summary` without re-fetching HSD resources or rebuilding `resource_ip`.
 
-`summary.json` includes `next_actions`, a small derived list for the Overview action panel and filtered Names queue context. Each item contains a count, a primary Names filter, a filter link, and the DANE generator intent to use for matching row-level handoffs. The list is deliberately derived from existing counters and filters so it does not create new row artifacts.
+`summary.json` includes `compliance_stages`, `compliance_stage_counts`, and `next_actions` for the Compliance generator-handoff panel and filtered Name Audit queue context. Each action item contains a stage, count, primary `stage:<stage>` Names filter, filter link, and the DANE generator intent to use for matching row-level handoffs. The list is deliberately derived from stage counts and compact postings so it does not create duplicate row artifacts.
 
-`summary.overview_explainers` carries the metric definitions shown on the Overview page. It replaces the former standalone FAQ data artifact and intentionally omits example rows; use the linked Names filters for examples.
+`summary.overview_explainers` carries metric definitions for downstream consumers and future UI surfaces. It replaces the former standalone FAQ data artifact and intentionally omits example rows; use the linked Names filters for examples.
 
 `manifest.json` is the export contract for the static data directory. It records:
 

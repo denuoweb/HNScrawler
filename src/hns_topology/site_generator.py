@@ -8,8 +8,8 @@ from pathlib import Path
 from .exporter import export_all
 
 PAGES = {
-    "index.html": ("overview", "HNS Topology"),
-    "names.html": ("names", "Names"),
+    "index.html": ("overview", "HNS DANE Compliance"),
+    "names.html": ("names", "DANE Name Audit"),
 }
 SITE_BASE_PATH = "/hns-topology/"
 
@@ -86,7 +86,7 @@ def _replace_tree(staging: Path, out: Path) -> None:
 
 def _copy_assets(out: Path) -> None:
     assets = resources.files("hns_topology").joinpath("site_assets")
-    for asset in ("styles.css", "app.js"):
+    for asset in ("styles.css", "generator_handoff.js", "app.js"):
         source = assets.joinpath(asset)
         shutil.copyfile(source, out / asset)
 
@@ -95,8 +95,8 @@ def _html(*, page: str, title: str) -> str:
     nav = "\n".join(
         f'<a href="{SITE_BASE_PATH}{filename}" data-nav="{name}">{label}</a>'
         for filename, (name, label) in [
-            ("index.html", ("overview", "Overview")),
-            ("names.html", ("names", "Names")),
+            ("index.html", ("overview", "Compliance")),
+            ("names.html", ("names", "Name Audit")),
         ]
     )
     return f"""<!doctype html>
@@ -118,6 +118,7 @@ def _html(*, page: str, title: str) -> str:
   <main id="app">
     <section class="loading">Loading snapshot data...</section>
   </main>
+  <script src="{SITE_BASE_PATH}generator_handoff.js"></script>
   <script src="{SITE_BASE_PATH}app.js"></script>
 </body>
 </html>

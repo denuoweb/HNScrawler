@@ -26,7 +26,7 @@ The database now has `resource_ip(name, ip, field)` with an `(ip, name)` lookup 
 
 The derived IP index is built like a bulk index job: scan `resource_summary` once in name order, load `resource_ip` without the secondary IP lookup index attached, then create `idx_resource_ip_ip_name` after the load. New full bootstraps follow the same shape by deferring the lookup index until the resource rows are loaded.
 
-IP lookup is now built from a normalized `resource_ip` table into compact static postings consumed by the Names page.
+IP lookup is now built from a normalized `resource_ip` table into compact static postings consumed by the Name Audit page.
 
 IP page files no longer duplicate Names rows. For the common single-field case, such as provider-scale `GLUE4` addresses, page files store only a JSON array of names plus a field mask in metadata. Mixed-field pages store `[name, field_mask]` pairs.
 
@@ -45,9 +45,9 @@ Site generation now writes a complete release tree into a staging directory and 
 - Use one canonical sorted Names row store, with nonzero filter/provider/status postings into that store.
 - Keep high-cardinality UI views paginated and decode only the current page in the browser.
 
-Names filters now use that row-store pattern: `names-pages/all` is the canonical sorted row store, while nonzero visible filters, provider queues, and nonzero failure collections are ordinal postings into that store. The browser resolves only the active postings page back to canonical rows. Hidden legacy filters, zero-row filters, and provider-type queues are not exported.
+Names filters now use that row-store pattern: `names-pages/all` is the canonical sorted row store, while nonzero visible filters, provider queues, failure collections, and `stage:<compliance_stage>` collections are ordinal postings into that store. The browser resolves only the active postings page back to canonical rows. Hidden legacy filters, zero-row filters, and provider-type queues are not exported.
 
-During export, the generator builds a temporary `export_name_ordinals` table with ordinal, provider, provider type, resource flags, and live-status fields for the exported name set. Nonzero posting collections are counted and streamed from that temporary export index, avoiding repeated joins across the production `names`, `resource_summary`, `live_status`, and `provider_summary` tables.
+During export, the generator builds a temporary `export_name_ordinals` table with ordinal, provider, provider type, resource flags, live-status fields, and the derived `compliance_stage` for the exported name set. Nonzero posting collections are counted and streamed from that temporary export index, avoiding repeated joins across the production `names`, `resource_summary`, `live_status`, and `provider_summary` tables.
 
 If detailed diagnostics must show every resource record at production scale, store full resource detail once per canonical name row or in sharded on-demand detail files, not once per filter.
 

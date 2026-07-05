@@ -1,34 +1,37 @@
-# Denuo HNS Topology Report
+# Denuo HNS DANE Compliance
 
-Generated snapshot reports for the current Handshake namespace topology.
+Generated DANE compliance snapshots for the current Handshake namespace.
 
-This project is intentionally not a live explorer, a full DNS warehouse, or a web crawler. It builds periodic snapshots from HSD-derived name state, classifies compact on-chain resource summaries, runs rate-limited live checks only for promising names, and publishes the report with bounded static data.
+This project is intentionally not a live explorer, a full DNS warehouse, or a web crawler. It builds periodic snapshots from HSD-derived name state, classifies compact on-chain resource summaries, runs rate-limited DNSSEC/TLSA/HTTPS checks only for promising names, and publishes a bounded static compliance dashboard.
 
 ## What It Answers
 
+- Which HNS names are already indexer-verified for DANE?
+- Which names are one generator handoff away from TLSA, DS, or NS/GLUE repair?
 - How many HNS names use `SYNTH4` or `SYNTH6` nameserver bootstrap records?
 - How many delegate to nameservers, with or without glue?
-- How many use default provider infrastructure?
 - How many have DS records and are DNSSEC candidates?
-- How many are likely websites?
-- How many load in strict HNS mode, require fallback, or have direct indexer-verified DANE?
-- Which providers dominate HNS?
-- Which names are broken by missing glue or stale TLSA?
+- How many load in strict HNS mode or require resolver fallback?
+- Which providers and parent-side resource classes shape the DANE opportunity set?
+- Which names are blocked by missing glue, DNSSEC failure, or stale TLSA?
 
-## Adoption Flow
+## Compliance Flow
 
-HNScrawler is the status and opportunity report. The DANE Record Generator is the handoff for turning an opportunity into HNS wallet/registrar records, authoritative DNS records, TLSA `3 1 1`, verification commands, and integrator JSON.
+HNScrawler is the status and compliance report. The [DANE Record Generator](https://github.com/denuoweb/dane-record-generator) is the handoff for turning a queue item into HNS wallet/registrar records, authoritative DNS records, TLSA `3 1 1`, verification commands, and integrator JSON.
 
-The Overview is shaped as an adoption funnel:
+The Compliance page is shaped around a first-class `compliance_stage` for each active name:
 
-- Can become a site: likely website candidates.
-- Strict HNS ready: SYNTH nameserver bootstrap or delegated names with GLUE.
-- DNSSEC ready: names with DS plus delegated nameserver data.
-- Needs DANE: DS or live-valid DNSSEC exists, but direct TLSA/DANE is not proven by the indexer.
-- Direct DANE: latest indexer live check matched direct delegated DNSSEC, exact TLSA, and HTTPS certificate/SPKI. This is not an Android/browser compatibility proof.
-- Needs fix: missing GLUE or a live-check failure reason.
+- `dane_verified`: latest live check matched DNSSEC, TLSA, and the HTTPS certificate/SPKI.
+- `tlsa_gap`: DNSSEC exists or validated live, but a matching TLSA association is missing or unproven.
+- `stale_tlsa`: TLSA exists but does not match the current HTTPS certificate public key.
+- `dnssec_broken`: parent DS, delegated DNSKEY, or signatures need repair.
+- `missing_glue`: delegation lacks parent-side nameserver bootstrap addresses.
+- `bootstrap_ready`: HNS bootstrap exists; the next step is DNSSEC signing, DS, and TLSA.
+- `resolver_fallback`: strict HNS bootstrap failed and the check required the fallback resolver path.
+- `service_blocked`: HTTPS or another live service condition blocked DANE proof.
+- `non_actionable`: expired, parked/default, resolver infrastructure, empty, or unsupported resources.
 
-The Names page is the main work surface. Each row shows the next action and links to `/dane-generator/` with query parameters such as `domain`, `intent`, `mode`, `ns4`, and `ns6` so the generator can prefill the relevant setup path.
+The Name Audit page is the main work surface. Each row shows the generator-ready next action and links to `/dane-generator/` through the shared `generator_handoff.js` contract. Current handoffs send `domain`, `domain_type`, `intent`, `mode`, `nameserver`, and `ns4`/`ns6`; the helper also accepts evidence-backed `a`, `aaaa`, `port`, `dnskey`, `pem`, and `cert` when the crawler has those fields.
 
 ## Quick Start With Fixture Data
 
@@ -68,13 +71,13 @@ Use a temporary or dedicated indexer VM with a persistent disk for HSD and the w
 
 Every generated snapshot includes source provenance, provider-rule provenance, provider/class/failure summaries, and live-check run settings in `data/summary.json`, including source type/hash, crawler version, provider rule version, provider rule hash, live-check rate limits, candidate counts, and checked counts. `data/manifest.json` records the export format version plus SHA-256 and byte-size entries for the public data files.
 
-The Names page is backed by paginated `data/names-pages/` JSON. Each row has an expandable diagnostics panel with current HNS resource records, resource hash/size/version metadata, live-check status, low-level DNS probe commands where bootstrap addresses are available, and stored DNS evidence when the scanner or a crowd worker has submitted actual RRset observations. `--names-limit=0` means the generated browse data covers the full snapshot. Optional download artifacts (`data/names.json`, `data/names.csv`, and `data/topology.sqlite.gz`) can still be generated explicitly with `--include-downloads`, but are not part of the production default.
+The Name Audit page is backed by paginated `data/names-pages/` JSON. Each row has an expandable compliance checklist for parent delegation, HNS bootstrap, DNSSEC chain, TLSA owner, HTTPS SPKI match, and resolver fallback, followed by current HNS resource records, resource hash/size/version metadata, live-check status, low-level DNS probe commands where bootstrap addresses are available, and stored DNS evidence when the scanner or a crowd worker has submitted actual RRset observations. `--names-limit=0` means the generated browse data covers the full snapshot. Optional download artifacts (`data/names.json`, `data/names.csv`, and `data/topology.sqlite.gz`) can still be generated explicitly with `--include-downloads`, but are not part of the production default.
 
 Exact name search first tries the lightweight lookup API when it is available. On the static site it falls back to binary-searching the sorted `names-pages/all` collection, so a direct name lookup does not require loading the full 12M+ row export or storing an additional lookup index.
 
-IP address search detects IPv4 and IPv6 literals in the Names page and loads compact `data/ip-addresses/` postings. Page files contain only names for the common single-field case, or name plus field-mask pairs when an address appears in multiple record fields. They do not duplicate full Names rows. `summary.json` also carries compact top resource-IP and nameserver-host aggregates so shared infrastructure clusters can be audited without creating new high-cardinality page sets.
+IP address search detects IPv4 and IPv6 literals in the Name Audit page and loads compact `data/ip-addresses/` postings. Page files contain only names for the common single-field case, or name plus field-mask pairs when an address appears in multiple record fields. They do not duplicate full Names rows. `summary.json` also carries compact top resource-IP and nameserver-host aggregates so shared infrastructure clusters can be audited without creating new high-cardinality page sets.
 
-Known high-frequency marketplace/default glue IPs are classified before the self-hosted rule, and known public HNS resolver IPs are marked as resolver infrastructure. Default parking and resolver infrastructure are excluded from live-check candidate selection and from actionable website queues such as likely websites, strict HNS ready, and needs DANE. Existing databases can apply provider-rule changes with `hns-topology reclassify --db data/topology.sqlite` without rerunning HSD extraction.
+Known high-frequency marketplace/default glue IPs are classified before the self-hosted rule, and known public HNS resolver IPs are marked as resolver infrastructure. Default parking and resolver infrastructure are excluded from live-check candidate selection and from actionable website queues such as likely websites, strict HNS ready, needs DANE, and the actionable compliance stages. Existing databases can apply provider-rule changes with `hns-topology reclassify --db data/topology.sqlite` without rerunning HSD extraction.
 
 `generate-site` builds into a fresh staging directory and swaps the completed tree into place, so removed pages or renamed JSON artifacts do not linger in `public/`. It requires the derived `resource_ip` index to already be current. Existing databases from before the IP index change should run `hns-topology rebuild-resource-ip --db data/topology.sqlite` once before export; this heavy backfill is deliberately not hidden inside site generation.
 
@@ -82,9 +85,9 @@ Overview provider and class summaries link back into existing Names filters wher
 
 Broken/failure summaries keep only reason counts for the Names filter dropdown. Example rows are not duplicated into `summary.json`; use the filtered Names table instead.
 
-`summary.json` also includes a compact `next_actions` list that powers the Overview action panel and the filtered Names queue context. These entries reuse existing Names filters and DANE generator intents instead of creating separate action-specific artifacts.
+`summary.json` also includes `compliance_stages`, `compliance_stage_counts`, and a compact `next_actions` list that powers the Compliance generator-handoff panel and the filtered Name Audit queue context. These entries use `stage:<stage>` Names filters and DANE generator intents instead of creating separate action-specific artifacts.
 
-Metric definitions that previously lived on the FAQ page are embedded in `summary.json` as `overview_explainers` and rendered directly on the Overview page.
+Metric definitions that previously lived on the FAQ page are embedded in `summary.json` as `overview_explainers` for downstream consumers and future UI surfaces; the Compliance page itself stays focused on the pipeline, generator queues, and supporting evidence.
 
 Generated site files:
 

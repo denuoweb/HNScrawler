@@ -41,6 +41,7 @@ REQUIRED_PUBLIC_FILES = (
     "index.html",
     "names.html",
     "styles.css",
+    "generator_handoff.js",
     "app.js",
     "data/summary.json",
     "data/manifest.json",

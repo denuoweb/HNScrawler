@@ -5,6 +5,7 @@ const COLLECTION_FETCH_BATCH_SIZE = 8;
 const SEARCH_FULL_SCAN_MAX_ROWS = 5000;
 const FAILURE_REASON_FILTER_PREFIX = "failure_reason:";
 const PROVIDER_FILTER_PREFIX = "provider:";
+const COMPLIANCE_STAGE_FILTER_PREFIX = "stage:";
 const DANE_GENERATOR_BASE = window.__DANE_GENERATOR_BASE__ || "/dane-generator/";
 const IP_FIELD_MAP = {
   1: "GLUE4",
@@ -76,6 +77,10 @@ function hasRecordType(row, type) {
   return recordTypes(row).includes(type);
 }
 
+function hasNs(row) {
+  return Boolean(firstValue(row.ns_names) || row.first_ns || hasRecordType(row, "NS"));
+}
+
 function firstValue(value) {
   if (Array.isArray(value)) return value.find(Boolean) || "";
   return value || "";
@@ -106,6 +111,7 @@ function hasGlue(row) {
 function filterName(filter) {
   if (filter.startsWith(FAILURE_REASON_FILTER_PREFIX)) return prettyToken(filter.slice(FAILURE_REASON_FILTER_PREFIX.length));
   if (filter.startsWith(PROVIDER_FILTER_PREFIX)) return `provider ${filter.slice(PROVIDER_FILTER_PREFIX.length)}`;
+  if (filter.startsWith(COMPLIANCE_STAGE_FILTER_PREFIX)) return stageLabel(filter.slice(COMPLIANCE_STAGE_FILTER_PREFIX.length));
   return ({
     direct_ip_records: "SYNTH nameservers",
     delegated_names: "delegated names",
@@ -117,11 +123,39 @@ function filterName(filter) {
     strict_hns_working: "strict HNS working",
     doh_fallback_required: "resolver fallback required",
     needs_dane: "needs DANE",
-    dane_working: "direct DANE",
+    dane_working: "DANE verified",
     needs_fix: "needs fix",
     missing_glue_only: "missing GLUE only",
     stale_tlsa_only: "stale TLSA only"
   })[filter] || filter;
+}
+
+function stageLabel(stage) {
+  return ({
+    dane_verified: "DANE verified",
+    tlsa_gap: "TLSA gap",
+    stale_tlsa: "Stale TLSA",
+    dnssec_broken: "DNSSEC broken",
+    missing_glue: "Missing GLUE",
+    bootstrap_ready: "Bootstrap ready",
+    resolver_fallback: "Resolver fallback",
+    service_blocked: "Service blocked",
+    non_actionable: "Non-actionable"
+  })[stage] || prettyToken(stage);
+}
+
+function stageDefinition(stage) {
+  return ({
+    dane_verified: "DNSSEC, TLSA, and HTTPS SPKI match.",
+    tlsa_gap: "DNSSEC exists; generate or repair TLSA next.",
+    stale_tlsa: "TLSA does not match the current HTTPS key.",
+    dnssec_broken: "DS, DNSKEY, or signatures need repair.",
+    missing_glue: "Parent-side nameserver bootstrap is missing.",
+    bootstrap_ready: "HNS bootstrap exists; publish DNSSEC and TLSA.",
+    resolver_fallback: "Strict HNS failed; fallback resolver was needed.",
+    service_blocked: "Live service check failed before DANE proof.",
+    non_actionable: "Expired, parked, resolver, empty, or unsupported."
+  })[stage] || "";
 }
 
 function filterNotice(filter, before, after) {
@@ -265,17 +299,17 @@ function topologySignals(summary) {
   const topNameservers = summary.top_nameservers || [];
   const resolvers = summary.known_hns_resolvers || [];
   return `
-    <article class="panel"><h2>Resource IP Clusters</h2>${table(topIps, [
+    <article class="panel"><h2>Nameserver IP Evidence</h2>${table(topIps, [
       {key: "ip", label: "IP", render: topIpCell, width: "30%"},
       {key: "names_count", label: "Names", width: "18%"},
       {key: "field_counts", label: "Fields", render: ipFieldCountsCell, width: "27%"},
       {key: "role", label: "Role", render: ipRoleCell, width: "25%"}
     ], "No resource IPs in this snapshot.", {wrapClass: "compact-table-wrap"})}</article>
-    <article class="panel"><h2>Nameserver Hosts</h2>${table(topNameservers, [
+    <article class="panel"><h2>Delegation Hosts</h2>${table(topNameservers, [
       {key: "nameserver", label: "Nameserver", render: nameserverCell, width: "70%"},
       {key: "names_count", label: "Names", width: "30%"}
     ], "No nameservers in this snapshot.", {wrapClass: "compact-table-wrap"})}</article>
-    <article class="panel"><h2>Known HNS Resolvers</h2>${table(resolvers, [
+    <article class="panel"><h2>HNS Resolver Inventory</h2>${table(resolvers, [
       {key: "ip", label: "IP", render: resolverIpCell, width: "30%"},
       {key: "provider", label: "Provider", width: "40%"},
       {key: "hnsdoh_software", label: "Software", render: resolverSoftwareCell, width: "30%"}
@@ -283,78 +317,84 @@ function topologySignals(summary) {
 }
 
 function daneGeneratorUrl(row, intent) {
-  const params = new URLSearchParams();
-  const name = String(row.name || "");
-  params.set("domain", name && !name.endsWith("/") ? `${name}/` : name);
-  params.set("domain_type", "hns");
-  params.set("intent", intent);
-  params.set("mode", hasSynth(row) && row.onchain_class === "DIRECT_SYNTH" ? "synth" : "delegated");
-  const nameserver = firstValue(row.ns_names) || row.first_ns;
-  const ns4 = firstValue(row.synth4) || firstValue(row.glue4) || row.first_synth4 || row.first_glue4;
-  const ns6 = firstValue(row.synth6) || firstValue(row.glue6) || row.first_synth6 || row.first_glue6;
-  if (nameserver) params.set("nameserver", nameserver);
-  if (ns4) params.set("ns4", ns4);
-  if (ns6) params.set("ns6", ns6);
-  return `${DANE_GENERATOR_BASE}?${params.toString()}`;
+  return window.DaneGeneratorHandoff.buildUrl(row, {base: DANE_GENERATOR_BASE, intent});
+}
+
+function complianceStage(row) {
+  if (row.compliance_stage) return row.compliance_stage;
+  const failure = row.failure_reason || "";
+  if (row.expired) return "non_actionable";
+  if (row.dane_status === "valid") return "dane_verified";
+  if (row.provider_type === "default_parking" || row.provider_type === "public_resolver") return "non_actionable";
+  if (failure === "stale_tlsa_spki_mismatch" || failure === "tlsa_wrong_owner" || (row.tlsa_status === "present" && row.dane_status === "invalid")) return "stale_tlsa";
+  if (failure === "dnssec_missing" || failure === "dnssec_bogus" || failure === "ds_dnskey_mismatch" || failure === "rrsig_expired") return "dnssec_broken";
+  if (failure === "missing_glue" || row.onchain_class === "DELEGATED_NO_GLUE") return "missing_glue";
+  if (hasDs(row) && row.dane_status !== "valid") return "tlsa_gap";
+  if (failure && failure !== "doh_fallback_only") return "service_blocked";
+  if (row.doh_fallback_status === "required" || row.doh_fallback_status === "doh_fallback_only" || failure === "doh_fallback_only") return "resolver_fallback";
+  if (hasSynth(row) || hasGlue(row) || row.onchain_class === "DELEGATED_WITH_GLUE") return "bootstrap_ready";
+  return "non_actionable";
 }
 
 function rowAction(row) {
-  const failure = row.failure_reason || "";
-  if (row.dane_status === "valid") {
+  const stage = complianceStage(row);
+  if (stage === "dane_verified") {
     return {
       type: "badge",
-      label: "Direct DANE verified",
-      detail: "Direct delegated DNSSEC, exact TLSA, and HTTPS matched in latest indexer live check.",
+      label: "DANE verified",
+      detail: "DNSSEC, exact TLSA, and HTTPS SPKI matched in the latest indexer live check.",
       href: sitePath(`names.html?filter=dane_working&q=${encodeURIComponent(row.name || "")}`)
     };
   }
-  if (failure === "missing_glue" || row.onchain_class === "DELEGATED_NO_GLUE") {
+  if (stage === "missing_glue") {
     return {
-      label: "Generate NS/GLUE setup",
-      detail: "Delegation needs nameserver bootstrap records before strict HNS can work.",
+      label: "Create NS/GLUE handoff",
+      detail: "Parent-side nameserver bootstrap is required before the signed TLSA zone is reachable.",
       href: daneGeneratorUrl(row, "missing_glue")
     };
   }
-  if (failure === "ds_dnskey_mismatch" || row.dnssec_status === "ds_dnskey_mismatch") {
-    return {
-      label: "Regenerate/check DS",
-      detail: "Parent DS and delegated DNSKEY do not match.",
-      href: daneGeneratorUrl(row, "ds_dnskey_mismatch")
-    };
-  }
-  if (failure === "rrsig_expired" || failure === "dnssec_bogus" || row.dnssec_status === "rrsig_expired" || row.dnssec_status === "bogus") {
+  if (stage === "dnssec_broken") {
     return {
       label: "Regenerate/check DS",
       detail: "DNSSEC signing needs review before DANE can validate.",
       href: daneGeneratorUrl(row, "dnssec_fix")
     };
   }
-  if (failure === "stale_tlsa_spki_mismatch" || failure === "tlsa_wrong_owner" || (row.tlsa_status === "present" && row.dane_status === "invalid")) {
+  if (stage === "stale_tlsa") {
     return {
-      label: "Generate current TLSA",
+      label: "Replace stale TLSA",
       detail: "TLSA data should match the current HTTPS certificate public key.",
       href: daneGeneratorUrl(row, "stale_tlsa")
     };
   }
-  if (hasDs(row) && row.dane_status !== "valid") {
+  if (stage === "tlsa_gap") {
     return {
-      label: "Generate TLSA",
-      detail: "DS exists; add or verify TLSA 3 1 1 next.",
+      label: "Generate TLSA record",
+      detail: "DNSSEC is present or live-valid; add or verify TLSA 3 1 1 next.",
       href: daneGeneratorUrl(row, "generate_tlsa")
     };
   }
-  if (hasSynth(row)) {
+  if (stage === "bootstrap_ready") {
     return {
-      label: "Generate SYNTH DNS setup",
-      detail: "SYNTH points to nameserver IPs; the zone still serves A, AAAA, DNSSEC, and TLSA.",
-      href: daneGeneratorUrl(row, "synth_setup")
+      label: hasSynth(row) ? "Generate SYNTH DNS setup" : "Plan DNSSEC + DANE",
+      detail: hasSynth(row)
+        ? "SYNTH points to nameserver IPs; the zone still serves A, AAAA, DNSSEC, and TLSA."
+        : "HNS bootstrap exists; sign the zone and publish DS/TLSA when ready.",
+      href: daneGeneratorUrl(row, hasSynth(row) ? "synth_setup" : "dnssec_dane")
     };
   }
-  if (hasGlue(row) || row.onchain_class === "DELEGATED_WITH_GLUE") {
+  if (stage === "resolver_fallback") {
     return {
-      label: "Plan DNSSEC/DANE",
-      detail: "Strict-HNS bootstrap exists; sign the zone and publish DS/TLSA when ready.",
-      href: daneGeneratorUrl(row, "dnssec_dane")
+      label: "Remove resolver fallback",
+      detail: "Strict HNS did not complete; use the generator to review parent-side bootstrap.",
+      href: daneGeneratorUrl(row, "review")
+    };
+  }
+  if (stage === "service_blocked") {
+    return {
+      label: "Review live service",
+      detail: "A live check failed before the indexer could prove DANE.",
+      href: daneGeneratorUrl(row, "review")
     };
   }
   return {
@@ -372,12 +412,19 @@ function actionCell(row) {
   return `<div class="action-cell"><a class="action-link" href="${escapeHtml(action.href)}">${escapeHtml(action.label)}</a><span>${escapeHtml(action.detail)}</span></div>`;
 }
 
-function snapshot(summary, providers = []) {
+function snapshot(summary) {
+  const stageCounts = summary.compliance_stage_counts || {};
+  const hasStageCounts = Boolean(summary.compliance_stage_counts);
+  const daneVerified = stageCounts.dane_verified ?? summary.dane_working;
+  const tlsaGap = stageCounts.tlsa_gap ?? summary.needs_dane;
+  const stageBlockers = ["missing_glue", "stale_tlsa", "dnssec_broken", "resolver_fallback", "service_blocked"]
+    .reduce((total, stage) => total + Number(stageCounts[stage] || 0), 0);
+  const blockerQueue = hasStageCounts ? stageBlockers : summary.needs_fix;
   return `<section class="snapshot">
     ${metric("Active names", summary.active_names, `${fmt.format(summary.expired_names)} expired`, "names.html")}
-    ${metric("Indexed names", summary.total_names, `height ${summary.last_indexed_height ?? ""}`)}
-    ${metric("Live checks", summary.live_check_checked_count, `${fmt.format(summary.live_check_candidate_count ?? 0)} candidates`)}
-    ${metric("Provider groups", providers.length, `${fmt.format(summary.default_provider_names ?? 0)} default-provider names`)}
+    ${metric("DANE verified", daneVerified, `${pct(daneVerified, summary.active_names)} of active`, `names.html?filter=${COMPLIANCE_STAGE_FILTER_PREFIX}dane_verified`)}
+    ${metric("TLSA gaps", tlsaGap, "ready for generator handoff", `names.html?filter=${COMPLIANCE_STAGE_FILTER_PREFIX}tlsa_gap`)}
+    ${metric("Compliance blockers", blockerQueue, "blocking verification")}
   </section>`;
 }
 
@@ -937,6 +984,12 @@ function namesFilterControls({summary, providers, broken, active}) {
       value: `${FAILURE_REASON_FILTER_PREFIX}${row.failure_reason}`,
       label: `${prettyToken(row.failure_reason)} (${fmt.format(row.count || 0)})`
     }));
+  const complianceOptions = (summary.compliance_stages || [])
+    .filter((row) => Number(row.count || 0) > 0 || `${COMPLIANCE_STAGE_FILTER_PREFIX}${row.stage}` === active)
+    .map((row) => ({
+      value: row.filter || `${COMPLIANCE_STAGE_FILTER_PREFIX}${row.stage}`,
+      label: `${row.label || stageLabel(row.stage)} (${fmt.format(row.count || 0)})`
+    }));
   const generalOptions = [
     {value: "", label: "All names"},
     {value: "direct_ip_records", label: "SYNTH nameservers", countKey: "direct_ip_records"},
@@ -952,7 +1005,7 @@ function namesFilterControls({summary, providers, broken, active}) {
     {value: "ds_records", label: "DS records", countKey: "ds_records"},
     {value: "dnssec_candidates", label: "DNSSEC candidates", countKey: "dnssec_candidates"},
     {value: "needs_dane", label: "Needs DANE", countKey: "needs_dane"},
-    {value: "dane_working", label: "Direct DANE", countKey: "dane_working"},
+    {value: "dane_working", label: "DANE verified", countKey: "dane_working"},
     {value: "stale_tlsa_only", label: "Stale TLSA", countKey: "stale_tlsa_only"}
   ];
   const clearLink = active
@@ -963,6 +1016,7 @@ function namesFilterControls({summary, providers, broken, active}) {
     <label class="filter-field" for="names-filter">
       <span class="search-label">Filter</span>
       <select id="names-filter" name="filter">
+        ${filterOptgroup("Compliance Stage", complianceOptions, active)}
         ${filterOptgroup("General", visibleSummaryOptions(generalOptions, summary, active), active)}
         ${filterOptgroup("DANE and DNSSEC", visibleSummaryOptions(daneOptions, summary, active), active)}
         ${filterOptgroup("Failure Reasons", failureOptions, active)}
@@ -982,56 +1036,19 @@ function wireAutoSubmitFilter() {
 function adoptionFunnel(summary) {
   const active = Number(summary.active_names || 0);
   const checked = Number(summary.live_check_checked_count || 0);
-  const stages = [
-    {
-      label: "Likely websites",
-      value: summary.likely_websites,
-      filter: "likely_websites",
-      note: "Have on-chain data worth turning into a site."
-    },
-    {
-      label: "Strict HNS ready",
-      value: summary.strict_hns_ready,
-      filter: "strict_hns_ready",
-      note: "SYNTH or GLUE bootstrap exists on chain."
-    },
-    {
-      label: "DNSSEC ready",
-      value: summary.dnssec_candidates,
-      filter: "dnssec_candidates",
-      note: "DS plus delegated nameserver data."
-    },
-    {
-      label: "Needs DANE",
-      value: summary.needs_dane,
-      filter: "needs_dane",
-      note: "DS exists but direct TLSA is not proven."
-    },
-    {
-      label: "Direct DANE",
-      value: summary.dane_working,
-      filter: "dane_working",
-      note: "Indexer matched DNSSEC, TLSA, and HTTPS."
-    },
-    {
-      label: "Needs fix",
-      value: summary.needs_fix,
-      filter: "needs_fix",
-      note: "Missing glue or live-check failure."
-    }
-  ];
+  const stages = (summary.compliance_stages || []).filter((stage) => Number(stage.count || 0) > 0);
   return `<section class="panel adoption-funnel">
     <div class="panel-heading">
       <div>
-        <h2>Adoption Funnel</h2>
-        <p class="meta">${fmt.format(checked)} live checks sampled from ${fmt.format(summary.live_check_candidate_count ?? 0)} candidates.</p>
+        <h2>DANE Compliance Pipeline</h2>
+        <p class="meta">${fmt.format(checked)} live checks sampled from ${fmt.format(summary.live_check_candidate_count ?? 0)} candidates. Terminal state is signed TLSA matching the live HTTPS key.</p>
       </div>
     </div>
     <div class="funnel-grid">${stages.map((stage) => `
-      <a class="funnel-stage" href="${escapeHtml(sitePath(`names.html?filter=${stage.filter}`))}">
-        <span>${escapeHtml(stage.label)}</span>
-        <strong>${fmt.format(stage.value ?? 0)}</strong>
-        <small>${pct(stage.value ?? 0, active)} of active. ${escapeHtml(stage.note)}</small>
+      <a class="funnel-stage" href="${escapeHtml(sitePath(stage.filter_link || `names.html?filter=${COMPLIANCE_STAGE_FILTER_PREFIX}${stage.stage}`))}">
+        <span>${escapeHtml(stage.label || stageLabel(stage.stage))}</span>
+        <strong>${fmt.format(stage.count ?? 0)}</strong>
+        <small>${pct(stage.count ?? 0, active)} of active. ${escapeHtml(stage.definition || stageDefinition(stage.stage))}</small>
       </a>`).join("")}</div>
   </section>`;
 }
@@ -1039,7 +1056,7 @@ function adoptionFunnel(summary) {
 function nextActionsPanel(actions = []) {
   if (!actions.length) return "";
   return `<article class="panel next-actions-panel">
-    <h2>Next Actions</h2>
+    <h2>Generator Handoffs</h2>
     <div class="next-action-list">${actions.map((action) => `
       <a class="next-action" href="${escapeHtml(sitePath(action.filter_link || "names.html"))}">
         <span>${escapeHtml(action.label)}</span>
@@ -1067,7 +1084,7 @@ function namesActionContext(actions = [], filter = "") {
   if (!action) return "";
   return `<section class="queue-context" data-generator-intent="${escapeHtml(action.generator_intent || "")}">
     <div>
-      <span class="search-label">Action Queue</span>
+      <span class="search-label">Generator Queue</span>
       <strong>${escapeHtml(action.label)}</strong>
     </div>
     <p class="meta">${escapeHtml(action.definition || "")}</p>
@@ -1078,14 +1095,14 @@ async function renderOverview(app) {
   const summary = await loadJson("data/summary.json");
   const providers = summary.providers || [];
   const classes = summary.classes || [];
-  app.innerHTML = `${snapshot(summary, providers)}
+  app.innerHTML = `${snapshot(summary)}
     ${adoptionFunnel(summary)}
     <section class="grid">
       ${nextActionsPanel(summary.next_actions || [])}
       ${topologySignals(summary)}
-      <article class="panel"><h2>Provider Dominance</h2>${bars(providers, "provider_key", "names_count", 12, (value) => value, providerFilterHref)}</article>
-      <article class="panel"><h2>On-Chain Classes</h2>${bars(classes, "class", "count", 12, classLabel, (row) => classFilterHref(row.class))}</article>
-      <article class="panel"><h2>Snapshot</h2>
+      <article class="panel"><h2>Provider Concentration</h2>${bars(providers, "provider_key", "names_count", 12, (value) => value, providerFilterHref)}</article>
+      <article class="panel"><h2>Parent-Side State</h2>${bars(classes, "class", "count", 12, classLabel, (row) => classFilterHref(row.class))}</article>
+      <article class="panel"><h2>Run Metadata</h2>
       <p class="meta">Height ${summary.last_indexed_height ?? ""} generated ${summary.generated_at ?? ""}</p>
       <p class="meta">Source ${escapeHtml(summary.source_type || "unknown")} - rules v${summary.provider_rules_version ?? ""} ${escapeHtml((summary.provider_rules_hash || "").slice(0, 12))}</p>
       ${liveCheckMeta(summary)}</article>
@@ -1101,7 +1118,7 @@ function namesPagination(collection, page) {
   const pageCount = Number(collection.page_count || 0);
   if (pageCount <= 1) return "";
   const safePage = Math.min(Math.max(1, page), pageCount);
-  return `<nav class="pagination names-pagination" aria-label="Names pages">
+  return `<nav class="pagination names-pagination" aria-label="Name audit pages">
     ${pageLink("First", 1, safePage <= 1)}
     ${pageLink("Previous", safePage - 1, safePage <= 1)}
     <span class="page-status">Page ${fmt.format(safePage)} of ${fmt.format(pageCount)}</span>
@@ -1124,6 +1141,11 @@ function nameCell(row) {
 function ipFieldsCell(row) {
   const fields = Array.isArray(row.fields) ? row.fields : String(row.fields || "").split(",").filter(Boolean);
   return fields.map((field) => `<code>${escapeHtml(field)}</code>`).join(" ");
+}
+
+function complianceStageCell(row) {
+  const stage = complianceStage(row);
+  return `<span title="${escapeHtml(stageDefinition(stage))}">${escapeHtml(stageLabel(stage))}</span>`;
 }
 
 function exactNameLookupCell(row) {
@@ -1236,7 +1258,9 @@ function resourceMetadata(row) {
 }
 
 function liveDiagnosticStatus(row) {
+  const stage = complianceStage(row);
   const fields = [
+    ["Compliance stage", stageLabel(stage)],
     ["DNS reachable", row.dns_reachable],
     ["DNSSEC", row.dnssec_status],
     ["TLSA", row.tlsa_status],
@@ -1250,6 +1274,126 @@ function liveDiagnosticStatus(row) {
   if (!fields.length) return `<p class="meta">No live-check result in this row.</p>`;
   return `<dl class="diagnostic-kv">${fields.map(([key, value]) => `
     <div><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(prettyToken(value))}</dd></div>`).join("")}</dl>`;
+}
+
+function complianceChecklist(row) {
+  const items = complianceChecklistItems(row);
+  return `<section class="compliance-checklist-panel">
+    <h3>Compliance Checklist</h3>
+    <div class="compliance-checklist">${items.map((item) => `
+      <article class="checklist-item checklist-${escapeHtml(item.status)}">
+        <div>
+          <strong>${escapeHtml(item.label)}</strong>
+          <p>${escapeHtml(item.detail)}</p>
+        </div>
+        <span>${escapeHtml(checklistStatusLabel(item.status))}</span>
+      </article>`).join("")}</div>
+  </section>`;
+}
+
+function complianceChecklistItems(row) {
+  return [
+    parentDelegationCheck(row),
+    hnsBootstrapCheck(row),
+    dnssecChainCheck(row),
+    tlsaOwnerCheck(row),
+    httpsSpkiCheck(row),
+    resolverFallbackCheck(row)
+  ];
+}
+
+function checklistStatusLabel(status) {
+  return ({
+    pass: "Pass",
+    warn: "Review",
+    fail: "Action",
+    pending: "Pending",
+    skip: "N/A"
+  })[status] || prettyToken(status);
+}
+
+function parentDelegationCheck(row) {
+  const stage = complianceStage(row);
+  if (hasNs(row)) {
+    return {label: "Parent delegation", status: "pass", detail: "Parent resource publishes NS delegation."};
+  }
+  if (hasSynth(row)) {
+    return {label: "Parent delegation", status: "pass", detail: "Parent resource publishes SYNTH nameserver bootstrap."};
+  }
+  if (stage === "non_actionable") {
+    return {label: "Parent delegation", status: "skip", detail: "No actionable parent delegation in this resource."};
+  }
+  return {label: "Parent delegation", status: "fail", detail: "No NS or SYNTH delegation material is present."};
+}
+
+function hnsBootstrapCheck(row) {
+  if (hasSynth(row)) {
+    return {label: "HNS bootstrap", status: "pass", detail: "SYNTH bootstrap address is available from the HNS resource."};
+  }
+  if (hasGlue(row)) {
+    return {label: "HNS bootstrap", status: "pass", detail: "Delegated nameserver has parent-side GLUE."};
+  }
+  if (hasNs(row)) {
+    return {label: "HNS bootstrap", status: "fail", detail: "Delegation exists but GLUE bootstrap addresses are missing."};
+  }
+  return {label: "HNS bootstrap", status: "pending", detail: "No strict HNS bootstrap path is visible yet."};
+}
+
+function dnssecChainCheck(row) {
+  const failure = row.failure_reason || "";
+  if (row.dane_status === "valid" || row.dnssec_status === "valid") {
+    return {label: "DNSSEC chain", status: "pass", detail: "Latest live check validated the DNSSEC chain."};
+  }
+  if (failure === "dnssec_missing" || failure === "dnssec_bogus" || failure === "ds_dnskey_mismatch" || failure === "rrsig_expired" || ["bogus", "ds_dnskey_mismatch", "rrsig_expired", "missing_dnskey", "missing_rrsig"].includes(row.dnssec_status)) {
+    return {label: "DNSSEC chain", status: "fail", detail: `DNSSEC validation failed: ${prettyToken(failure || row.dnssec_status)}.`};
+  }
+  if (hasDs(row)) {
+    return {label: "DNSSEC chain", status: "pending", detail: "Parent DS is present; delegated DNSSEC has not been validated yet."};
+  }
+  return {label: "DNSSEC chain", status: "fail", detail: "No parent DS record is present."};
+}
+
+function tlsaOwnerCheck(row) {
+  const failure = row.failure_reason || "";
+  if (row.dane_status === "valid" || row.tlsa_status === "present") {
+    return {label: "TLSA owner", status: "pass", detail: "TLSA data was observed at the HTTPS service owner."};
+  }
+  if (failure === "tlsa_wrong_owner") {
+    return {label: "TLSA owner", status: "fail", detail: "TLSA data was found at the wrong owner name."};
+  }
+  if (complianceStage(row) === "tlsa_gap" || row.tlsa_status === "missing") {
+    return {label: "TLSA owner", status: "fail", detail: "No matching _443._tcp TLSA owner has been proven."};
+  }
+  return {label: "TLSA owner", status: "pending", detail: "TLSA owner evidence is not available yet."};
+}
+
+function httpsSpkiCheck(row) {
+  const failure = row.failure_reason || "";
+  const stage = complianceStage(row);
+  if (row.dane_status === "valid") {
+    return {label: "HTTPS SPKI match", status: "pass", detail: "HTTPS certificate/SPKI matched the TLSA association."};
+  }
+  if (stage === "stale_tlsa" || failure === "stale_tlsa_spki_mismatch" || row.dane_status === "invalid") {
+    return {label: "HTTPS SPKI match", status: "fail", detail: "TLSA data does not match the current HTTPS certificate/SPKI."};
+  }
+  if (stage === "service_blocked") {
+    return {label: "HTTPS SPKI match", status: "fail", detail: "Live service failure blocked certificate/SPKI proof."};
+  }
+  if (row.https_status === "working" || row.https_status === "tls_unverified") {
+    return {label: "HTTPS SPKI match", status: "pending", detail: "HTTPS certificate was reachable; TLSA/SPKI match is not proven yet."};
+  }
+  return {label: "HTTPS SPKI match", status: "pending", detail: "No HTTPS SPKI match result is available yet."};
+}
+
+function resolverFallbackCheck(row) {
+  const fallback = row.doh_fallback_status || "";
+  if (complianceStage(row) === "resolver_fallback" || fallback === "required" || fallback === "doh_fallback_only" || row.failure_reason === "doh_fallback_only") {
+    return {label: "Resolver fallback", status: "warn", detail: "Latest check required the fallback resolver path."};
+  }
+  if (fallback === "not_required" || row.strict_hns_status === "working" || row.dane_status === "valid") {
+    return {label: "Resolver fallback", status: "pass", detail: "Strict HNS completed without resolver fallback."};
+  }
+  return {label: "Resolver fallback", status: "pending", detail: "No resolver fallback result is available yet."};
 }
 
 function dnsProbeCommands(row) {
@@ -1323,6 +1467,7 @@ function wireNameDetails() {
 
 function nameDetailRow(row, colspan) {
   const name = String(row.name || "");
+  const displayName = name || String(row.domain || row.normalized || "Selected name");
   const records = resourceRecordSections(row);
   const recordTypesText = recordTypes(row).join(", ");
   const commands = dnsProbeCommands(row);
@@ -1334,8 +1479,9 @@ function nameDetailRow(row, colspan) {
     : "";
   return `<tr class="name-detail-row"><td colspan="${colspan}">
     <details class="name-detail"${evidenceAttr}>
-      <summary><span>Diagnostics for</span><strong>${escapeHtml(name)}</strong></summary>
+      <summary><strong class="name-detail-name">${escapeHtml(displayName)}</strong><span>Audit diagnostics</span></summary>
       <div class="name-detail-grid">
+        ${complianceChecklist(row)}
         <section>
           <h3>Latest Resource</h3>
           ${resourceMetadata(row)}
@@ -1366,7 +1512,7 @@ function namesColumns(rowDetail) {
   const compactColumns = [
     {key: "name", label: "Name", render: nameCell, width: "10%"},
     {key: "next_step", label: "Next step", render: actionCell, width: "16%"},
-    {key: "onchain_class", label: "Class", width: "10%"},
+    {key: "compliance_stage", label: "Stage", render: complianceStageCell, width: "10%"},
     {key: "provider_guess", label: "Provider", width: "10%"},
     {key: "provider_type", label: "Provider type", width: "9%"},
     {key: "record_types", label: "Records", width: "8%"},

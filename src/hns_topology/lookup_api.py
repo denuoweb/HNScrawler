@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from .compliance import compliance_stage_case
 from .db import parse_json_columns
 
 NAME_RE = re.compile(r"^[a-z0-9-]{1,63}$")
@@ -33,8 +34,21 @@ def lookup_name(db_path: str | Path, name: str) -> dict:
     uri = f"file:{Path(db_path).as_posix()}?mode=ro"
     with sqlite3.connect(uri, uri=True) as conn:
         conn.row_factory = sqlite3.Row
+        compliance_stage_sql = compliance_stage_case(
+            expired="n.expired",
+            provider_type="ps.provider_type",
+            has_ds="rs.has_ds",
+            has_ns="rs.has_ns",
+            has_glue="rs.has_glue",
+            has_synth="rs.has_synth",
+            dnssec_status="ls.dnssec_status",
+            tlsa_status="ls.tlsa_status",
+            dane_status="ls.dane_status",
+            doh_fallback_status="ls.doh_fallback_status",
+            failure_reason="ls.failure_reason",
+        )
         row = conn.execute(
-            """
+            f"""
             SELECT
               n.name, n.state, n.expired, n.onchain_class, n.provider_guess,
               COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types,
@@ -45,6 +59,7 @@ def lookup_name(db_path: str | Path, name: str) -> dict:
                 FROM dns_evidence de
                 WHERE de.name = n.name
               ) THEN 'dns-evidence/' || n.name || '.json' ELSE NULL END AS dns_evidence_path,
+              {compliance_stage_sql} AS compliance_stage,
               ls.dns_reachable, ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.https_status,
               ls.strict_hns_status, ls.doh_fallback_status, ls.failure_reason, ls.checked_at
             FROM names n

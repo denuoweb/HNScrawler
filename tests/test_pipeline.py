@@ -2,6 +2,7 @@ import json
 import stat
 from pathlib import Path
 
+from hns_topology.compliance import COMPLIANCE_STAGES
 from hns_topology.db import (
     RESOURCE_IP_INDEX_META_KEY,
     RESOURCE_IP_INDEX_VERSION,
@@ -113,15 +114,34 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     assert summary["strict_hns_ready"] == 3
     assert summary["needs_dane"] == 1
     assert summary["needs_fix"] == 2
+    assert [item["stage"] for item in summary["compliance_stages"]] == list(COMPLIANCE_STAGES)
+    assert summary["compliance_stage_counts"] == {
+        "dane_verified": 0,
+        "tlsa_gap": 1,
+        "stale_tlsa": 0,
+        "dnssec_broken": 0,
+        "missing_glue": 1,
+        "bootstrap_ready": 2,
+        "resolver_fallback": 0,
+        "service_blocked": 0,
+        "non_actionable": 4,
+    }
+    compliance_stages = {item["stage"]: item for item in summary["compliance_stages"]}
+    assert compliance_stages["tlsa_gap"]["filter"] == "stage:tlsa_gap"
+    assert compliance_stages["tlsa_gap"]["filter_link"] == "names.html?filter=stage:tlsa_gap"
+    assert "TLSA" in compliance_stages["tlsa_gap"]["definition"]
     next_actions = {item["key"]: item for item in summary["next_actions"]}
     assert next_actions["generate_tlsa"]["count"] == 1
-    assert next_actions["generate_tlsa"]["filter"] == "needs_dane"
-    assert next_actions["generate_tlsa"]["filter_link"] == "names.html?filter=needs_dane"
+    assert next_actions["generate_tlsa"]["stage"] == "tlsa_gap"
+    assert next_actions["generate_tlsa"]["filter"] == "stage:tlsa_gap"
+    assert next_actions["generate_tlsa"]["filter_link"] == "names.html?filter=stage:tlsa_gap"
     assert next_actions["generate_tlsa"]["generator_intent"] == "generate_tlsa"
-    assert next_actions["fix_ns_glue"]["count"] == 2
-    assert next_actions["fix_ns_glue"]["filter"] == "missing_glue_only"
+    assert next_actions["fix_ns_glue"]["count"] == 1
+    assert next_actions["fix_ns_glue"]["stage"] == "missing_glue"
+    assert next_actions["fix_ns_glue"]["filter"] == "stage:missing_glue"
     assert next_actions["fix_ns_glue"]["generator_intent"] == "missing_glue"
-    assert next_actions["plan_dnssec_dane"]["count"] == 3
+    assert next_actions["plan_dnssec_dane"]["count"] == 2
+    assert next_actions["plan_dnssec_dane"]["stage"] == "bootstrap_ready"
     assert summary["source_type"] == "fixture"
     assert summary["source_file_hash"]
     assert summary["provider_rules_version"] == 4
@@ -129,7 +149,7 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     explainers = {item["key"]: item for item in summary["overview_explainers"]}
     assert explainers["direct_ip_records"]["filter_link"] == "names.html?filter=direct_ip_records"
     assert explainers["needs_dane"]["count"] == 1
-    assert "direct DANE" in explainers["needs_dane"]["definition"]
+    assert "matching HTTPS TLSA" in explainers["needs_dane"]["definition"]
     assert explainers["needs_fix"]["count"] == 2
     assert "examples" not in summary["broken"]
     assert {item["failure_reason"] for item in summary["broken"]["reasons"]} == set(FAILURE_REASONS)
@@ -169,6 +189,9 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     for relative in [
         "index.html",
         "names.html",
+        "styles.css",
+        "generator_handoff.js",
+        "app.js",
         "data/summary.json",
         "data/manifest.json",
         "data/names-pages.json",
@@ -259,6 +282,11 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert names_pages["collections"]["strict_hns_ready"]["row_count"] == 3
     assert names_pages["collections"]["needs_dane"]["row_count"] == 1
     assert names_pages["collections"]["needs_fix"]["row_count"] == 2
+    assert names_pages["collections"]["stage:tlsa_gap"]["row_count"] == 1
+    assert names_pages["collections"]["stage:missing_glue"]["row_count"] == 1
+    assert names_pages["collections"]["stage:bootstrap_ready"]["row_count"] == 2
+    assert names_pages["collections"]["stage:non_actionable"]["row_count"] == 4
+    assert names_pages["collections"]["stage:bootstrap_ready"]["row_source"] == "postings"
     assert names_pages["collections"]["provider:namebase/default"]["row_count"] == 1
     assert names_pages["collections"]["provider:namebase/default"]["row_source"] == "postings"
     assert provider_postings_page["row_encoding"] == "ordinal"
@@ -266,8 +294,10 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert "namebase__slash__default" in names_pages["collections"]["provider:namebase/default"]["path_template"]
     assert (out / "data" / names_pages["collections"]["provider:namebase/default"]["path_template"].replace("{page}", "1")).exists()
     assert "tlsa_status" in names_page_rows[0]
+    assert "compliance_stage" in names_page_rows[0]
     assert "provider_type" in names_page_rows[0]
     assert "checked_at" in names_page_rows[0]
+    assert direct_row["compliance_stage"] == "bootstrap_ready"
     assert direct_row["resource_version"] == 0
     assert direct_row["raw_size"] > 0
     assert direct_row["resource_hash"]
@@ -410,6 +440,10 @@ def test_compact_names_pages_include_generator_handoff_fields(tmp_path, monkeypa
         "first_glue6",
         "first_synth4",
         "first_synth6",
+        "compliance_stage",
+        "https_status",
+        "strict_hns_status",
+        "doh_fallback_status",
         "raw_size",
         "resource_version",
         "resource_hash",
@@ -420,7 +454,9 @@ def test_compact_names_pages_include_generator_handoff_fields(tmp_path, monkeypa
         assert key in columns
     assert delegated["first_ns"] == "ns1.delegated"
     assert delegated["first_glue4"] == "198.51.100.2"
+    assert delegated["compliance_stage"] == "bootstrap_ready"
     assert direct["first_synth4"] == "203.0.113.10"
+    assert direct["compliance_stage"] == "bootstrap_ready"
     assert direct["resource_version"] == 0
     assert direct["raw_size"] > 0
 
