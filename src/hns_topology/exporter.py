@@ -126,14 +126,6 @@ NEXT_ACTION_SPECS = (
         generator_intent="dnssec_dane",
         definition="Strict-HNS bootstrap material exists; sign the zone, publish DS, and add TLSA.",
     ),
-    NextActionSpec(
-        key="verified_dane",
-        label="Direct DANE verified",
-        count_key="dane_working",
-        filter_key="dane_working",
-        generator_intent="",
-        definition="Latest indexer live check matched direct delegated DNSSEC, exact TLSA, and HTTPS certificate/SPKI. This is not an Android/browser compatibility proof.",
-    ),
 )
 
 OVERVIEW_EXPLAINER_SPECS = (

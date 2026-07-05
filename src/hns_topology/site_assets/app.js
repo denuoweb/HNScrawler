@@ -224,13 +224,23 @@ function providerFilterHref(row) {
   return row.provider_key ? `names.html?filter=${encodeURIComponent(`${PROVIDER_FILTER_PREFIX}${row.provider_key}`)}` : "";
 }
 
+function aggregateSearchLink(value, href = "") {
+  const label = String(value || "");
+  const target = href || (label ? `names.html?q=${encodeURIComponent(label)}` : "");
+  if (!target) return escapeHtml(label);
+  return `<a href="${escapeHtml(sitePath(target))}" title="${escapeHtml(label)}">${escapeHtml(label)}</a>`;
+}
+
 function topIpCell(row) {
-  const href = row.filter_link || `names.html?q=${encodeURIComponent(row.ip || "")}`;
-  return `<a href="${escapeHtml(sitePath(href))}">${escapeHtml(row.ip || "")}</a>`;
+  return aggregateSearchLink(row.ip, row.filter_link);
 }
 
 function nameserverCell(row) {
-  return `<span title="${escapeHtml(row.nameserver || "")}">${escapeHtml(row.nameserver || "")}</span>`;
+  return aggregateSearchLink(row.nameserver, row.filter_link);
+}
+
+function resolverIpCell(row) {
+  return aggregateSearchLink(row.ip, row.filter_link);
 }
 
 function ipFieldCountsCell(row) {
@@ -266,7 +276,7 @@ function topologySignals(summary) {
       {key: "names_count", label: "Names", width: "30%"}
     ], "No nameservers in this snapshot.", {wrapClass: "compact-table-wrap"})}</article>
     <article class="panel"><h2>Known HNS Resolvers</h2>${table(resolvers, [
-      {key: "ip", label: "IP", width: "30%"},
+      {key: "ip", label: "IP", render: resolverIpCell, width: "30%"},
       {key: "provider", label: "Provider", width: "40%"},
       {key: "hnsdoh_software", label: "Software", render: resolverSoftwareCell, width: "30%"}
     ], "No resolver inventory configured.", {wrapClass: "compact-table-wrap"})}</article>`;
@@ -362,12 +372,12 @@ function actionCell(row) {
   return `<div class="action-cell"><a class="action-link" href="${escapeHtml(action.href)}">${escapeHtml(action.label)}</a><span>${escapeHtml(action.detail)}</span></div>`;
 }
 
-function snapshot(summary) {
+function snapshot(summary, providers = []) {
   return `<section class="snapshot">
     ${metric("Active names", summary.active_names, `${fmt.format(summary.expired_names)} expired`, "names.html")}
-    ${metric("SYNTH NS", summary.synth_nameserver_records ?? summary.direct_ip_records, pct(summary.synth_nameserver_records ?? summary.direct_ip_records, summary.active_names), "names.html?filter=direct_ip_records")}
-    ${metric("DS records", summary.ds_records, pct(summary.ds_records, summary.active_names), "names.html?filter=ds_records")}
-    ${metric("Direct DANE", summary.dane_working, `${fmt.format(summary.strict_hns_working)} strict HNS working`, "names.html?filter=dane_working")}
+    ${metric("Indexed names", summary.total_names, `height ${summary.last_indexed_height ?? ""}`)}
+    ${metric("Live checks", summary.live_check_checked_count, `${fmt.format(summary.live_check_candidate_count ?? 0)} candidates`)}
+    ${metric("Provider groups", providers.length, `${fmt.format(summary.default_provider_names ?? 0)} default-provider names`)}
   </section>`;
 }
 
@@ -1064,45 +1074,17 @@ function namesActionContext(actions = [], filter = "") {
   </section>`;
 }
 
-function overviewExplainers(explainers = []) {
-  if (!explainers.length) return "";
-  return `<article class="panel explainer-panel">
-    <h2>Metric Definitions</h2>
-    <div class="explainer-list">${explainers.map((item) => `
-      <a class="explainer-item" href="${escapeHtml(sitePath(item.filter_link || "names.html"))}">
-        <span>${escapeHtml(item.label || item.key || "")}</span>
-        <strong>${fmt.format(item.count ?? 0)}</strong>
-        <small>${escapeHtml(item.definition || "")}</small>
-      </a>`).join("")}</div>
-  </article>`;
-}
-
 async function renderOverview(app) {
   const summary = await loadJson("data/summary.json");
   const providers = summary.providers || [];
   const classes = summary.classes || [];
-  app.innerHTML = `${snapshot(summary)}
+  app.innerHTML = `${snapshot(summary, providers)}
     ${adoptionFunnel(summary)}
     <section class="grid">
       ${nextActionsPanel(summary.next_actions || [])}
       ${topologySignals(summary)}
       <article class="panel"><h2>Provider Dominance</h2>${bars(providers, "provider_key", "names_count", 12, (value) => value, providerFilterHref)}</article>
       <article class="panel"><h2>On-Chain Classes</h2>${bars(classes, "class", "count", 12, classLabel, (row) => classFilterHref(row.class))}</article>
-      ${overviewExplainers(summary.overview_explainers || [])}
-      <article class="panel"><h2>DANE</h2>
-        <div class="stat-list">
-          <a class="stat-line stat-link" href="${escapeHtml(sitePath("names.html?filter=ds_records"))}"><span>DS records</span><strong>${fmt.format(summary.ds_records)}</strong></a>
-          <a class="stat-line stat-link" href="${escapeHtml(sitePath("names.html?filter=needs_dane"))}"><span>Needs DANE</span><strong>${fmt.format(summary.needs_dane)}</strong></a>
-          <a class="stat-line stat-link" href="${escapeHtml(sitePath("names.html?filter=dane_working"))}"><span>Direct DANE</span><strong>${fmt.format(summary.dane_working)}</strong></a>
-        </div>
-      </article>
-      <article class="panel"><h2>Fix Queues</h2>
-        <div class="stat-list">
-          <a class="stat-line stat-link" href="${escapeHtml(sitePath("names.html?filter=needs_fix"))}"><span>Needs fix</span><strong>${fmt.format(summary.needs_fix)}</strong></a>
-          <a class="stat-line stat-link" href="${escapeHtml(sitePath("names.html?filter=missing_glue_only"))}"><span>Missing GLUE</span><strong>${fmt.format(summary.missing_glue_only)}</strong></a>
-          <a class="stat-line stat-link" href="${escapeHtml(sitePath("names.html?filter=stale_tlsa_only"))}"><span>Stale TLSA</span><strong>${fmt.format(summary.stale_tlsa_only)}</strong></a>
-        </div>
-      </article>
       <article class="panel"><h2>Snapshot</h2>
       <p class="meta">Height ${summary.last_indexed_height ?? ""} generated ${summary.generated_at ?? ""}</p>
       <p class="meta">Source ${escapeHtml(summary.source_type || "unknown")} - rules v${summary.provider_rules_version ?? ""} ${escapeHtml((summary.provider_rules_hash || "").slice(0, 12))}</p>
