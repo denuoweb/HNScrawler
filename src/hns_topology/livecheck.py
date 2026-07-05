@@ -193,7 +193,8 @@ def check_name(row: dict, config: LiveCheckConfig, limiter: RateLimiter) -> Live
         limiter.wait()
         dnssec_result = _validate_dnssec_for_row(strict_resolver, row, name)
         dnssec_status = dnssec_result.status
-        strict_addresses = _strict_addresses(row, strict_resolver, name)
+        strict_address_result = _strict_address_resolution(strict_resolver, name, dnssec_result)
+        strict_addresses = strict_address_result.addresses
         fallback_addresses: list[str] = []
         addresses = strict_addresses
         if strict_addresses:
@@ -220,14 +221,16 @@ def check_name(row: dict, config: LiveCheckConfig, limiter: RateLimiter) -> Live
                 failure_reason = https_result.failure_reason
             else:
                 failure_reason = _choose_failure(failure_reason, https_result.failure_reason)
-            tlsa_resolver = strict_resolver
-            tlsa_records = _resolve_tlsa(tlsa_resolver, name) if tlsa_resolver else []
+            tlsa_result = _resolve_tlsa_secure(strict_resolver, name, dnssec_result) if strict_resolver else TlsaResolution([])
+            tlsa_records = tlsa_result.records
             if tlsa_records:
                 tlsa_status = "present"
                 if (
                     bool(strict_addresses)
                     and
                     dnssec_result.status == "valid"
+                    and strict_address_result.secure
+                    and tlsa_result.secure
                     and https_result.cert_der
                     and _match_any_tlsa(https_result.cert_der, tlsa_records)
                 ):
@@ -236,8 +239,13 @@ def check_name(row: dict, config: LiveCheckConfig, limiter: RateLimiter) -> Live
                     failure_reason = None
                 else:
                     dane_status = "invalid"
+                    dnssec_failure = None
+                    if dnssec_result.status != "valid":
+                        dnssec_failure = dnssec_result.failure_reason
+                    elif not strict_address_result.secure or not tlsa_result.secure:
+                        dnssec_failure = "dnssec_missing"
                     failure_reason = _choose_failure(
-                        dnssec_result.failure_reason,
+                        dnssec_failure,
                         "stale_tlsa_spki_mismatch" if https_result.cert_der else "https_connect_failed",
                     )
             else:
@@ -452,7 +460,17 @@ def _strict_addresses(
 ) -> list[str]:
     if strict_resolver is None:
         return []
-    return _resolve_addresses(strict_resolver, name)
+    return _resolve_strict_addresses(strict_resolver, name)
+
+
+def _strict_address_resolution(
+    strict_resolver: dns.resolver.Resolver | None,
+    name: str,
+    dnssec_result: DnssecResult,
+) -> AddressResolution:
+    if strict_resolver is None:
+        return AddressResolution([])
+    return _resolve_strict_address_resolution(strict_resolver, name, dnssec_result)
 
 
 def _make_resolver(
@@ -481,6 +499,25 @@ def _make_strict_resolver(row: dict, config: LiveCheckConfig) -> dns.resolver.Re
 class DnssecResult:
     status: str
     failure_reason: str | None = None
+    dnskey_rrset: object | None = None
+
+
+@dataclass(frozen=True)
+class StrictAnswer:
+    rrset: object
+    response: object
+
+
+@dataclass(frozen=True)
+class AddressResolution:
+    addresses: list[str]
+    secure: bool = False
+
+
+@dataclass(frozen=True)
+class TlsaResolution:
+    records: list[tuple[int, int, int, bytes]]
+    secure: bool = False
 
 
 def _validate_dnssec_for_row(
@@ -506,25 +543,17 @@ def _validate_dnssec_delegation(
     if not ds_records:
         return DnssecResult("not_delegated")
     owner = dns.name.from_text(name.rstrip(".") + ".")
-    try:
-        answer = resolver.resolve(owner, "DNSKEY", raise_on_no_answer=False)
-    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+    answer = _strict_resolve_rrset(resolver, owner.to_text(), "DNSKEY")
+    if answer is None:
         return DnssecResult("missing_dnskey", "dnssec_missing")
-    except dns.exception.Timeout:
-        return DnssecResult("timeout", "nameserver_unreachable_udp")
-    except Exception:
-        return DnssecResult("unknown_error", "unknown_error")
 
     dnskey_rrset = answer.rrset
-    if dnskey_rrset is None:
-        return DnssecResult("missing_dnskey", "dnssec_missing")
-
     if not _ds_matches_dnskey(owner, ds_records, dnskey_rrset):
         return DnssecResult("ds_dnskey_mismatch", "ds_dnskey_mismatch")
 
     rrsig_rrset = _find_rrsig(answer.response, owner, dns.rdatatype.DNSKEY)
     if rrsig_rrset is None:
-        return DnssecResult("valid")
+        return DnssecResult("missing_rrsig", "dnssec_missing")
     try:
         dns.dnssec.validate(dnskey_rrset, rrsig_rrset, {owner: dnskey_rrset})
     except dns.dnssec.ValidationFailure as exc:
@@ -533,7 +562,7 @@ def _validate_dnssec_delegation(
         return DnssecResult("bogus", "dnssec_bogus")
     except Exception:
         return DnssecResult("bogus", "dnssec_bogus")
-    return DnssecResult("valid")
+    return DnssecResult("valid", dnskey_rrset=dnskey_rrset)
 
 
 def _ds_matches_dnskey(
@@ -569,6 +598,22 @@ def _find_rrsig(response, owner: dns.name.Name, covered_type: dns.rdatatype.Rdat
     return None
 
 
+def _rrset_signature_valid(
+    rrset,
+    response,
+    key_owner: dns.name.Name,
+    dnskey_rrset,
+) -> bool:
+    rrsig_rrset = _find_rrsig(response, rrset.name, rrset.rdtype)
+    if rrsig_rrset is None:
+        return False
+    try:
+        dns.dnssec.validate(rrset, rrsig_rrset, {key_owner: dnskey_rrset})
+    except Exception:
+        return False
+    return True
+
+
 def _choose_failure(current: str | None, candidate: str | None) -> str | None:
     if current is None:
         return candidate
@@ -600,16 +645,80 @@ def _resolve_addresses(resolver: dns.resolver.Resolver, name: str) -> list[str]:
     return addresses
 
 
-def _resolve_tlsa(resolver: dns.resolver.Resolver, name: str) -> list[tuple[int, int, int, bytes]]:
-    records: list[tuple[int, int, int, bytes]] = []
-    for owner in (f"_443._tcp.{name}", f"_443._tcp.www.{name}"):
+def _resolve_strict_addresses(resolver: dns.resolver.Resolver, name: str) -> list[str]:
+    return _resolve_strict_address_resolution(resolver, name, DnssecResult("not_delegated")).addresses
+
+
+def _resolve_strict_address_resolution(
+    resolver: dns.resolver.Resolver,
+    name: str,
+    dnssec_result: DnssecResult,
+) -> AddressResolution:
+    addresses: list[str] = []
+    secure_checks: list[bool] = []
+    key_owner = dns.name.from_text(_fqdn(name))
+    for rrtype in ("A", "AAAA"):
+        answer = _strict_resolve_rrset(resolver, name, rrtype)
+        if answer is not None:
+            addresses.extend(item.to_text() for item in answer.rrset)
+            if dnssec_result.status == "valid" and dnssec_result.dnskey_rrset is not None:
+                secure_checks.append(
+                    _rrset_signature_valid(answer.rrset, answer.response, key_owner, dnssec_result.dnskey_rrset)
+                )
+    secure = bool(addresses) and bool(secure_checks) and all(secure_checks)
+    return AddressResolution(addresses=addresses, secure=secure)
+
+
+def _strict_resolve_rrset(
+    resolver: dns.resolver.Resolver,
+    name: str,
+    rrtype: str,
+) -> StrictAnswer | None:
+    qname = dns.name.from_text(_fqdn(name))
+    rdtype = dns.rdatatype.from_text(rrtype)
+    for server in resolver.nameservers:
         try:
-            answer = resolver.resolve(owner, "TLSA")
-        except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.exception.Timeout):
+            query = dns.message.make_query(qname, rdtype, want_dnssec=True)
+            query.flags &= ~dns.flags.RD
+            response = dns.query.udp(query, server, timeout=resolver.timeout)
+        except dns.exception.Timeout:
             continue
-        for item in answer:
+        except Exception:
+            continue
+        if response.rcode() != dns.rcode.NOERROR:
+            continue
+        if not response.flags & dns.flags.AA:
+            continue
+        for rrset in response.answer:
+            if rrset.name == qname and rrset.rdtype == rdtype:
+                return StrictAnswer(rrset=rrset, response=response)
+    return None
+
+
+def _resolve_tlsa_secure(
+    resolver: dns.resolver.Resolver,
+    name: str,
+    dnssec_result: DnssecResult,
+) -> TlsaResolution:
+    records: list[tuple[int, int, int, bytes]] = []
+    secure_checks: list[bool] = []
+    key_owner = dns.name.from_text(_fqdn(name))
+    for owner in (f"_443._tcp.{name}", f"_443._tcp.www.{name}"):
+        answer = _strict_resolve_rrset(resolver, owner, "TLSA")
+        if answer is None:
+            continue
+        for item in answer.rrset:
             records.append((int(item.usage), int(item.selector), int(item.mtype), bytes(item.cert)))
-    return records
+        if dnssec_result.status == "valid" and dnssec_result.dnskey_rrset is not None:
+            secure_checks.append(
+                _rrset_signature_valid(answer.rrset, answer.response, key_owner, dnssec_result.dnskey_rrset)
+            )
+    secure = bool(records) and bool(secure_checks) and all(secure_checks)
+    return TlsaResolution(records=records, secure=secure)
+
+
+def _resolve_tlsa(resolver: dns.resolver.Resolver, name: str) -> list[tuple[int, int, int, bytes]]:
+    return _resolve_tlsa_secure(resolver, name, DnssecResult("not_delegated")).records
 
 
 @dataclass(frozen=True)

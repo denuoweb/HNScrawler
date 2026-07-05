@@ -7,17 +7,22 @@ import dns.name
 import dns.rdata
 import dns.rdataclass
 import dns.rdatatype
+import dns.resolver
 import dns.rrset
 
 from hns_topology.db import connect
 from hns_topology.indexer import bootstrap_from_fixture
 from hns_topology.livecheck import (
+    AddressResolution,
     DnssecResult,
     HttpsResult,
     LiveCheckConfig,
+    TlsaResolution,
     _ds_matches_dnskey,
     _find_rrsig,
     _match_association,
+    _resolve_strict_addresses,
+    _validate_dnssec_delegation,
     check_name,
     collect_dns_evidence,
     select_live_check_candidates,
@@ -116,6 +121,78 @@ def test_collect_dns_evidence_queries_bootstrap_server(monkeypatch):
     assert seen[0] == ("secure.", "A", "203.0.113.53")
 
 
+def test_strict_address_lookup_requires_authoritative_nonrecursive_answer(monkeypatch):
+    seen_flags = []
+
+    def fake_udp(query, server, timeout):
+        seen_flags.append(query.flags)
+        response = dns.message.make_response(query)
+        response.flags |= dns.flags.RA
+        response.answer.append(dns.rrset.from_text(query.question[0].name, 300, "IN", "A", "198.51.100.10"))
+        return response
+
+    resolver = dns.resolver.Resolver(configure=False)
+    resolver.nameservers = ["203.0.113.53"]
+    resolver.timeout = 0.1
+    monkeypatch.setattr("dns.query.udp", fake_udp)
+
+    assert _resolve_strict_addresses(resolver, "secure") == []
+    assert seen_flags
+    assert not seen_flags[0] & dns.flags.RD
+
+
+def test_strict_address_lookup_accepts_authoritative_answer(monkeypatch):
+    def fake_udp(query, server, timeout):
+        response = dns.message.make_response(query)
+        response.flags |= dns.flags.AA
+        response.answer.append(dns.rrset.from_text(query.question[0].name, 300, "IN", "A", "198.51.100.10"))
+        return response
+
+    resolver = dns.resolver.Resolver(configure=False)
+    resolver.nameservers = ["203.0.113.53"]
+    resolver.timeout = 0.1
+    monkeypatch.setattr("dns.query.udp", fake_udp)
+
+    assert _resolve_strict_addresses(resolver, "secure") == ["198.51.100.10"]
+
+
+def test_dnssec_validation_requires_dnskey_rrsig(monkeypatch):
+    owner = dns.name.from_text("example.")
+    dnskey = dns.rdata.from_text(
+        dns.rdataclass.IN,
+        dns.rdatatype.DNSKEY,
+        "257 3 8 AwEAAQIDBAUGBwgJ",
+    )
+    ds = dns.dnssec.make_ds(owner, dnskey, 2)
+
+    def fake_udp(query, server, timeout):
+        response = dns.message.make_response(query)
+        response.flags |= dns.flags.AA
+        response.answer.append(dns.rrset.from_rdata(owner, 3600, dnskey))
+        return response
+
+    resolver = dns.resolver.Resolver(configure=False)
+    resolver.nameservers = ["203.0.113.53"]
+    resolver.timeout = 0.1
+    monkeypatch.setattr("dns.query.udp", fake_udp)
+
+    status = _validate_dnssec_delegation(
+        resolver,
+        "example",
+        [
+            {
+                "keyTag": dns.dnssec.key_id(dnskey),
+                "algorithm": dnskey.algorithm,
+                "digestType": ds.digest_type,
+                "digest": ds.digest.hex(),
+            }
+        ],
+    )
+
+    assert status.status == "missing_rrsig"
+    assert status.failure_reason == "dnssec_missing"
+
+
 class DummyLimiter:
     def __init__(self):
         self.waits = 0
@@ -125,16 +202,16 @@ class DummyLimiter:
 
 
 def test_synth_is_used_as_nameserver_bootstrap_not_website_address(monkeypatch):
-    def resolve_addresses(resolver, name):
+    def resolve_addresses(resolver, name, dnssec_result):
         assert resolver.nameservers == ["198.51.100.20"]
-        return ["198.51.100.99"]
+        return AddressResolution(["198.51.100.99"])
 
-    def resolve_tlsa(resolver, name):
+    def resolve_tlsa(resolver, name, dnssec_result):
         assert resolver.nameservers == ["198.51.100.20"]
-        return []
+        return TlsaResolution([])
 
-    monkeypatch.setattr("hns_topology.livecheck._resolve_addresses", resolve_addresses)
-    monkeypatch.setattr("hns_topology.livecheck._resolve_tlsa", resolve_tlsa)
+    monkeypatch.setattr("hns_topology.livecheck._resolve_strict_address_resolution", resolve_addresses)
+    monkeypatch.setattr("hns_topology.livecheck._resolve_tlsa_secure", resolve_tlsa)
     monkeypatch.setattr(
         "hns_topology.livecheck._https_connect",
         lambda hostname, address, timeout: HttpsResult("working", b"cert", None)
@@ -164,12 +241,12 @@ def test_synth_is_used_as_nameserver_bootstrap_not_website_address(monkeypatch):
 
 
 def test_glue_is_used_as_nameserver_not_website_address(monkeypatch):
-    def resolve_addresses(resolver, name):
+    def resolve_addresses(resolver, name, dnssec_result):
         assert resolver.nameservers == ["203.0.113.53"]
-        return ["198.51.100.30"]
+        return AddressResolution(["198.51.100.30"])
 
-    monkeypatch.setattr("hns_topology.livecheck._resolve_addresses", resolve_addresses)
-    monkeypatch.setattr("hns_topology.livecheck._resolve_tlsa", lambda resolver, name: [])
+    monkeypatch.setattr("hns_topology.livecheck._resolve_strict_address_resolution", resolve_addresses)
+    monkeypatch.setattr("hns_topology.livecheck._resolve_tlsa_secure", lambda resolver, name, dnssec_result: TlsaResolution([]))
     monkeypatch.setattr(
         "hns_topology.livecheck._https_connect",
         lambda hostname, address, timeout: HttpsResult("working", b"cert", None)
@@ -281,8 +358,14 @@ def test_missing_glue_without_fallback_address_preserves_missing_glue(monkeypatc
 
 def test_dane_match_can_work_without_webpki_validation(monkeypatch):
     limiter = DummyLimiter()
-    monkeypatch.setattr("hns_topology.livecheck._resolve_addresses", lambda resolver, name: ["127.0.0.2"])
-    monkeypatch.setattr("hns_topology.livecheck._resolve_tlsa", lambda resolver, name: [(3, 1, 1, b"x")])
+    monkeypatch.setattr(
+        "hns_topology.livecheck._resolve_strict_address_resolution",
+        lambda resolver, name, dnssec_result: AddressResolution(["127.0.0.2"], secure=True),
+    )
+    monkeypatch.setattr(
+        "hns_topology.livecheck._resolve_tlsa_secure",
+        lambda resolver, name, dnssec_result: TlsaResolution([(3, 1, 1, b"x")], secure=True),
+    )
     monkeypatch.setattr(
         "hns_topology.livecheck._validate_dnssec_delegation",
         lambda resolver, name, ds_records: DnssecResult("valid"),
@@ -319,9 +402,91 @@ def test_dane_match_can_work_without_webpki_validation(monkeypatch):
     assert status.failure_reason is None
 
 
+def test_dane_requires_secure_address_rrset(monkeypatch):
+    monkeypatch.setattr(
+        "hns_topology.livecheck._resolve_strict_address_resolution",
+        lambda resolver, name, dnssec_result: AddressResolution(["127.0.0.2"], secure=False),
+    )
+    monkeypatch.setattr(
+        "hns_topology.livecheck._resolve_tlsa_secure",
+        lambda resolver, name, dnssec_result: TlsaResolution([(3, 1, 1, b"x")], secure=True),
+    )
+    monkeypatch.setattr(
+        "hns_topology.livecheck._validate_dnssec_delegation",
+        lambda resolver, name, ds_records: DnssecResult("valid", dnskey_rrset=object()),
+    )
+    monkeypatch.setattr(
+        "hns_topology.livecheck._https_connect",
+        lambda hostname, address, timeout: HttpsResult("tls_unverified", b"cert", "certificate_mismatch"),
+    )
+    monkeypatch.setattr("hns_topology.livecheck._match_any_tlsa", lambda cert, records: True)
+
+    status = check_name(
+        {
+            "name": "example",
+            "synth4": ["127.0.0.1"],
+            "synth6": [],
+            "glue4": [],
+            "glue6": [],
+            "has_ds": 1,
+            "ds_records": [{"keyTag": 1, "algorithm": 8, "digestType": 2, "digest": "00"}],
+        },
+        LiveCheckConfig(timeout=0.1),
+        DummyLimiter(),
+    )
+
+    assert status.tlsa_status == "present"
+    assert status.dane_status == "invalid"
+    assert status.failure_reason == "dnssec_missing"
+
+
+def test_dane_requires_secure_tlsa_rrset(monkeypatch):
+    monkeypatch.setattr(
+        "hns_topology.livecheck._resolve_strict_address_resolution",
+        lambda resolver, name, dnssec_result: AddressResolution(["127.0.0.2"], secure=True),
+    )
+    monkeypatch.setattr(
+        "hns_topology.livecheck._resolve_tlsa_secure",
+        lambda resolver, name, dnssec_result: TlsaResolution([(3, 1, 1, b"x")], secure=False),
+    )
+    monkeypatch.setattr(
+        "hns_topology.livecheck._validate_dnssec_delegation",
+        lambda resolver, name, ds_records: DnssecResult("valid", dnskey_rrset=object()),
+    )
+    monkeypatch.setattr(
+        "hns_topology.livecheck._https_connect",
+        lambda hostname, address, timeout: HttpsResult("tls_unverified", b"cert", "certificate_mismatch"),
+    )
+    monkeypatch.setattr("hns_topology.livecheck._match_any_tlsa", lambda cert, records: True)
+
+    status = check_name(
+        {
+            "name": "example",
+            "synth4": ["127.0.0.1"],
+            "synth6": [],
+            "glue4": [],
+            "glue6": [],
+            "has_ds": 1,
+            "ds_records": [{"keyTag": 1, "algorithm": 8, "digestType": 2, "digest": "00"}],
+        },
+        LiveCheckConfig(timeout=0.1),
+        DummyLimiter(),
+    )
+
+    assert status.tlsa_status == "present"
+    assert status.dane_status == "invalid"
+    assert status.failure_reason == "dnssec_missing"
+
+
 def test_stale_tlsa_takes_precedence_over_certificate_mismatch(monkeypatch):
-    monkeypatch.setattr("hns_topology.livecheck._resolve_addresses", lambda resolver, name: ["127.0.0.2"])
-    monkeypatch.setattr("hns_topology.livecheck._resolve_tlsa", lambda resolver, name: [(3, 1, 1, b"x")])
+    monkeypatch.setattr(
+        "hns_topology.livecheck._resolve_strict_address_resolution",
+        lambda resolver, name, dnssec_result: AddressResolution(["127.0.0.2"], secure=True),
+    )
+    monkeypatch.setattr(
+        "hns_topology.livecheck._resolve_tlsa_secure",
+        lambda resolver, name, dnssec_result: TlsaResolution([(3, 1, 1, b"x")], secure=True),
+    )
     monkeypatch.setattr(
         "hns_topology.livecheck._validate_dnssec_delegation",
         lambda resolver, name, ds_records: DnssecResult("valid"),
@@ -355,8 +520,14 @@ def test_stale_tlsa_takes_precedence_over_certificate_mismatch(monkeypatch):
 
 
 def test_unverified_https_without_tlsa_keeps_certificate_failure(monkeypatch):
-    monkeypatch.setattr("hns_topology.livecheck._resolve_addresses", lambda resolver, name: ["127.0.0.2"])
-    monkeypatch.setattr("hns_topology.livecheck._resolve_tlsa", lambda resolver, name: [])
+    monkeypatch.setattr(
+        "hns_topology.livecheck._resolve_strict_address_resolution",
+        lambda resolver, name, dnssec_result: AddressResolution(["127.0.0.2"]),
+    )
+    monkeypatch.setattr(
+        "hns_topology.livecheck._resolve_tlsa_secure",
+        lambda resolver, name, dnssec_result: TlsaResolution([]),
+    )
     monkeypatch.setattr(
         "hns_topology.livecheck._validate_dnssec_delegation",
         lambda resolver, name, ds_records: DnssecResult("not_delegated"),
@@ -390,8 +561,14 @@ def test_unverified_https_without_tlsa_keeps_certificate_failure(monkeypatch):
 
 
 def test_dnssec_failure_prevents_working_dane(monkeypatch):
-    monkeypatch.setattr("hns_topology.livecheck._resolve_addresses", lambda resolver, name: ["127.0.0.2"])
-    monkeypatch.setattr("hns_topology.livecheck._resolve_tlsa", lambda resolver, name: [(3, 1, 1, b"x")])
+    monkeypatch.setattr(
+        "hns_topology.livecheck._resolve_strict_address_resolution",
+        lambda resolver, name, dnssec_result: AddressResolution(["127.0.0.2"], secure=True),
+    )
+    monkeypatch.setattr(
+        "hns_topology.livecheck._resolve_tlsa_secure",
+        lambda resolver, name, dnssec_result: TlsaResolution([(3, 1, 1, b"x")], secure=True),
+    )
     monkeypatch.setattr(
         "hns_topology.livecheck._validate_dnssec_delegation",
         lambda resolver, name, ds_records: DnssecResult("ds_dnskey_mismatch", "ds_dnskey_mismatch"),
