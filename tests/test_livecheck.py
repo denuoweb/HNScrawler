@@ -17,10 +17,12 @@ from hns_topology.livecheck import (
     DnssecResult,
     HttpsResult,
     LiveCheckConfig,
+    StrictAnswer,
     TlsaResolution,
     _ds_matches_dnskey,
     _find_rrsig,
     _match_association,
+    _resolve_tlsa_secure,
     _resolve_strict_addresses,
     _validate_dnssec_delegation,
     check_name,
@@ -92,7 +94,7 @@ def test_priority_live_check_names_are_selected_before_limit(tmp_path):
 def test_collect_dns_evidence_queries_bootstrap_server(monkeypatch):
     seen = []
 
-    def fake_udp(query, server, timeout):
+    def fake_udp(query, server, timeout, raise_on_truncation=False):
         seen.append((query.question[0].name.to_text(), dns.rdatatype.to_text(query.question[0].rdtype), server))
         response = dns.message.make_response(query)
         if query.question[0].rdtype == dns.rdatatype.A:
@@ -124,9 +126,17 @@ def test_collect_dns_evidence_queries_bootstrap_server(monkeypatch):
 def test_strict_address_lookup_requires_authoritative_nonrecursive_answer(monkeypatch):
     seen_flags = []
 
-    def fake_udp(query, server, timeout):
+    def fake_udp(query, server, timeout, raise_on_truncation=False):
         seen_flags.append(query.flags)
         response = dns.message.make_response(query)
+        response.flags |= dns.flags.AA
+        response.flags |= dns.flags.RA
+        response.answer.append(dns.rrset.from_text(query.question[0].name, 300, "IN", "A", "198.51.100.10"))
+        return response
+
+    def fake_tcp(query, server, timeout):
+        response = dns.message.make_response(query)
+        response.flags |= dns.flags.AA
         response.flags |= dns.flags.RA
         response.answer.append(dns.rrset.from_text(query.question[0].name, 300, "IN", "A", "198.51.100.10"))
         return response
@@ -135,6 +145,7 @@ def test_strict_address_lookup_requires_authoritative_nonrecursive_answer(monkey
     resolver.nameservers = ["203.0.113.53"]
     resolver.timeout = 0.1
     monkeypatch.setattr("dns.query.udp", fake_udp)
+    monkeypatch.setattr("dns.query.tcp", fake_tcp)
 
     assert _resolve_strict_addresses(resolver, "secure") == []
     assert seen_flags
@@ -142,7 +153,64 @@ def test_strict_address_lookup_requires_authoritative_nonrecursive_answer(monkey
 
 
 def test_strict_address_lookup_accepts_authoritative_answer(monkeypatch):
-    def fake_udp(query, server, timeout):
+    def fake_udp(query, server, timeout, raise_on_truncation=False):
+        response = dns.message.make_response(query)
+        response.flags |= dns.flags.AA
+        if query.question[0].rdtype == dns.rdatatype.A:
+            response.answer.append(dns.rrset.from_text(query.question[0].name, 300, "IN", "A", "198.51.100.10"))
+        return response
+
+    def fake_tcp(query, server, timeout):
+        response = dns.message.make_response(query)
+        response.flags |= dns.flags.AA
+        return response
+
+    resolver = dns.resolver.Resolver(configure=False)
+    resolver.nameservers = ["203.0.113.53"]
+    resolver.timeout = 0.1
+    monkeypatch.setattr("dns.query.udp", fake_udp)
+    monkeypatch.setattr("dns.query.tcp", fake_tcp)
+
+    assert _resolve_strict_addresses(resolver, "secure") == ["198.51.100.10"]
+
+
+def test_strict_address_lookup_falls_back_to_tcp_on_non_authoritative_udp(monkeypatch):
+    calls = []
+
+    def fake_udp(query, server, timeout, raise_on_truncation):
+        calls.append("udp")
+        response = dns.message.make_response(query)
+        response.flags |= dns.flags.RA
+        response.answer.append(dns.rrset.from_text(query.question[0].name, 300, "IN", "A", "198.51.100.10"))
+        return response
+
+    def fake_tcp(query, server, timeout):
+        calls.append("tcp")
+        response = dns.message.make_response(query)
+        response.flags |= dns.flags.AA
+        if query.question[0].rdtype == dns.rdatatype.A:
+            response.answer.append(dns.rrset.from_text(query.question[0].name, 300, "IN", "A", "198.51.100.10"))
+        return response
+
+    resolver = dns.resolver.Resolver(configure=False)
+    resolver.nameservers = ["203.0.113.53"]
+    resolver.timeout = 0.1
+    monkeypatch.setattr("dns.query.udp", fake_udp)
+    monkeypatch.setattr("dns.query.tcp", fake_tcp)
+
+    assert _resolve_strict_addresses(resolver, "secure") == ["198.51.100.10"]
+    assert calls == ["udp", "tcp", "udp", "tcp"]
+
+
+def test_strict_address_lookup_falls_back_to_tcp_on_udp_failure(monkeypatch):
+    calls = []
+
+    def fake_udp(query, server, timeout, raise_on_truncation):
+        calls.append("udp")
+        raise dns.exception.Timeout
+
+    def fake_tcp(query, server, timeout):
+        calls.append("tcp")
         response = dns.message.make_response(query)
         response.flags |= dns.flags.AA
         response.answer.append(dns.rrset.from_text(query.question[0].name, 300, "IN", "A", "198.51.100.10"))
@@ -152,8 +220,60 @@ def test_strict_address_lookup_accepts_authoritative_answer(monkeypatch):
     resolver.nameservers = ["203.0.113.53"]
     resolver.timeout = 0.1
     monkeypatch.setattr("dns.query.udp", fake_udp)
+    monkeypatch.setattr("dns.query.tcp", fake_tcp)
 
     assert _resolve_strict_addresses(resolver, "secure") == ["198.51.100.10"]
+    assert calls == ["udp", "tcp", "udp", "tcp"]
+
+
+def test_strict_address_lookup_falls_back_to_tcp_on_truncated_udp(monkeypatch):
+    calls = []
+
+    def fake_udp(query, server, timeout, raise_on_truncation):
+        calls.append("udp")
+        response = dns.message.make_response(query)
+        response.flags |= dns.flags.TC
+        return response
+
+    def fake_tcp(query, server, timeout):
+        calls.append("tcp")
+        response = dns.message.make_response(query)
+        response.flags |= dns.flags.AA
+        response.answer.append(dns.rrset.from_text(query.question[0].name, 300, "IN", "A", "198.51.100.10"))
+        return response
+
+    resolver = dns.resolver.Resolver(configure=False)
+    resolver.nameservers = ["203.0.113.53"]
+    resolver.timeout = 0.1
+    monkeypatch.setattr("dns.query.udp", fake_udp)
+    monkeypatch.setattr("dns.query.tcp", fake_tcp)
+
+    assert _resolve_strict_addresses(resolver, "secure") == ["198.51.100.10"]
+    assert calls == ["udp", "tcp", "udp", "tcp"]
+
+
+def test_tlsa_lookup_uses_exact_requested_service_owner(monkeypatch):
+    seen = []
+
+    def fake_strict_resolve(resolver, owner, rrtype):
+        seen.append((owner, rrtype))
+        if owner == "_443._tcp.www.example":
+            return StrictAnswer(
+                rrset=dns.rrset.from_text("_443._tcp.www.example.", 300, "IN", "TLSA", "3 1 1 aa"),
+                response=dns.message.make_response(
+                    dns.message.make_query("_443._tcp.www.example.", dns.rdatatype.TLSA)
+                ),
+            )
+        return None
+
+    resolver = dns.resolver.Resolver(configure=False)
+    resolver.nameservers = ["203.0.113.53"]
+    monkeypatch.setattr("hns_topology.livecheck._strict_resolve_rrset", fake_strict_resolve)
+
+    result = _resolve_tlsa_secure(resolver, "example", DnssecResult("not_delegated"))
+
+    assert seen == [("_443._tcp.example", "TLSA")]
+    assert result.records == []
 
 
 def test_dnssec_validation_requires_dnskey_rrsig(monkeypatch):
@@ -165,7 +285,7 @@ def test_dnssec_validation_requires_dnskey_rrsig(monkeypatch):
     )
     ds = dns.dnssec.make_ds(owner, dnskey, 2)
 
-    def fake_udp(query, server, timeout):
+    def fake_udp(query, server, timeout, raise_on_truncation=False):
         response = dns.message.make_response(query)
         response.flags |= dns.flags.AA
         response.answer.append(dns.rrset.from_rdata(owner, 3600, dnskey))

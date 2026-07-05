@@ -680,18 +680,32 @@ def _strict_resolve_rrset(
         try:
             query = dns.message.make_query(qname, rdtype, want_dnssec=True)
             query.flags &= ~dns.flags.RD
-            response = dns.query.udp(query, server, timeout=resolver.timeout)
-        except dns.exception.Timeout:
-            continue
+            response = dns.query.udp(query, server, timeout=resolver.timeout, raise_on_truncation=True)
+            answer = _strict_answer_from_response(response, qname, rdtype)
+            if answer is not None:
+                return answer
         except Exception:
-            continue
-        if response.rcode() != dns.rcode.NOERROR:
-            continue
-        if not response.flags & dns.flags.AA:
-            continue
-        for rrset in response.answer:
-            if rrset.name == qname and rrset.rdtype == rdtype:
-                return StrictAnswer(rrset=rrset, response=response)
+            pass
+        try:
+            response = dns.query.tcp(query, server, timeout=resolver.timeout)
+            answer = _strict_answer_from_response(response, qname, rdtype)
+            if answer is not None:
+                return answer
+        except Exception:
+            pass
+    return None
+
+
+def _strict_answer_from_response(response, qname: dns.name.Name, rdtype) -> StrictAnswer | None:
+    if response.rcode() != dns.rcode.NOERROR:
+        return None
+    if not response.flags & dns.flags.AA:
+        return None
+    if response.flags & dns.flags.RA:
+        return None
+    for rrset in response.answer:
+        if rrset.name == qname and rrset.rdtype == rdtype:
+            return StrictAnswer(rrset=rrset, response=response)
     return None
 
 
@@ -703,16 +717,16 @@ def _resolve_tlsa_secure(
     records: list[tuple[int, int, int, bytes]] = []
     secure_checks: list[bool] = []
     key_owner = dns.name.from_text(_fqdn(name))
-    for owner in (f"_443._tcp.{name}", f"_443._tcp.www.{name}"):
-        answer = _strict_resolve_rrset(resolver, owner, "TLSA")
-        if answer is None:
-            continue
-        for item in answer.rrset:
-            records.append((int(item.usage), int(item.selector), int(item.mtype), bytes(item.cert)))
-        if dnssec_result.status == "valid" and dnssec_result.dnskey_rrset is not None:
-            secure_checks.append(
-                _rrset_signature_valid(answer.rrset, answer.response, key_owner, dnssec_result.dnskey_rrset)
-            )
+    owner = f"_443._tcp.{name}"
+    answer = _strict_resolve_rrset(resolver, owner, "TLSA")
+    if answer is None:
+        return TlsaResolution(records)
+    for item in answer.rrset:
+        records.append((int(item.usage), int(item.selector), int(item.mtype), bytes(item.cert)))
+    if dnssec_result.status == "valid" and dnssec_result.dnskey_rrset is not None:
+        secure_checks.append(
+            _rrset_signature_valid(answer.rrset, answer.response, key_owner, dnssec_result.dnskey_rrset)
+        )
     secure = bool(records) and bool(secure_checks) and all(secure_checks)
     return TlsaResolution(records=records, secure=secure)
 
