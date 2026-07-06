@@ -2,6 +2,8 @@ import json
 import stat
 from pathlib import Path
 
+import pytest
+
 from hns_topology.compliance import COMPLIANCE_STAGES
 from hns_topology.db import (
     RESOURCE_IP_INDEX_META_KEY,
@@ -405,12 +407,8 @@ def test_generate_site_requires_current_resource_ip_index_and_preserves_existing
         conn.execute("DELETE FROM snapshot_meta WHERE key = ?", ("resource_ip_index_version",))
         conn.commit()
 
-        try:
+        with pytest.raises(RuntimeError, match="rebuild-resource-ip"):
             generate_site(conn, db_path=db_path, out_dir=out)
-        except RuntimeError as exc:
-            assert "rebuild-resource-ip" in str(exc)
-        else:
-            raise AssertionError("expected stale resource_ip guard")
 
     assert sentinel.read_text(encoding="utf-8") == "existing release"
     assert not list(tmp_path.glob(".public.tmp-*"))
@@ -769,13 +767,8 @@ def test_hsd_bootstrap_requires_limit_or_explicit_unpaginated_opt_in(tmp_path):
     rules = ProviderRules.from_file("configs/provider_rules.json")
     client = FakeBootstrapHsdClient()
 
-    with connect(db_path) as conn:
-        try:
-            bootstrap_from_hsd(conn, client=client, rules=rules)
-        except UnpaginatedGetNamesError:
-            pass
-        else:
-            raise AssertionError("expected unpaginated getnames guard")
+    with connect(db_path) as conn, pytest.raises(UnpaginatedGetNamesError):
+        bootstrap_from_hsd(conn, client=client, rules=rules)
 
     assert client.get_names_calls == 0
 

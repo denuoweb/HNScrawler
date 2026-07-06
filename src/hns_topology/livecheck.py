@@ -5,7 +5,7 @@ import socket
 import ssl
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 import dns.dnssec
@@ -685,7 +685,7 @@ def _validate_dnssec_delegation(
         if "expired" in str(exc).lower():
             return DnssecResult("rrsig_expired", "rrsig_expired")
         return DnssecResult("bogus", "dnssec_bogus")
-    except Exception:
+    except (dns.exception.DNSException, TypeError, ValueError):
         return DnssecResult("bogus", "dnssec_bogus")
     return DnssecResult("valid", dnskey_rrset=dnskey_rrset)
 
@@ -707,7 +707,7 @@ def _ds_matches_dnskey(
                 continue
             try:
                 computed = dns.dnssec.make_ds(owner, dnskey, int(digest_type), validating=True)
-            except Exception:
+            except (dns.exception.DNSException, TypeError, ValueError):
                 continue
             if computed.digest.hex().lower() == expected_digest:
                 return True
@@ -734,7 +734,7 @@ def _rrset_signature_valid(
         return False
     try:
         dns.dnssec.validate(rrset, rrsig_rrset, {key_owner: dnskey_rrset})
-    except Exception:
+    except (dns.exception.DNSException, TypeError, ValueError):
         return False
     return True
 
@@ -809,29 +809,33 @@ def _strict_resolve_rrset(
     qname = dns.name.from_text(_fqdn(name))
     rdtype = dns.rdatatype.from_text(rrtype)
     for server in resolver.nameservers:
-        try:
-            query = dns.message.make_query(qname, rdtype, want_dnssec=True)
-            query.flags &= ~dns.flags.RD
-            response = dns.query.udp(query, server, timeout=resolver.timeout, raise_on_truncation=True)
-            answer = _strict_answer_from_response(response, qname, rdtype)
-            if answer is not None:
-                return answer
-        except Exception:
-            pass
-        try:
-            response = dns.query.tcp(query, server, timeout=resolver.timeout)
-            answer = _strict_answer_from_response(response, qname, rdtype)
-            if answer is not None:
-                return answer
-        except Exception:
-            pass
+        answer = _strict_answer_from_transport(
+            lambda server=server: dns.query.udp(
+                _strict_query(qname, rdtype),
+                server,
+                timeout=resolver.timeout,
+                raise_on_truncation=True,
+            ),
+            qname,
+            rdtype,
+        )
+        if answer is not None:
+            return answer
+        answer = _strict_answer_from_transport(
+            lambda server=server: dns.query.tcp(
+                _strict_query(qname, rdtype),
+                server,
+                timeout=resolver.timeout,
+            ),
+            qname,
+            rdtype,
+        )
+        if answer is not None:
+            return answer
     for endpoint in doh_endpoints or []:
-        try:
-            query = dns.message.make_query(qname, rdtype, want_dnssec=True)
-            query.id = 0
-            query.flags &= ~dns.flags.RD
-            response = dns.query.https(
-                query,
+        answer = _strict_answer_from_transport(
+            lambda endpoint=endpoint: dns.query.https(
+                _strict_query(qname, rdtype, zero_id=True),
                 endpoint["host"],
                 timeout=resolver.timeout,
                 port=int(endpoint["port"]),
@@ -841,13 +845,41 @@ def _strict_resolve_rrset(
                 # HNS nameserver DoH transport is authenticated by the DNSSEC data path below.
                 # WebPKI validation would reject DANE/self-signed HNS nameserver certificates.
                 verify=False,
-            )
-            answer = _strict_answer_from_response(response, qname, rdtype)
-            if answer is not None:
-                return answer
-        except Exception:
-            pass
+            ),
+            qname,
+            rdtype,
+        )
+        if answer is not None:
+            return answer
     return None
+
+
+def _strict_query(qname: dns.name.Name, rdtype, *, zero_id: bool = False):
+    query = dns.message.make_query(qname, rdtype, want_dnssec=True)
+    if zero_id:
+        query.id = 0
+    query.flags &= ~dns.flags.RD
+    return query
+
+
+def _strict_answer_from_transport(
+    response_factory: Callable[[], dns.message.Message],
+    qname: dns.name.Name,
+    rdtype,
+) -> StrictAnswer | None:
+    try:
+        response = response_factory()
+    except Exception as exc:
+        if not _is_strict_transport_error(exc):
+            raise
+        return None
+    return _strict_answer_from_response(response, qname, rdtype)
+
+
+def _is_strict_transport_error(exc: Exception) -> bool:
+    if isinstance(exc, (dns.exception.DNSException, OSError, TimeoutError, ValueError, KeyError)):
+        return True
+    return type(exc).__module__.partition(".")[0] in {"httpx", "httpcore", "requests", "urllib3"}
 
 
 def _strict_answer_from_response(response, qname: dns.name.Name, rdtype) -> StrictAnswer | None:
@@ -926,9 +958,9 @@ def _https_connect(hostname: str, address: str, timeout: float) -> HttpsResult:
                 status="tls_unverified",
                 failure_reason=certificate_failure,
             )
-        except Exception:
+        except (OSError, ssl.SSLError):
             return HttpsResult("failed", None, certificate_failure)
-    except Exception:
+    except (OSError, ssl.SSLError):
         return HttpsResult("failed", None, "https_connect_failed")
 
 
