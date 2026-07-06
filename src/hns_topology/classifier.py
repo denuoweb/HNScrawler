@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 from typing import Any
-from urllib.parse import urlparse
 
 from .jsonutil import dumps_json
 from .models import ResourceSummary
@@ -105,7 +104,6 @@ def summarize_resource(name: str, resource: Any) -> ResourceSummary:
             ds_records.append(_normalize_ds_record(record))
         elif record_type == "TXT":
             has_txt = True
-            authoritative_doh.extend(_authoritative_doh_declarations(name, record))
 
     return ResourceSummary(
         name=normalize_name(name),
@@ -184,100 +182,6 @@ def _normalize_ds_record(record: dict[str, Any]) -> dict[str, Any]:
         "algorithm": _safe_int(record.get("algorithm")),
         "digestType": _safe_int(record.get("digestType")),
         "digest": str(record.get("digest") or "").replace(" ", "").lower(),
-    }
-
-
-def _authoritative_doh_declarations(name: str, record: dict[str, Any]) -> list[dict[str, Any]]:
-    declarations: list[dict[str, Any]] = []
-    for text in _txt_strings(record):
-        parsed = _parse_hnsdns_txt(name, text)
-        if parsed is not None:
-            declarations.append(parsed)
-    return declarations
-
-
-def _txt_strings(record: dict[str, Any]) -> list[str]:
-    raw = record.get("txt", record.get("text", []))
-    if isinstance(raw, str):
-        return [raw]
-    if isinstance(raw, list):
-        values = [str(item).strip() for item in raw if str(item).strip()]
-        if len(values) > 1 and any(";" in item or item.startswith("hnsdns=") for item in values):
-            return values
-        return ["".join(values)] if values else []
-    return []
-
-
-def _parse_hnsdns_txt(name: str, text: str) -> dict[str, Any] | None:
-    fields: dict[str, str] = {}
-    for part in text.split(";"):
-        key, separator, value = part.strip().partition("=")
-        if not separator:
-            continue
-        fields[key.strip().lower()] = value.strip()
-    if fields.get("hnsdns") != "1":
-        return None
-    ns = _normalize_hnsdns_ns(name, fields.get("ns"))
-    if not ns:
-        return None
-    doh = fields.get("doh")
-    if doh:
-        parsed = _parse_doh_url(doh)
-        if parsed is None:
-            return None
-        parsed["ns"] = ns
-        return parsed
-    if fields.get("transport", "").lower() != "doh":
-        return None
-    port = _safe_int(fields.get("port")) or 443
-    if port <= 0 or port > 65535:
-        return None
-    path = fields.get("path") or "/dns-query"
-    if not path.startswith("/"):
-        path = f"/{path}"
-    host = fields.get("host") or ns
-    return {
-        "ns": ns,
-        "url": f"https://{host}{'' if port == 443 else f':{port}'}{path}",
-        "host": host.rstrip(".").lower(),
-        "path": path,
-        "port": port,
-    }
-
-
-def _normalize_hnsdns_ns(name: str, value: str | None) -> str | None:
-    if not value:
-        return None
-    ns = value.strip().lower().rstrip(".")
-    if not ns:
-        return None
-    root = normalize_name(name)
-    if "." not in ns and root:
-        ns = f"{ns}.{root}"
-    return ns
-
-
-def _parse_doh_url(value: str) -> dict[str, Any] | None:
-    normalized = value.strip()
-    if normalized.endswith("{?dns}"):
-        normalized = normalized[: -len("{?dns}")]
-    parsed = urlparse(normalized)
-    if parsed.scheme.lower() != "https" or not parsed.hostname:
-        return None
-    try:
-        port = parsed.port or 443
-    except ValueError:
-        return None
-    if port <= 0 or port > 65535:
-        return None
-    path = parsed.path or "/dns-query"
-    if parsed.query:
-        path = f"{path}?{parsed.query}"
-    return {
-        "url": normalized,
-        "host": parsed.hostname.rstrip(".").lower(),
-        "path": path,
-        "port": port,
     }
 
 

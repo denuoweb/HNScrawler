@@ -10,7 +10,7 @@ This project is intentionally not a live explorer, a full DNS warehouse, or a we
 - Which names are one generator handoff away from TLSA, DS, or NS/GLUE repair?
 - How many HNS names use `SYNTH4` or `SYNTH6` nameserver bootstrap records?
 - How many delegate to nameservers, with or without glue?
-- Which delegated names advertise HNS-declared RFC 8484 authoritative DoH?
+- Which delegated names can be retried through RFC 9461 DNS-server SVCB authoritative DoH during live checks?
 - How many have DS records and are DNSSEC candidates?
 - How many load in strict HNS mode or require resolver fallback?
 - Which providers and parent-side resource classes shape the DANE opportunity set?
@@ -28,7 +28,7 @@ The Compliance page is shaped around a first-class `compliance_stage` for each a
 - `dnssec_broken`: parent DS, delegated DNSKEY, or signatures need repair.
 - `missing_glue`: delegation lacks parent-side nameserver bootstrap addresses.
 - `bootstrap_ready`: HNS bootstrap exists; the next step is DNSSEC signing, DS, and TLSA.
-- `resolver_fallback`: strict HNS bootstrap, including any HNS-declared authoritative DoH endpoint, failed and the check required the fallback resolver path.
+- `resolver_fallback`: strict HNS bootstrap, including any RFC 9461 authoritative DoH endpoint discovered from the nameserver's DNS-server SVCB record, failed and the check required the fallback resolver path.
 - `service_blocked`: HTTPS or another live service condition blocked DANE proof.
 - `non_actionable`: expired, parked/default, resolver infrastructure, empty, or unsupported resources.
 

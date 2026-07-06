@@ -56,7 +56,7 @@ Compact decoded resource summary.
 - `synth4`: JSON array
 - `synth6`: JSON array
 - `ds_records`: JSON array containing compact `keyTag`, `algorithm`, `digestType`, and normalized digest values
-- `authoritative_doh`: JSON array of parsed `hnsdns=1` RFC 8484 authoritative DoH declarations, including nameserver, URL host, path, and port
+- `authoritative_doh`: legacy JSON field retained for export compatibility; current live checks discover authoritative DoH through RFC 9461 `_dns.<nameserver>` SVCB records instead of HNS TXT declarations
 - `has_ds`: boolean integer
 - `has_txt`: boolean integer
 - `raw_size`: HSD resource byte size from compact imports, or canonical JSON byte size for decoded RPC/fixture resources
@@ -92,7 +92,7 @@ Latest live-check result per name.
 
 `dnssec_status = valid` means the live checker found delegated DNSKEY data matching the on-chain DS record and, when present, a valid DNSKEY RRSIG. DNSSEC failure statuses map to the stable failure taxonomy.
 
-`strict_hns_status = working` means address discovery and HTTPS loading succeeded without using the fallback resolver. `SYNTH4`/`SYNTH6` and `GLUE4`/`GLUE6` records are used as nameserver bootstrap addresses for strict resolution; an `hnsdns=1` authoritative DoH declaration can provide an RFC 8484 retry transport to the same delegated nameserver. Website `A`, `AAAA`, and `TLSA` records still come from authoritative DNS and DNSSEC validation.
+`strict_hns_status = working` means address discovery and HTTPS loading succeeded without using the fallback resolver. `SYNTH4`/`SYNTH6` and `GLUE4`/`GLUE6` records are used as nameserver bootstrap addresses for strict resolution; when direct UDP/TCP 53 cannot complete, live checks can use RFC 9461 `_dns.<nameserver>` SVCB records to discover an RFC 8484 retry transport to the same delegated nameserver. Website `A`, `AAAA`, and `TLSA` records still come from authoritative DNS and DNSSEC validation.
 
 `doh_fallback_status = required` means strict HNS address discovery failed and the checker found an address only through the configured fallback resolver path. The field name is retained for export stability; the value records resolver fallback dependency, not a guaranteed DoH transport.
 

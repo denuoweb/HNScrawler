@@ -290,28 +290,60 @@ def test_strict_address_lookup_uses_authoritative_doh_after_port53_failure(monke
     monkeypatch.setattr("dns.query.tcp", fake_tcp)
     monkeypatch.setattr("dns.query.https", fake_https)
 
-    endpoints = _strict_doh_endpoints(
+    endpoints = [
         {
-            "glue4": ["203.0.113.53"],
-            "glue6": [],
-            "synth4": [],
-            "synth6": [],
-            "authoritative_doh": [
-                {
-                    "ns": "ns1.secure",
-                    "host": "ns1.secure",
-                    "path": "/dns-query",
-                    "port": 443,
-                    "url": "https://ns1.secure/dns-query",
-                }
-            ],
+            "host": "ns1.secure",
+            "path": "/dns-query",
+            "port": 443,
+            "bootstrap_address": "203.0.113.53",
         }
-    )
+    ]
 
     result = _resolve_strict_address_resolution(resolver, "secure", DnssecResult("not_delegated"), endpoints)
 
     assert result.addresses == ["198.51.100.10"]
     assert ("doh", "ns1.secure", 443, "/dns-query", "203.0.113.53", True, False) in calls
+
+
+def test_strict_doh_endpoints_are_discovered_from_rfc9461_svcb(monkeypatch):
+    def fake_strict_resolve(resolver, owner, rrtype):
+        assert owner == "_dns.ns1.secure"
+        assert rrtype == "SVCB"
+        rdata = dns.rdata.from_text(
+            dns.rdataclass.IN,
+            dns.rdatatype.SVCB,
+            "1 ns1.secure. alpn=h2 dohpath=/dns-query{?dns}",
+        )
+        return StrictAnswer(
+            rrset=dns.rrset.from_rdata("_dns.ns1.secure.", 300, rdata),
+            response=dns.message.make_response(dns.message.make_query("_dns.ns1.secure.", dns.rdatatype.SVCB)),
+        )
+
+    resolver = dns.resolver.Resolver(configure=False)
+    resolver.nameservers = ["203.0.113.53"]
+    monkeypatch.setattr("hns_topology.livecheck._strict_resolve_rrset", fake_strict_resolve)
+
+    endpoints = _strict_doh_endpoints(
+        {
+            "ns_names": ["ns1.secure"],
+            "glue4": ["203.0.113.53"],
+            "glue6": [],
+            "synth4": [],
+            "synth6": [],
+            "authoritative_doh": [],
+        },
+        resolver,
+    )
+
+    assert endpoints == [
+        {
+            "host": "ns1.secure",
+            "path": "/dns-query",
+            "port": 443,
+            "bootstrap_address": "203.0.113.53",
+            "url": "https://ns1.secure/dns-query",
+        }
+    ]
 
 
 def test_tlsa_lookup_uses_exact_requested_service_owner(monkeypatch):

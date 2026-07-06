@@ -16,6 +16,7 @@ import dns.name
 import dns.query
 import dns.rcode
 import dns.rdatatype
+import dns.rdtypes.svcbbase
 import dns.resolver
 from cryptography import x509
 
@@ -26,6 +27,19 @@ from .models import FAILURE_REASONS, PROMISING_CLASSES, DnsEvidence, LiveStatus
 from .timeutil import utc_after, utc_now
 
 DNS_EVIDENCE_SERVER_LIMIT = 3
+SVCB_PARAM_MANDATORY = int(dns.rdtypes.svcbbase.ParamKey.MANDATORY)
+SVCB_PARAM_ALPN = int(dns.rdtypes.svcbbase.ParamKey.ALPN)
+SVCB_PARAM_PORT = int(dns.rdtypes.svcbbase.ParamKey.PORT)
+SVCB_PARAM_IPV4HINT = int(dns.rdtypes.svcbbase.ParamKey.IPV4HINT)
+SVCB_PARAM_IPV6HINT = int(dns.rdtypes.svcbbase.ParamKey.IPV6HINT)
+SVCB_PARAM_DOHPATH = int(dns.rdtypes.svcbbase.ParamKey.DOHPATH)
+SVCB_SUPPORTED_MANDATORY_KEYS = {
+    SVCB_PARAM_ALPN,
+    SVCB_PARAM_PORT,
+    SVCB_PARAM_IPV4HINT,
+    SVCB_PARAM_IPV6HINT,
+    SVCB_PARAM_DOHPATH,
+}
 
 
 @dataclass(frozen=True)
@@ -195,7 +209,7 @@ def check_name(row: dict, config: LiveCheckConfig, limiter: RateLimiter) -> Live
 
     fallback_resolver = _make_resolver(config)
     strict_resolver = _make_strict_resolver(row, config)
-    strict_doh_endpoints = _strict_doh_endpoints(row)
+    strict_doh_endpoints = _strict_doh_endpoints(row, strict_resolver)
 
     try:
         limiter.wait()
@@ -466,30 +480,21 @@ def _strict_bootstrap_addresses(row: dict) -> list[str]:
     return [*_glue_addresses(row), *_synth_addresses(row)]
 
 
-def _strict_doh_endpoints(row: dict) -> list[dict]:
+def _strict_doh_endpoints(
+    row: dict,
+    strict_resolver: dns.resolver.Resolver | None = None,
+) -> list[dict]:
     bootstrap_addresses = sorted(set(_strict_bootstrap_addresses(row)))
-    declarations = row.get("authoritative_doh") or []
-    if not bootstrap_addresses or not isinstance(declarations, list):
+    ns_names = sorted({str(ns).strip().rstrip(".").lower() for ns in row.get("ns_names", []) if str(ns).strip()})
+    if not bootstrap_addresses or not ns_names or strict_resolver is None:
         return []
     endpoints: list[dict] = []
-    for declaration in declarations:
-        if not isinstance(declaration, dict):
+    for ns in ns_names:
+        answer = _strict_resolve_rrset(strict_resolver, f"_dns.{ns}", "SVCB")
+        if answer is None:
             continue
-        host = str(declaration.get("host") or "").strip().rstrip(".").lower()
-        path = str(declaration.get("path") or "/dns-query").strip() or "/dns-query"
-        port = _safe_port(declaration.get("port"))
-        if not host or port is None:
-            continue
-        for address in bootstrap_addresses:
-            endpoints.append(
-                {
-                    "host": host,
-                    "path": path if path.startswith("/") else f"/{path}",
-                    "port": port,
-                    "bootstrap_address": address,
-                    "url": declaration.get("url") or f"https://{host}{'' if port == 443 else f':{port}'}{path}",
-                }
-            )
+        for item in answer.rrset:
+            endpoints.extend(_doh_endpoints_from_svcb_rdata(ns, item, bootstrap_addresses))
     return endpoints
 
 
@@ -499,6 +504,67 @@ def _safe_port(value) -> int | None:
     except (TypeError, ValueError):
         return None
     return port if 0 < port <= 65535 else None
+
+
+def _svcb_param(params, key: int):
+    return params.get(dns.rdtypes.svcbbase.ParamKey(key)) or params.get(key)
+
+
+def _doh_endpoints_from_svcb_rdata(ns: str, item, bootstrap_addresses: list[str]) -> list[dict]:
+    priority = int(getattr(item, "priority", 0))
+    if priority == 0 or not _svcb_mandatory_keys_supported(item):
+        return []
+    target = str(getattr(item, "target", "")).strip().rstrip(".").lower()
+    if target in {"", "."}:
+        target = ns
+    if target != ns:
+        return []
+    params = getattr(item, "params", {})
+    alpn = _svcb_param(params, SVCB_PARAM_ALPN)
+    alpn_ids = tuple(getattr(alpn, "ids", ()))
+    if b"h2" not in alpn_ids:
+        return []
+    dohpath = _svcb_param(params, SVCB_PARAM_DOHPATH)
+    path = _normalize_dohpath(getattr(dohpath, "value", None))
+    if path is None:
+        return []
+    port_param = _svcb_param(params, SVCB_PARAM_PORT)
+    port = _safe_port(getattr(port_param, "port", None) if port_param is not None else None) or 443
+    return [
+        {
+            "host": ns,
+            "path": path,
+            "port": port,
+            "bootstrap_address": address,
+            "url": f"https://{ns}{'' if port == 443 else f':{port}'}{path}",
+        }
+        for address in bootstrap_addresses
+    ]
+
+
+def _svcb_mandatory_keys_supported(item) -> bool:
+    params = getattr(item, "params", {})
+    mandatory = _svcb_param(params, SVCB_PARAM_MANDATORY)
+    if mandatory is None:
+        return True
+    keys = getattr(mandatory, "keys", ())
+    return all(int(key) in SVCB_SUPPORTED_MANDATORY_KEYS for key in keys)
+
+
+def _normalize_dohpath(value) -> str | None:
+    if not isinstance(value, bytes):
+        return None
+    try:
+        template = value.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return None
+    if "dns" not in template:
+        return None
+    if template.endswith("{?dns}"):
+        template = template[: -len("{?dns}")]
+    if not template.startswith("/") or any(char.isspace() for char in template) or "#" in template:
+        return None
+    return template
 
 
 def _strict_addresses(

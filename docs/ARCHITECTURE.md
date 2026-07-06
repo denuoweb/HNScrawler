@@ -30,7 +30,7 @@ The crawler stores:
 - current name state fields
 - resource hashes
 - record type summaries
-- NS, GLUE4, GLUE6, SYNTH4, SYNTH6, and HNS authoritative DoH summaries
+- NS, GLUE4, GLUE6, SYNTH4, SYNTH6, and live RFC 9461 authoritative DoH discovery status
 - DS/TXT presence
 - provider guesses from versioned rules
 - provider rule patterns used for each materialized provider bucket
@@ -130,10 +130,12 @@ Strict HNS address discovery uses only addresses that can be bootstrapped from t
 
 - `SYNTH4` / `SYNTH6` are treated as compact authoritative nameserver bootstrap addresses, not website addresses.
 - `GLUE4` / `GLUE6` are treated as authoritative nameserver bootstrap addresses, not website addresses.
-- `TXT "hnsdns=1;ns=...;doh=https://.../dns-query"` declares an RFC 8484 authoritative DoH endpoint for a delegated nameserver. The checker tries direct UDP/TCP 53 first, then the HNS-declared DoH endpoint using the HNS-proven bootstrap address, and still validates DNSSEC against the HNS DS chain.
-- Delegated names without GLUE or SYNTH bootstrap cannot pass strict HNS address discovery unless a future resolver path can prove in-bailiwick glue another way. A DoH declaration without a bootstrap address is recorded but not treated as reachable.
+- RFC 9461 `_dns.<nameserver>` SVCB records advertise RFC 8484 authoritative DoH endpoints for delegated nameservers. The checker tries direct UDP/TCP 53 first, discovers the SVCB record through the strict bootstrap resolver when possible, then retries the same delegated nameserver over DoH using the HNS-proven bootstrap address and still validates DNSSEC against the HNS DS chain.
+- Delegated names without GLUE or SYNTH bootstrap cannot pass strict HNS address discovery unless a future resolver path can prove in-bailiwick glue another way. A DoH discovery record without a bootstrap address is not treated as reachable.
 
-The `doh_fallback_status` field records whether the checker had to use the configured fallback resolver path after strict HNS discovery failed. HNS-declared authoritative DoH is part of strict HNS discovery, not resolver fallback. The historical field name is retained for export stability; the status means resolver fallback was required and is not proof of a specific DoH transport by itself.
+RFC 9539 is tracked as a separate experimental recursive-to-authoritative encryption mechanism for opportunistic DoT/DoQ on port 853. HNScrawler does not treat RFC 9539 as DoH discovery and does not infer any RFC 9539 transport from HNS TXT records.
+
+The `doh_fallback_status` field records whether the checker had to use the configured fallback resolver path after strict HNS discovery failed. RFC 9461 authoritative DoH is part of strict HNS discovery, not resolver fallback. The historical field name is retained for export stability; the status means resolver fallback was required and is not proof of a specific DoH transport by itself.
 
 HTTPS certificate capture is independent from WebPKI validation. The checker first tries a normal verified TLS connection. If WebPKI validation fails, it retries with certificate verification disabled only to capture the peer certificate/SPKI for TLSA matching. A matching TLSA record can therefore produce `dane_status = valid` even when `https_status = tls_unverified`.
 
