@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import dns.dnssec
 import dns.exception
 import dns.flags
+import dns.message
 import dns.name
 import dns.query
 import dns.rcode
@@ -112,7 +113,7 @@ def select_live_check_candidates(
     excluded_provider_placeholders = ",".join("?" for _ in NON_ACTIONABLE_PROVIDER_TYPES)
     select_columns = (
         "n.name, n.onchain_class, rs.ns_names, rs.glue4, rs.glue6, "
-        "rs.synth4, rs.synth6, rs.ds_records, rs.has_ds"
+        "rs.synth4, rs.synth6, rs.ds_records, rs.authoritative_doh, rs.has_ds"
     )
     rows = []
     seen: set[str] = set()
@@ -144,7 +145,10 @@ def select_live_check_candidates(
     remaining_limit = None if limit is None else max(0, limit - len(rows))
     if remaining_limit == 0:
         return [
-            parse_json_columns(dict(row), ["ns_names", "glue4", "glue6", "synth4", "synth6", "ds_records"])
+            parse_json_columns(
+                dict(row),
+                ["ns_names", "glue4", "glue6", "synth4", "synth6", "ds_records", "authoritative_doh"],
+            )
             for row in rows
         ]
 
@@ -168,7 +172,10 @@ def select_live_check_candidates(
         params.append(remaining_limit)
     rows.extend(conn.execute(sql, params).fetchall())
     return [
-        parse_json_columns(dict(row), ["ns_names", "glue4", "glue6", "synth4", "synth6", "ds_records"])
+        parse_json_columns(
+            dict(row),
+            ["ns_names", "glue4", "glue6", "synth4", "synth6", "ds_records", "authoritative_doh"],
+        )
         for row in rows
     ]
 
@@ -188,12 +195,13 @@ def check_name(row: dict, config: LiveCheckConfig, limiter: RateLimiter) -> Live
 
     fallback_resolver = _make_resolver(config)
     strict_resolver = _make_strict_resolver(row, config)
+    strict_doh_endpoints = _strict_doh_endpoints(row)
 
     try:
         limiter.wait()
-        dnssec_result = _validate_dnssec_for_row(strict_resolver, row, name)
+        dnssec_result = _validate_dnssec_for_row(strict_resolver, row, name, strict_doh_endpoints)
         dnssec_status = dnssec_result.status
-        strict_address_result = _strict_address_resolution(strict_resolver, name, dnssec_result)
+        strict_address_result = _strict_address_resolution(strict_resolver, name, dnssec_result, strict_doh_endpoints)
         strict_addresses = strict_address_result.addresses
         fallback_addresses: list[str] = []
         addresses = strict_addresses
@@ -221,7 +229,12 @@ def check_name(row: dict, config: LiveCheckConfig, limiter: RateLimiter) -> Live
                 failure_reason = https_result.failure_reason
             else:
                 failure_reason = _choose_failure(failure_reason, https_result.failure_reason)
-            tlsa_result = _resolve_tlsa_secure(strict_resolver, name, dnssec_result) if strict_resolver else TlsaResolution([])
+            if strict_resolver and strict_doh_endpoints:
+                tlsa_result = _resolve_tlsa_secure(strict_resolver, name, dnssec_result, strict_doh_endpoints)
+            elif strict_resolver:
+                tlsa_result = _resolve_tlsa_secure(strict_resolver, name, dnssec_result)
+            else:
+                tlsa_result = TlsaResolution([])
             tlsa_records = tlsa_result.records
             if tlsa_records:
                 tlsa_status = "present"
@@ -453,6 +466,41 @@ def _strict_bootstrap_addresses(row: dict) -> list[str]:
     return [*_glue_addresses(row), *_synth_addresses(row)]
 
 
+def _strict_doh_endpoints(row: dict) -> list[dict]:
+    bootstrap_addresses = sorted(set(_strict_bootstrap_addresses(row)))
+    declarations = row.get("authoritative_doh") or []
+    if not bootstrap_addresses or not isinstance(declarations, list):
+        return []
+    endpoints: list[dict] = []
+    for declaration in declarations:
+        if not isinstance(declaration, dict):
+            continue
+        host = str(declaration.get("host") or "").strip().rstrip(".").lower()
+        path = str(declaration.get("path") or "/dns-query").strip() or "/dns-query"
+        port = _safe_port(declaration.get("port"))
+        if not host or port is None:
+            continue
+        for address in bootstrap_addresses:
+            endpoints.append(
+                {
+                    "host": host,
+                    "path": path if path.startswith("/") else f"/{path}",
+                    "port": port,
+                    "bootstrap_address": address,
+                    "url": declaration.get("url") or f"https://{host}{'' if port == 443 else f':{port}'}{path}",
+                }
+            )
+    return endpoints
+
+
+def _safe_port(value) -> int | None:
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        return None
+    return port if 0 < port <= 65535 else None
+
+
 def _strict_addresses(
     row: dict,
     strict_resolver: dns.resolver.Resolver | None,
@@ -467,9 +515,12 @@ def _strict_address_resolution(
     strict_resolver: dns.resolver.Resolver | None,
     name: str,
     dnssec_result: DnssecResult,
+    doh_endpoints: list[dict] | None = None,
 ) -> AddressResolution:
     if strict_resolver is None:
         return AddressResolution([])
+    if doh_endpoints:
+        return _resolve_strict_address_resolution(strict_resolver, name, dnssec_result, doh_endpoints)
     return _resolve_strict_address_resolution(strict_resolver, name, dnssec_result)
 
 
@@ -524,6 +575,7 @@ def _validate_dnssec_for_row(
     strict_resolver: dns.resolver.Resolver | None,
     row: dict,
     name: str,
+    doh_endpoints: list[dict] | None = None,
 ) -> DnssecResult:
     ds_records = row.get("ds_records", [])
     if not ds_records:
@@ -532,6 +584,8 @@ def _validate_dnssec_for_row(
         if row.get("ns_names") and not _strict_bootstrap_addresses(row):
             return DnssecResult("missing_glue", "missing_glue")
         return DnssecResult("dnssec_missing", "dnssec_missing")
+    if doh_endpoints:
+        return _validate_dnssec_delegation(strict_resolver, name, ds_records, doh_endpoints)
     return _validate_dnssec_delegation(strict_resolver, name, ds_records)
 
 
@@ -539,11 +593,16 @@ def _validate_dnssec_delegation(
     resolver: dns.resolver.Resolver,
     name: str,
     ds_records: list[dict],
+    doh_endpoints: list[dict] | None = None,
 ) -> DnssecResult:
     if not ds_records:
         return DnssecResult("not_delegated")
     owner = dns.name.from_text(name.rstrip(".") + ".")
-    answer = _strict_resolve_rrset(resolver, owner.to_text(), "DNSKEY")
+    answer = (
+        _strict_resolve_rrset(resolver, owner.to_text(), "DNSKEY", doh_endpoints)
+        if doh_endpoints
+        else _strict_resolve_rrset(resolver, owner.to_text(), "DNSKEY")
+    )
     if answer is None:
         return DnssecResult("missing_dnskey", "dnssec_missing")
 
@@ -654,12 +713,17 @@ def _resolve_strict_address_resolution(
     resolver: dns.resolver.Resolver,
     name: str,
     dnssec_result: DnssecResult,
+    doh_endpoints: list[dict] | None = None,
 ) -> AddressResolution:
     addresses: list[str] = []
     secure_checks: list[bool] = []
     key_owner = dns.name.from_text(_fqdn(name))
     for rrtype in ("A", "AAAA"):
-        answer = _strict_resolve_rrset(resolver, name, rrtype)
+        answer = (
+            _strict_resolve_rrset(resolver, name, rrtype, doh_endpoints)
+            if doh_endpoints
+            else _strict_resolve_rrset(resolver, name, rrtype)
+        )
         if answer is not None:
             addresses.extend(item.to_text() for item in answer.rrset)
             if dnssec_result.status == "valid" and dnssec_result.dnskey_rrset is not None:
@@ -674,6 +738,7 @@ def _strict_resolve_rrset(
     resolver: dns.resolver.Resolver,
     name: str,
     rrtype: str,
+    doh_endpoints: list[dict] | None = None,
 ) -> StrictAnswer | None:
     qname = dns.name.from_text(_fqdn(name))
     rdtype = dns.rdatatype.from_text(rrtype)
@@ -689,6 +754,28 @@ def _strict_resolve_rrset(
             pass
         try:
             response = dns.query.tcp(query, server, timeout=resolver.timeout)
+            answer = _strict_answer_from_response(response, qname, rdtype)
+            if answer is not None:
+                return answer
+        except Exception:
+            pass
+    for endpoint in doh_endpoints or []:
+        try:
+            query = dns.message.make_query(qname, rdtype, want_dnssec=True)
+            query.id = 0
+            query.flags &= ~dns.flags.RD
+            response = dns.query.https(
+                query,
+                endpoint["host"],
+                timeout=resolver.timeout,
+                port=int(endpoint["port"]),
+                path=endpoint["path"],
+                post=True,
+                bootstrap_address=endpoint["bootstrap_address"],
+                # HNS nameserver DoH transport is authenticated by the DNSSEC data path below.
+                # WebPKI validation would reject DANE/self-signed HNS nameserver certificates.
+                verify=False,
+            )
             answer = _strict_answer_from_response(response, qname, rdtype)
             if answer is not None:
                 return answer
@@ -714,12 +801,17 @@ def _resolve_tlsa_secure(
     resolver: dns.resolver.Resolver,
     name: str,
     dnssec_result: DnssecResult,
+    doh_endpoints: list[dict] | None = None,
 ) -> TlsaResolution:
     records: list[tuple[int, int, int, bytes]] = []
     secure_checks: list[bool] = []
     key_owner = dns.name.from_text(_fqdn(name))
     owner = f"_443._tcp.{name}"
-    answer = _strict_resolve_rrset(resolver, owner, "TLSA")
+    answer = (
+        _strict_resolve_rrset(resolver, owner, "TLSA", doh_endpoints)
+        if doh_endpoints
+        else _strict_resolve_rrset(resolver, owner, "TLSA")
+    )
     if answer is None:
         return TlsaResolution(records)
     for item in answer.rrset:

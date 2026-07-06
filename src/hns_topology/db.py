@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS resource_summary (
   synth4 TEXT,
   synth6 TEXT,
   ds_records TEXT,
+  authoritative_doh TEXT,
   has_ds INTEGER DEFAULT 0,
   has_ns INTEGER DEFAULT 0,
   has_glue INTEGER DEFAULT 0,
@@ -167,6 +168,7 @@ RESOURCE_COLUMNS = (
     "synth4",
     "synth6",
     "ds_records",
+    "authoritative_doh",
     "has_ds",
     "has_ns",
     "has_glue",
@@ -258,6 +260,7 @@ SCHEMA_COLUMN_MIGRATIONS = {
         "synth4": "TEXT",
         "synth6": "TEXT",
         "ds_records": "TEXT",
+        "authoritative_doh": "TEXT",
         "has_ds": "INTEGER DEFAULT 0",
         "has_ns": "INTEGER DEFAULT 0",
         "has_glue": "INTEGER DEFAULT 0",
@@ -318,7 +321,7 @@ SCHEMA_COLUMN_MIGRATIONS = {
 
 JSON_ARRAY_DEFAULT_COLUMNS = {
     "names": ("record_types",),
-    "resource_summary": ("ns_names", "glue4", "glue6", "synth4", "synth6", "ds_records"),
+    "resource_summary": ("ns_names", "glue4", "glue6", "synth4", "synth6", "ds_records", "authoritative_doh"),
     "dns_evidence": ("answer_json", "authority_json", "additional_json"),
 }
 
@@ -815,6 +818,7 @@ def _resource_params(summary: ResourceSummary) -> tuple[Any, ...]:
         dumps_json(summary.synth4),
         dumps_json(summary.synth6),
         dumps_json(summary.ds_records),
+        dumps_json(summary.authoritative_doh),
         int(summary.has_ds),
         int(summary.has_ns),
         int(summary.has_glue),

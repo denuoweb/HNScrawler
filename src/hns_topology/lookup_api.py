@@ -13,7 +13,16 @@ from .compliance import compliance_stage_case
 from .db import parse_json_columns
 
 NAME_RE = re.compile(r"^[a-z0-9-]{1,63}$")
-JSON_COLUMNS = ("record_types", "ns_names", "glue4", "glue6", "synth4", "synth6", "ds_records")
+JSON_COLUMNS = (
+    "record_types",
+    "ns_names",
+    "glue4",
+    "glue6",
+    "synth4",
+    "synth6",
+    "ds_records",
+    "authoritative_doh",
+)
 
 
 def normalize_name(value: str) -> str:
@@ -52,7 +61,8 @@ def lookup_name(db_path: str | Path, name: str) -> dict:
             SELECT
               n.name, n.state, n.expired, n.onchain_class, n.provider_guess,
               COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types,
-              rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.ds_records, rs.has_ds,
+              rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6,
+              rs.ds_records, rs.authoritative_doh, rs.has_ds,
               rs.raw_size, rs.resource_version, rs.resource_hash, n.last_seen_height, n.updated_at,
               CASE WHEN EXISTS(
                 SELECT 1

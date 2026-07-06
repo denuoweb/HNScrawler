@@ -54,6 +54,7 @@ class ResourceSummary:
     synth4: list[str]
     synth6: list[str]
     ds_records: list[dict[str, Any]]
+    authoritative_doh: list[dict[str, Any]]
     has_ds: bool
     has_txt: bool
     raw_size: int

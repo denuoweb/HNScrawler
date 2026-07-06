@@ -14,10 +14,11 @@ HNS proof
 
 1. Publish HNS resource records with nameserver delegation.
 2. Include GLUE4/GLUE6 when strict HNS clients need direct bootstrap to the authoritative nameserver.
-3. Include DS in the HNS resource for the signed child zone.
-4. Sign the authoritative zone with DNSSEC.
-5. Publish TLSA at `_443._tcp.<site>` and, if used, `_443._tcp.www.<site>`.
-6. Serve HTTPS with the certificate or SPKI that the TLSA record identifies.
+3. Optionally include `TXT "hnsdns=1;ns=...;doh=https://.../dns-query"` when the delegated nameserver also serves RFC 8484 authoritative DoH.
+4. Include DS in the HNS resource for the signed child zone.
+5. Sign the authoritative zone with DNSSEC.
+6. Publish TLSA at `_443._tcp.<site>` and, if used, `_443._tcp.www.<site>`.
+7. Serve HTTPS with the certificate or SPKI that the TLSA record identifies.
 
 ## Current Production Shape
 

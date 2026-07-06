@@ -1258,6 +1258,7 @@ function resourceRecordSections(row) {
   const synth4 = listValues(row.synth4, row.first_synth4);
   const synth6 = listValues(row.synth6, row.first_synth6);
   const dsRecords = Array.isArray(row.ds_records) ? row.ds_records : [];
+  const authoritativeDoh = Array.isArray(row.authoritative_doh) ? row.authoritative_doh : [];
 
   sections.push(resourceRecordBlock("DS", dsRecords.map(dsRecordLine).filter(Boolean).map(codeLine)));
   sections.push(resourceRecordBlock("GLUE4", glue4.map((address, index) => {
@@ -1269,6 +1270,11 @@ function resourceRecordSections(row) {
     return `${hnsNameLink(hnsRootFromNs(ns, name), ns)}${codeLine(address)}`;
   })));
   sections.push(resourceRecordBlock("NS", nsNames.map((ns) => hnsNameLink(hnsRootFromNs(ns, name), ns))));
+  sections.push(resourceRecordBlock("TXT", authoritativeDoh.map((endpoint) => {
+    const ns = trailingDot(endpoint.ns || "");
+    const url = endpoint.url || "";
+    return codeLine(`hnsdns=1;ns=${ns};doh=${url}`);
+  })));
   sections.push(resourceRecordBlock("SYNTH4", synth4.map(codeLine)));
   sections.push(resourceRecordBlock("SYNTH6", synth6.map(codeLine)));
 

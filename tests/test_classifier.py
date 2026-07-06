@@ -50,6 +50,30 @@ def test_classifies_dnssec_candidate_before_plain_delegation():
     assert classify_onchain(summary, expired=False, provider_guess="self-hosted") == "DNSSEC_CANDIDATE"
 
 
+def test_summarizes_hns_authoritative_doh_txt():
+    summary = summarize_resource(
+        "dane",
+        {
+            "records": [
+                {"type": "NS", "ns": "ns1.dane."},
+                {"type": "GLUE4", "ns": "ns1.dane.", "address": "198.51.100.53"},
+                {"type": "TXT", "txt": ["hnsdns=1;ns=ns1.dane.;doh=https://ns1.dane/dns-query{?dns}"]},
+            ]
+        },
+    )
+
+    assert summary.has_txt is True
+    assert summary.authoritative_doh == [
+        {
+            "host": "ns1.dane",
+            "ns": "ns1.dane",
+            "path": "/dns-query",
+            "port": 443,
+            "url": "https://ns1.dane/dns-query",
+        }
+    ]
+
+
 def test_classifies_malformed_resource():
     summary = summarize_resource("bad", {"records": "wrong"})
 

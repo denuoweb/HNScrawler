@@ -702,7 +702,8 @@ def build_names(
         SELECT
           n.name, n.state, n.expired, n.onchain_class, n.provider_guess,
           COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types,
-          rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.ds_records, rs.has_ds,
+          rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6,
+          rs.ds_records, rs.authoritative_doh, rs.has_ds,
           rs.raw_size, rs.resource_version, rs.resource_hash, n.last_seen_height, n.updated_at,
           { _dns_evidence_path_sql() },
           {compliance_stage_sql} AS compliance_stage,
@@ -722,7 +723,7 @@ def build_names(
     return [
         parse_json_columns(
             dict(row),
-            ["record_types", "ns_names", "glue4", "glue6", "synth4", "synth6", "ds_records"],
+            ["record_types", "ns_names", "glue4", "glue6", "synth4", "synth6", "ds_records", "authoritative_doh"],
         )
         for row in rows
     ]
@@ -1479,7 +1480,8 @@ def _name_row_columns(*, row_detail: str = "full") -> str:
     return f"""
           n.name, n.state, n.expired, n.onchain_class, n.provider_guess,
           COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types,
-          rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.ds_records, rs.has_ds,
+          rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6,
+          rs.ds_records, rs.authoritative_doh, rs.has_ds,
           rs.raw_size, rs.resource_version, rs.resource_hash, n.last_seen_height, n.updated_at,
           {_dns_evidence_path_sql()},
           eno.compliance_stage AS compliance_stage,
@@ -1491,7 +1493,7 @@ def _name_row_columns(*, row_detail: str = "full") -> str:
 def _name_json_columns(*, row_detail: str = "full") -> list[str]:
     if row_detail == "compact":
         return ["record_types"]
-    return ["record_types", "ns_names", "glue4", "glue6", "synth4", "synth6", "ds_records"]
+    return ["record_types", "ns_names", "glue4", "glue6", "synth4", "synth6", "ds_records", "authoritative_doh"]
 
 
 def _name_output_keys(*, row_detail: str = "full") -> list[str]:
@@ -1572,6 +1574,7 @@ def write_names_csv(conn: sqlite3.Connection, path: Path, *, limit: int) -> None
         "synth4",
         "synth6",
         "ds_records",
+        "authoritative_doh",
         "has_ds",
         "raw_size",
         "resource_version",

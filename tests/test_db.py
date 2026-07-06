@@ -103,7 +103,7 @@ def test_init_db_migrates_legacy_schema_and_backfills_resource_flags(tmp_path):
         }
         flags = conn.execute(
             """
-            SELECT has_ds, has_ns, has_glue, has_synth, has_txt, resource_version
+            SELECT has_ds, has_ns, has_glue, has_synth, has_txt, authoritative_doh, resource_version
             FROM resource_summary
             WHERE name = 'legacy'
             """
@@ -123,7 +123,7 @@ def test_init_db_migrates_legacy_schema_and_backfills_resource_flags(tmp_path):
         ).fetchone()
 
     assert {"state", "renewal_height", "last_seen_height", "updated_at"} <= tables["names"]
-    assert {"has_ds", "has_ns", "has_glue", "has_synth", "has_txt", "resource_version"} <= tables[
+    assert {"has_ds", "has_ns", "has_glue", "has_synth", "has_txt", "authoritative_doh", "resource_version"} <= tables[
         "resource_summary"
     ]
     assert {"dns_reachable", "dnssec_status", "tlsa_status", "next_check_at"} <= tables[
@@ -139,6 +139,7 @@ def test_init_db_migrates_legacy_schema_and_backfills_resource_flags(tmp_path):
         "has_glue": 1,
         "has_synth": 0,
         "has_txt": 1,
+        "authoritative_doh": "[]",
         "resource_version": None,
     }
     assert dict(provider) == {

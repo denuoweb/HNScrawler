@@ -24,8 +24,10 @@ from hns_topology.livecheck import (
     _ds_matches_dnskey,
     _find_rrsig,
     _match_association,
+    _resolve_strict_address_resolution,
     _resolve_strict_addresses,
     _resolve_tlsa_secure,
+    _strict_doh_endpoints,
     _validate_dnssec_delegation,
     check_name,
     collect_dns_evidence,
@@ -258,6 +260,58 @@ def test_strict_address_lookup_falls_back_to_tcp_on_truncated_udp(monkeypatch):
 
     assert _resolve_strict_addresses(resolver, "secure") == ["198.51.100.10"]
     assert calls == ["udp", "tcp", "udp", "tcp"]
+
+
+def test_strict_address_lookup_uses_authoritative_doh_after_port53_failure(monkeypatch):
+    calls = []
+
+    def fake_udp(query, server, timeout, raise_on_truncation):
+        calls.append(("udp", server))
+        raise dns.exception.Timeout
+
+    def fake_tcp(query, server, timeout):
+        calls.append(("tcp", server))
+        raise OSError("blocked")
+
+    def fake_https(query, where, timeout, port, path, post, bootstrap_address, verify, **kwargs):
+        calls.append(("doh", where, port, path, bootstrap_address, post, verify))
+        assert query.id == 0
+        assert not query.flags & dns.flags.RD
+        response = dns.message.make_response(query)
+        response.flags |= dns.flags.AA
+        if query.question[0].rdtype == dns.rdatatype.A:
+            response.answer.append(dns.rrset.from_text(query.question[0].name, 300, "IN", "A", "198.51.100.10"))
+        return response
+
+    resolver = dns.resolver.Resolver(configure=False)
+    resolver.nameservers = ["203.0.113.53"]
+    resolver.timeout = 0.1
+    monkeypatch.setattr("dns.query.udp", fake_udp)
+    monkeypatch.setattr("dns.query.tcp", fake_tcp)
+    monkeypatch.setattr("dns.query.https", fake_https)
+
+    endpoints = _strict_doh_endpoints(
+        {
+            "glue4": ["203.0.113.53"],
+            "glue6": [],
+            "synth4": [],
+            "synth6": [],
+            "authoritative_doh": [
+                {
+                    "ns": "ns1.secure",
+                    "host": "ns1.secure",
+                    "path": "/dns-query",
+                    "port": 443,
+                    "url": "https://ns1.secure/dns-query",
+                }
+            ],
+        }
+    )
+
+    result = _resolve_strict_address_resolution(resolver, "secure", DnssecResult("not_delegated"), endpoints)
+
+    assert result.addresses == ["198.51.100.10"]
+    assert ("doh", "ns1.secure", 443, "/dns-query", "203.0.113.53", True, False) in calls
 
 
 def test_tlsa_lookup_uses_exact_requested_service_owner(monkeypatch):
