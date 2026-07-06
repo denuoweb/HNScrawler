@@ -65,6 +65,25 @@ function activeSearch() {
   return (new URLSearchParams(window.location.search).get("q") || "").trim();
 }
 
+function activeSearchMode() {
+  return new URLSearchParams(window.location.search).get("search") || "";
+}
+
+function textSearchOnly() {
+  return activeSearchMode() === "text";
+}
+
+function namesSearchHref(query, options = {}) {
+  const text = String(query || "").trim();
+  if (!text) return "";
+  const params = new URLSearchParams();
+  const filter = options.filter === undefined ? activeFilter() : options.filter;
+  if (filter) params.set("filter", filter);
+  if (options.textSearch) params.set("search", "text");
+  params.set("q", text);
+  return `names.html?${params.toString()}`;
+}
+
 function hasDs(row) {
   return row.has_ds === true || Number(row.has_ds || 0) === 1;
 }
@@ -260,7 +279,7 @@ function providerFilterHref(row) {
 
 function aggregateSearchLink(value, href = "") {
   const label = String(value || "");
-  const target = href || (label ? `names.html?q=${encodeURIComponent(label)}` : "");
+  const target = href || namesSearchHref(label, {filter: ""});
   if (!target) return escapeHtml(label);
   return `<a href="${escapeHtml(sitePath(target))}" title="${escapeHtml(label)}">${escapeHtml(label)}</a>`;
 }
@@ -270,7 +289,11 @@ function topIpCell(row) {
 }
 
 function nameserverCell(row) {
-  return aggregateSearchLink(row.nameserver, row.filter_link);
+  const nameserver = String(row.nameserver || "").trim();
+  return aggregateSearchLink(
+    nameserver,
+    row.filter_link || namesSearchHref(nameserver, {filter: "delegated_names", textSearch: true})
+  );
 }
 
 function resolverIpCell(row) {
@@ -469,7 +492,11 @@ function emptyCollectionForFilter(index, filter) {
 }
 
 function pagePath(pathTemplate, page) {
-  return `data/${pathTemplate.replace("{page}", String(page))}`;
+  return `data/${escapePathPercents(pathTemplate.replace("{page}", String(page)))}`;
+}
+
+function escapePathPercents(path) {
+  return String(path || "").replaceAll("%", "%25");
 }
 
 function rowsFromPage(data, collection = {}) {
@@ -659,7 +686,10 @@ function normalizeLookupQuery(query) {
 }
 
 function normalizeIpQuery(query) {
-  const value = query.trim().toLowerCase();
+  let value = query.trim().toLowerCase();
+  if (value.startsWith("[") && value.includes("]")) {
+    value = value.slice(1, value.indexOf("]"));
+  }
   if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(value)) {
     const parts = value.split(".");
     if (parts.every((part) => Number(part) <= 255)) {
@@ -668,6 +698,10 @@ function normalizeIpQuery(query) {
   }
   if (value.includes(":") && /^[0-9a-f:.]+$/.test(value)) return value;
   return "";
+}
+
+function ipAddressLookupPath(ip) {
+  return `data/ip-addresses/${escapePathPercents(encodeURIComponent(ip))}.json`;
 }
 
 function normalizeIpLookupResult(result, query, ip) {
@@ -692,7 +726,7 @@ async function lookupIpAddress(query, page) {
   const ip = normalizeIpQuery(query);
   if (!ip) return null;
   if (!ipAddressLookupCache.has(ip)) {
-    const lookupPromise = loadJson(`data/ip-addresses/${encodeURIComponent(ip)}.json`)
+    const lookupPromise = loadJson(ipAddressLookupPath(ip))
       .catch(() => null);
     ipAddressLookupCache.set(ip, lookupPromise);
   }
@@ -833,7 +867,8 @@ async function applySearchToPageData(pageData, query) {
       ipLookup
     };
   }
-  const lookup = await lookupExactName(query, pageData.index);
+  const exactLookupEnabled = !textSearchOnly();
+  const lookup = exactLookupEnabled ? await lookupExactName(query, pageData.index) : null;
   if (lookup && lookup.found) {
     return {
       ...pageData,
@@ -869,7 +904,8 @@ async function applySearchToPageData(pageData, query) {
         exact: false,
         scoped: true,
         exactSource: lookup?.source || "api",
-        fullSnapshot: lookup?.fullSnapshot !== false
+        fullSnapshot: lookup?.fullSnapshot !== false,
+        textOnly: textSearchOnly()
       },
       lookup
     };
@@ -897,7 +933,8 @@ async function applySearchToPageData(pageData, query) {
       exact: false,
       scoped: false,
       exactSource: lookup?.source || "api",
-      fullSnapshot: lookup?.fullSnapshot !== false
+      fullSnapshot: lookup?.fullSnapshot !== false,
+      textOnly: textSearchOnly()
     },
     lookup
   };
@@ -917,7 +954,7 @@ function searchHiddenInputs() {
 
 function searchControls({id, label, placeholder, query, search}) {
   const clearLink = query
-    ? `<a class="search-clear" href="${escapeHtml(hrefWithoutParams(["q", "page"]))}">Clear</a>`
+    ? `<a class="search-clear" href="${escapeHtml(hrefWithoutParams(["q", "page", "search"]))}">Clear</a>`
     : "";
   const exactScope = search?.fullSnapshot === false ? "exported rows" : "full snapshot";
   const exactSource = search?.exactSource === "static" ? "static exact lookup" : "exact lookup";
@@ -927,8 +964,8 @@ function searchControls({id, label, placeholder, query, search}) {
       : search.ip
         ? `IP search "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} ${exactScope} ${search.matchedCount === 1 ? "name" : "names"}.`
         : search.scoped
-        ? `Search "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} of ${fmt.format(search.totalCount)} loaded rows. Exact name lookup still checks ${exactScope}.`
-        : `Search "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} of ${fmt.format(search.totalCount)} exported rows.`}</p>`
+        ? `${search.textOnly ? "Text search" : "Search"} "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} of ${fmt.format(search.totalCount)} loaded rows.${search.textOnly ? "" : ` Exact name lookup still checks ${exactScope}.`}`
+        : `${search.textOnly ? "Text search" : "Search"} "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} of ${fmt.format(search.totalCount)} exported rows.`}</p>`
     : "";
   return `<form class="search-form" role="search" action="${escapeHtml(currentPageName())}" method="get">
     ${searchHiddenInputs()}
@@ -1154,7 +1191,7 @@ function complianceStageCell(row) {
 function exactNameLookupCell(row) {
   const name = String(row.name || "");
   if (!name) return "";
-  return `<a href="${escapeHtml(sitePath(`names.html?q=${encodeURIComponent(name)}`))}">Open name</a>`;
+  return `<a href="${escapeHtml(sitePath(namesSearchHref(name, {filter: ""})))}">Open name</a>`;
 }
 
 function lastCheckedCell(row) {
@@ -1190,7 +1227,7 @@ function hnsNameLink(root, label) {
   const name = String(root || "").toLowerCase().replace(/\.+$/, "");
   const text = label || root;
   if (!/^[a-z0-9-]{1,63}$/.test(name)) return escapeHtml(text);
-  return `<a href="https://shakeshift.com/name/${encodeURIComponent(name)}" target="_blank" rel="noopener">${escapeHtml(text)}</a>`;
+  return `<a href="${escapeHtml(sitePath(namesSearchHref(name)))}">${escapeHtml(text)}</a>`;
 }
 
 function codeLine(value) {

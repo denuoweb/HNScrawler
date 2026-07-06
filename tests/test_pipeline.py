@@ -197,6 +197,7 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
         "data/names-pages.json",
         "data/ip-addresses/198.51.100.2.json",
         "data/ip-addresses/203.0.113.10.json",
+        "data/ip-addresses/2001%3Adb8%3A%3A10.json",
     ]:
         assert (out / relative).exists()
     assert stat.S_IMODE(out.stat().st_mode) == 0o755
@@ -235,11 +236,17 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     )
     delegated_ip_index = json.loads((out / "data/ip-addresses/198.51.100.2.json").read_text(encoding="utf-8"))
     direct_ip_index = json.loads((out / "data/ip-addresses/203.0.113.10.json").read_text(encoding="utf-8"))
+    direct_ipv6_index = json.loads(
+        (out / "data/ip-addresses/2001%3Adb8%3A%3A10.json").read_text(encoding="utf-8")
+    )
     delegated_ip_page = json.loads(
         (out / "data" / delegated_ip_index["path_template"].replace("{page}", "1")).read_text(encoding="utf-8")
     )
     direct_ip_page = json.loads(
         (out / "data" / direct_ip_index["path_template"].replace("{page}", "1")).read_text(encoding="utf-8")
+    )
+    direct_ipv6_page = json.loads(
+        (out / "data" / direct_ipv6_index["path_template"].replace("{page}", "1")).read_text(encoding="utf-8")
     )
     names_page_names = [row["name"] for row in names_page_rows]
     direct_row = next(row for row in names_page_rows if row["name"] == "direct")
@@ -263,6 +270,8 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert "ip-addresses/198.51.100.2/page-1.json" in manifest_artifacts
     assert "ip-addresses/203.0.113.10.json" in manifest_artifacts
     assert "ip-addresses/203.0.113.10/page-1.json" in manifest_artifacts
+    assert "ip-addresses/2001%3Adb8%3A%3A10.json" in manifest_artifacts
+    assert "ip-addresses/2001%3Adb8%3A%3A10/page-1.json" in manifest_artifacts
     assert "dane-pages.json" not in manifest_artifacts
     assert "names.json" not in manifest_artifacts
     assert "names.csv" not in manifest_artifacts
@@ -323,6 +332,12 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert direct_ip_page["row_encoding"] == "name"
     assert direct_ip_page["field_mask"] == 4
     assert direct_ip_page["rows"] == ["direct"]
+    assert direct_ipv6_index["ip"] == "2001:db8::10"
+    assert direct_ipv6_index["field_counts"] == {"SYNTH6": 1}
+    assert direct_ipv6_index["default_field_mask"] == 8
+    assert direct_ipv6_page["row_encoding"] == "name"
+    assert direct_ipv6_page["field_mask"] == 8
+    assert direct_ipv6_page["rows"] == ["direct"]
     assert "classes" in summary
     assert "broken" in summary
     assert "top_resource_ips" in summary
