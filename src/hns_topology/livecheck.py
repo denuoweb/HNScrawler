@@ -628,6 +628,7 @@ def _choose_failure(current: str | None, candidate: str | None) -> str | None:
         "ds_dnskey_mismatch": 60,
         "rrsig_expired": 60,
         "https_connect_failed": 35,
+        "certificate_expired": 55,
         "no_a_or_aaaa": 40,
         "stale_tlsa_spki_mismatch": 50,
     }
@@ -753,7 +754,8 @@ def _https_connect(hostname: str, address: str, timeout: float) -> HttpsResult:
             status="working",
             failure_reason=None,
         )
-    except ssl.SSLCertVerificationError:
+    except ssl.SSLCertVerificationError as exc:
+        certificate_failure = _certificate_failure_reason(exc)
         unverified_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         unverified_context.check_hostname = False
         unverified_context.verify_mode = ssl.CERT_NONE
@@ -764,12 +766,21 @@ def _https_connect(hostname: str, address: str, timeout: float) -> HttpsResult:
                 timeout,
                 unverified_context,
                 status="tls_unverified",
-                failure_reason="certificate_mismatch",
+                failure_reason=certificate_failure,
             )
         except Exception:
-            return HttpsResult("failed", None, "https_connect_failed")
+            return HttpsResult("failed", None, certificate_failure)
     except Exception:
         return HttpsResult("failed", None, "https_connect_failed")
+
+
+def _certificate_failure_reason(exc: ssl.SSLCertVerificationError) -> str:
+    verify_code = getattr(exc, "verify_code", None)
+    verify_message = str(getattr(exc, "verify_message", "") or "")
+    text = f"{verify_message} {exc}".lower()
+    if verify_code == 10 or "expired" in text or "not valid after" in text:
+        return "certificate_expired"
+    return "certificate_mismatch"
 
 
 def _tls_connect(

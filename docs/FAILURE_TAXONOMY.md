@@ -16,6 +16,7 @@ Failure reasons are stable lowercase identifiers. They should not be renamed cas
 | `tlsa_wrong_owner` | TLSA data exists under an owner name that does not match the checked endpoint. |
 | `stale_tlsa_spki_mismatch` | TLSA association data no longer matches the HTTPS certificate or SPKI. |
 | `https_connect_failed` | TCP/TLS connection to HTTPS failed. |
+| `certificate_expired` | HTTPS reached the origin, but the presented certificate is past its validity window. |
 | `certificate_mismatch` | HTTPS connected but WebPKI certificate validation failed and no matching TLSA record cleared the failure. |
 | `doh_fallback_only` | Name appears to work only through a fallback resolver path. |
 | `malformed_resource` | HNS resource data could not be decoded into expected records. |

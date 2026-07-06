@@ -30,6 +30,7 @@ FAILURE_REASONS = (
     "tlsa_wrong_owner",
     "stale_tlsa_spki_mismatch",
     "https_connect_failed",
+    "certificate_expired",
     "certificate_mismatch",
     "doh_fallback_only",
     "malformed_resource",

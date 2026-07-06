@@ -345,6 +345,39 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert release_is_valid(public_checks), [check for check in public_checks if not check.ok]
 
 
+def test_certificate_expired_stage_overrides_tlsa_gap(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    out = tmp_path / "public"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+        upsert_live_status(
+            conn,
+            LiveStatus(
+                name="secure",
+                dns_reachable="reachable",
+                dnssec_status="unknown",
+                tlsa_status="missing",
+                dane_status="unknown",
+                https_status="tls_unverified",
+                strict_hns_status="fallback_only",
+                doh_fallback_status="required",
+                failure_reason="certificate_expired",
+                checked_at="2026-07-06T00:00:00Z",
+                next_check_at="2026-07-13T00:00:00Z",
+            ),
+        )
+        generate_site(conn, db_path=db_path, out_dir=out)
+
+    summary = json.loads((out / "data/summary.json").read_text(encoding="utf-8"))
+    rows = json.loads((out / "data/names-pages/all/page-1.json").read_text(encoding="utf-8"))["rows"]
+    secure = next(row for row in rows if row["name"] == "secure")
+
+    assert secure["failure_reason"] == "certificate_expired"
+    assert secure["compliance_stage"] == "service_blocked"
+    assert summary["compliance_stage_counts"]["service_blocked"] == 1
+
+
 def test_generate_site_requires_current_resource_ip_index_and_preserves_existing_output(tmp_path):
     db_path = tmp_path / "topology.sqlite"
     out = tmp_path / "public"

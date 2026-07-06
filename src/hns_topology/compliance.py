@@ -34,7 +34,7 @@ COMPLIANCE_STAGE_DEFINITIONS = {
     "missing_glue": "Delegation is missing parent-side nameserver bootstrap address records.",
     "bootstrap_ready": "HNS bootstrap exists; the next compliance step is DNSSEC signing, DS, and TLSA.",
     "resolver_fallback": "The latest check needed the fallback resolver path instead of strict HNS bootstrap.",
-    "service_blocked": "A live-check failure outside glue, DNSSEC, or stale TLSA blocked DANE proof.",
+    "service_blocked": "A live-check failure such as an expired certificate blocked current DANE proof.",
     "non_actionable": "Expired, parked/default, resolver infrastructure, empty, or unsupported resources.",
 }
 
@@ -45,6 +45,7 @@ DNSSEC_BROKEN_FAILURE_REASONS = (
     "rrsig_expired",
 )
 STALE_TLSA_FAILURE_REASONS = ("stale_tlsa_spki_mismatch", "tlsa_wrong_owner")
+SERVICE_BLOCKING_FAILURE_REASONS = ("certificate_expired",)
 
 
 def compliance_stage_case(
@@ -79,6 +80,8 @@ def compliance_stage_case(
           AND COALESCE({has_glue}, 0) = 0
           AND COALESCE({failure_reason}, 'missing_glue') = 'missing_glue'
           THEN 'missing_glue'
+        WHEN {failure_reason} IN ({_sql_strings(SERVICE_BLOCKING_FAILURE_REASONS)})
+          THEN 'service_blocked'
         WHEN ({actionable_provider})
           AND (COALESCE({has_ds}, 0) = 1 OR {dnssec_status} = 'valid')
           AND COALESCE({dane_status}, '') != 'valid'

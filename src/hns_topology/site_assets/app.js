@@ -153,7 +153,7 @@ function stageDefinition(stage) {
     missing_glue: "Parent-side nameserver bootstrap is missing.",
     bootstrap_ready: "HNS bootstrap exists; publish DNSSEC and TLSA.",
     resolver_fallback: "Strict HNS failed; fallback resolver was needed.",
-    service_blocked: "Live service check failed before DANE proof.",
+    service_blocked: "Live service check failed before current DANE proof.",
     non_actionable: "Expired, parked, resolver, empty, or unsupported."
   })[stage] || "";
 }
@@ -329,6 +329,7 @@ function complianceStage(row) {
   if (failure === "stale_tlsa_spki_mismatch" || failure === "tlsa_wrong_owner" || (row.tlsa_status === "present" && row.dane_status === "invalid")) return "stale_tlsa";
   if (failure === "dnssec_missing" || failure === "dnssec_bogus" || failure === "ds_dnskey_mismatch" || failure === "rrsig_expired") return "dnssec_broken";
   if (failure === "missing_glue" || row.onchain_class === "DELEGATED_NO_GLUE") return "missing_glue";
+  if (failure === "certificate_expired") return "service_blocked";
   if (hasDs(row) && row.dane_status !== "valid") return "tlsa_gap";
   if (failure && failure !== "doh_fallback_only") return "service_blocked";
   if (row.doh_fallback_status === "required" || row.doh_fallback_status === "doh_fallback_only" || failure === "doh_fallback_only") return "resolver_fallback";
@@ -392,8 +393,10 @@ function rowAction(row) {
   }
   if (stage === "service_blocked") {
     return {
-      label: "Review live service",
-      detail: "A live check failed before the indexer could prove DANE.",
+      label: row.failure_reason === "certificate_expired" ? "Renew HTTPS certificate" : "Review live service",
+      detail: row.failure_reason === "certificate_expired"
+        ? "The origin certificate is expired; fix certificate time before treating TLSA/DANE gaps as current."
+        : "A live check failed before the indexer could prove DANE.",
       href: daneGeneratorUrl(row, "review")
     };
   }
@@ -1375,6 +1378,9 @@ function httpsSpkiCheck(row) {
   }
   if (stage === "stale_tlsa" || failure === "stale_tlsa_spki_mismatch" || row.dane_status === "invalid") {
     return {label: "HTTPS SPKI match", status: "fail", detail: "TLSA data does not match the current HTTPS certificate/SPKI."};
+  }
+  if (failure === "certificate_expired") {
+    return {label: "HTTPS SPKI match", status: "fail", detail: "HTTPS certificate is expired; renew it before treating TLSA/DANE gaps as current."};
   }
   if (stage === "service_blocked") {
     return {label: "HTTPS SPKI match", status: "fail", detail: "Live service failure blocked certificate/SPKI proof."};

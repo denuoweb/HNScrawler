@@ -1,4 +1,5 @@
 import hashlib
+import ssl
 from pathlib import Path
 
 import dns.dnssec
@@ -19,11 +20,12 @@ from hns_topology.livecheck import (
     LiveCheckConfig,
     StrictAnswer,
     TlsaResolution,
+    _certificate_failure_reason,
     _ds_matches_dnskey,
     _find_rrsig,
     _match_association,
-    _resolve_tlsa_secure,
     _resolve_strict_addresses,
+    _resolve_tlsa_secure,
     _validate_dnssec_delegation,
     check_name,
     collect_dns_evidence,
@@ -41,6 +43,12 @@ def test_tlsa_association_matching_supports_full_and_hashes():
     assert _match_association(selected, 1, hashlib.sha256(selected).digest())
     assert _match_association(selected, 2, hashlib.sha512(selected).digest())
     assert not _match_association(selected, 1, b"wrong")
+
+
+def test_certificate_verification_expiry_has_specific_failure_reason():
+    exc = ssl.SSLCertVerificationError("certificate has expired")
+
+    assert _certificate_failure_reason(exc) == "certificate_expired"
 
 
 def test_ds_record_matches_dnskey():
@@ -678,6 +686,47 @@ def test_unverified_https_without_tlsa_keeps_certificate_failure(monkeypatch):
     assert status.tlsa_status == "missing"
     assert status.dane_status == "unknown"
     assert status.failure_reason == "certificate_mismatch"
+
+
+def test_expired_certificate_without_tlsa_reports_time_failure(monkeypatch):
+    monkeypatch.setattr(
+        "hns_topology.livecheck._resolve_strict_address_resolution",
+        lambda resolver, name, dnssec_result: AddressResolution(["127.0.0.2"]),
+    )
+    monkeypatch.setattr(
+        "hns_topology.livecheck._resolve_tlsa_secure",
+        lambda resolver, name, dnssec_result: TlsaResolution([]),
+    )
+    monkeypatch.setattr(
+        "hns_topology.livecheck._validate_dnssec_delegation",
+        lambda resolver, name, ds_records: DnssecResult("not_delegated"),
+    )
+    monkeypatch.setattr(
+        "hns_topology.livecheck._https_connect",
+        lambda hostname, address, timeout: HttpsResult(
+            "tls_unverified",
+            b"cert",
+            "certificate_expired",
+        ),
+    )
+
+    status = check_name(
+        {
+            "name": "example",
+            "synth4": ["127.0.0.1"],
+            "synth6": [],
+            "glue4": [],
+            "glue6": [],
+            "has_ds": 0,
+            "ds_records": [],
+        },
+        LiveCheckConfig(timeout=0.1),
+        DummyLimiter(),
+    )
+
+    assert status.tlsa_status == "missing"
+    assert status.dane_status == "unknown"
+    assert status.failure_reason == "certificate_expired"
 
 
 def test_dnssec_failure_prevents_working_dane(monkeypatch):
