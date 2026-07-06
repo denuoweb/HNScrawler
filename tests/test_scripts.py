@@ -23,11 +23,11 @@ def test_full_nightly_stops_hsd_before_live_checks():
 def test_exporter_has_no_standalone_dane_page_builders():
     exporter = Path("src/hns_topology/exporter.py").read_text(encoding="utf-8")
 
-    for obsolete in [
+    for removed_builder in [
         "def build_dane(",
         "def build_dane_rows(",
         "def write_dane_pages(",
         "def _write_dane_pages_streamed(",
         "DANE_FILTERS =",
     ]:
-        assert obsolete not in exporter
+        assert removed_builder not in exporter

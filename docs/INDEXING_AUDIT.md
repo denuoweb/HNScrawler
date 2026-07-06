@@ -36,7 +36,7 @@ The Overview top resource-IP and nameserver-host lists are small aggregates in `
 
 Bulk page JSON is written compactly instead of pretty-printed.
 
-Site generation now writes a complete release tree into a staging directory and swaps it into place only after export succeeds. That removes obsolete `.html` and `.json` artifacts by construction and avoids publishing a partially written tree after an interrupted run.
+Site generation now writes a complete release tree into a staging directory and swaps it into place only after export succeeds. That removes previous-run `.html` and `.json` artifacts by construction and avoids publishing a partially written tree after an interrupted run.
 
 ## Current Names Export Shape
 
@@ -45,7 +45,7 @@ Site generation now writes a complete release tree into a staging directory and 
 - Use one canonical sorted Names row store, with nonzero filter/provider/status postings into that store.
 - Keep high-cardinality UI views paginated and decode only the current page in the browser.
 
-Names filters now use that row-store pattern: `names-pages/all` is the canonical sorted row store, while nonzero visible filters, provider queues, failure collections, and `stage:<compliance_stage>` collections are ordinal postings into that store. The browser resolves only the active postings page back to canonical rows. Hidden legacy filters, zero-row filters, and provider-type queues are not exported.
+Names filters now use that row-store pattern: `names-pages/all` is the canonical sorted row store, while nonzero visible filters, provider queues, failure collections, and `stage:<compliance_stage>` collections are ordinal postings into that store. The browser resolves only the active postings page back to canonical rows. Hidden filters, zero-row filters, and provider-type queues are not exported.
 
 During export, the generator builds a temporary `export_name_ordinals` table with ordinal, provider, provider type, resource flags, live-status fields, and the derived `compliance_stage` for the exported name set. Nonzero posting collections are counted and streamed from that temporary export index, avoiding repeated joins across the production `names`, `resource_summary`, `live_status`, and `provider_summary` tables.
 

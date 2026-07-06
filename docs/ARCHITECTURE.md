@@ -86,7 +86,7 @@ External workers can submit the same evidence JSON through `hns-topology import-
 
 ## DANE Compliance Pipeline
 
-The public site is organized around DANE progress and generator handoff, not just raw classification. On-chain data and live-check results collapse into one exported `compliance_stage` per active name. Legacy counters such as DS records, DNSSEC candidates, strict HNS working, and needs DANE remain as search and summary facets, but the stage is the canonical workflow state.
+The public site is organized around DANE progress and generator handoff, not just raw classification. On-chain data and live-check results collapse into one exported `compliance_stage` per active name. Existing counters such as DS records, DNSSEC candidates, strict HNS working, and needs DANE remain as search and summary facets, but the stage is the canonical workflow state.
 
 The stage vocabulary is deliberately mutually exclusive:
 

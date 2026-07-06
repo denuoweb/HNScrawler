@@ -798,7 +798,7 @@ def test_hsd_bootstrap_smoke_limit_records_provenance(tmp_path):
 def test_reclassify_existing_names_applies_new_provider_rules(tmp_path):
     db_path = tmp_path / "topology.sqlite"
     fixture_path = tmp_path / "bulk_fixture.json"
-    legacy_rules_path = tmp_path / "legacy_rules.json"
+    previous_rules_path = tmp_path / "previous_rules.json"
     fixture_path.write_text(
         json.dumps(
             {
@@ -823,7 +823,7 @@ def test_reclassify_existing_names_applies_new_provider_rules(tmp_path):
         ),
         encoding="utf-8",
     )
-    legacy_rules_path.write_text(
+    previous_rules_path.write_text(
         json.dumps(
             {
                 "version": 1,
@@ -840,11 +840,11 @@ def test_reclassify_existing_names_applies_new_provider_rules(tmp_path):
         ),
         encoding="utf-8",
     )
-    legacy_rules = ProviderRules.from_file(legacy_rules_path)
+    previous_rules = ProviderRules.from_file(previous_rules_path)
     current_rules = ProviderRules.from_file("configs/provider_rules.json")
 
     with connect(db_path) as conn:
-        bootstrap_from_fixture(conn, fixture_path=fixture_path, rules=legacy_rules)
+        bootstrap_from_fixture(conn, fixture_path=fixture_path, rules=previous_rules)
         before = conn.execute(
             "SELECT provider_guess, onchain_class FROM names WHERE name = 'bulk'"
         ).fetchone()

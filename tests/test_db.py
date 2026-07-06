@@ -3,8 +3,8 @@ import sqlite3
 from hns_topology.db import connect, init_db, recompute_provider_summary
 
 
-def test_init_db_migrates_legacy_schema_and_backfills_resource_flags(tmp_path):
-    db_path = tmp_path / "legacy.sqlite"
+def test_init_db_migrates_previous_schema_and_backfills_resource_flags(tmp_path):
+    db_path = tmp_path / "previous.sqlite"
     with sqlite3.connect(db_path) as conn:
         conn.executescript(
             """
@@ -74,7 +74,7 @@ def test_init_db_migrates_legacy_schema_and_backfills_resource_flags(tmp_path):
         conn.execute(
             """
             INSERT INTO names(name, name_hash, expired, record_types, onchain_class, provider_guess)
-            VALUES('legacy', 'hash-legacy', 0, '["TXT"]', 'UNKNOWN_OTHER', 'unknown/custom')
+            VALUES('previous', 'hash-previous', 0, '["TXT"]', 'UNKNOWN_OTHER', 'unknown/custom')
             """
         )
         conn.execute(
@@ -83,7 +83,7 @@ def test_init_db_migrates_legacy_schema_and_backfills_resource_flags(tmp_path):
               name, ns_names, glue4, glue6, synth4, synth6, ds_records, raw_size, resource_hash
             )
             VALUES(
-              'legacy', '["ns1.legacy"]', '["203.0.113.7"]', '[]', '[]', '[]',
+              'previous', '["ns1.previous"]', '["203.0.113.7"]', '[]', '[]', '[]',
               '[{"digest": "abc"}]', 123, 'resource-hash'
             )
             """
@@ -91,7 +91,7 @@ def test_init_db_migrates_legacy_schema_and_backfills_resource_flags(tmp_path):
         conn.execute(
             """
             INSERT INTO live_status(name, strict_hns_status, dane_status)
-            VALUES('legacy', 'working', 'valid')
+            VALUES('previous', 'working', 'valid')
             """
         )
 
@@ -105,7 +105,7 @@ def test_init_db_migrates_legacy_schema_and_backfills_resource_flags(tmp_path):
             """
             SELECT has_ds, has_ns, has_glue, has_synth, has_txt, authoritative_doh, resource_version
             FROM resource_summary
-            WHERE name = 'legacy'
+            WHERE name = 'previous'
             """
         ).fetchone()
         recompute_provider_summary(
