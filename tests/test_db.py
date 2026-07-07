@@ -99,11 +99,19 @@ def test_init_db_migrates_previous_schema_and_backfills_resource_flags(tmp_path)
         init_db(conn)
         tables = {
             table: {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
-            for table in ("names", "resource_summary", "live_status", "provider_summary", "dns_evidence")
+            for table in (
+                "names",
+                "resource_summary",
+                "live_status",
+                "provider_summary",
+                "dns_evidence",
+                "browser_evidence",
+            )
         }
         flags = conn.execute(
             """
-            SELECT has_ds, has_ns, has_glue, has_synth, has_txt, authoritative_doh, resource_version
+            SELECT has_ds, has_ns, has_glue, has_synth, has_txt, authoritative_doh,
+                   tlsa_records, tlsa_cert_not_valid_after, tlsa_cert_expired, resource_version
             FROM resource_summary
             WHERE name = 'previous'
             """
@@ -123,16 +131,42 @@ def test_init_db_migrates_previous_schema_and_backfills_resource_flags(tmp_path)
         ).fetchone()
 
     assert {"state", "renewal_height", "last_seen_height", "updated_at"} <= tables["names"]
-    assert {"has_ds", "has_ns", "has_glue", "has_synth", "has_txt", "authoritative_doh", "resource_version"} <= tables[
-        "resource_summary"
-    ]
-    assert {"dns_reachable", "dnssec_status", "tlsa_status", "next_check_at"} <= tables[
-        "live_status"
-    ]
+    assert {
+        "has_ds",
+        "has_ns",
+        "has_glue",
+        "has_synth",
+        "has_txt",
+        "authoritative_doh",
+        "tlsa_records",
+        "tlsa_cert_not_valid_after",
+        "tlsa_cert_expired",
+        "resource_version",
+    } <= tables["resource_summary"]
+    assert {
+        "dns_reachable",
+        "dnssec_status",
+        "tlsa_status",
+        "next_check_at",
+        "https_cert_sha256",
+        "https_spki_sha256",
+        "https_cert_not_valid_after",
+    } <= tables["live_status"]
     assert {"provider_type", "ns_pattern", "ip_pattern"} <= tables["provider_summary"]
     assert {"server", "source", "source_id", "authority_json", "additional_json"} <= tables[
         "dns_evidence"
     ]
+    assert {
+        "host",
+        "browser_result",
+        "authoritative_udp",
+        "authoritative_doh",
+        "fallback_used",
+        "spki_sha256",
+        "certificate_not_valid_after",
+        "certificate_expired",
+        "raw_json",
+    } <= tables["browser_evidence"]
     assert dict(flags) == {
         "has_ds": 1,
         "has_ns": 1,
@@ -140,6 +174,9 @@ def test_init_db_migrates_previous_schema_and_backfills_resource_flags(tmp_path)
         "has_synth": 0,
         "has_txt": 1,
         "authoritative_doh": "[]",
+        "tlsa_records": "[]",
+        "tlsa_cert_not_valid_after": None,
+        "tlsa_cert_expired": 0,
         "resource_version": None,
     }
     assert dict(provider) == {

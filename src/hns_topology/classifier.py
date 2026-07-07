@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import UTC, datetime
 from typing import Any
 
+from .dane import TLSARecord, certificate_metadata_from_tlsa
 from .jsonutil import dumps_json
 from .models import ResourceSummary
 
@@ -68,6 +70,7 @@ def summarize_resource(name: str, resource: Any) -> ResourceSummary:
     synth6: set[str] = set()
     ds_records: list[dict[str, Any]] = []
     authoritative_doh: list[dict[str, Any]] = []
+    tlsa_records: list[dict[str, Any]] = []
     record_types: set[str] = set()
     has_ds = False
     has_txt = False
@@ -102,8 +105,11 @@ def summarize_resource(name: str, resource: Any) -> ResourceSummary:
         elif record_type == "DS":
             has_ds = True
             ds_records.append(_normalize_ds_record(record))
+        elif record_type == "TLSA":
+            tlsa_records.append(_normalize_tlsa_record(record))
         elif record_type == "TXT":
             has_txt = True
+    tlsa_cert_not_valid_after, tlsa_cert_expired = _tlsa_certificate_summary(tlsa_records)
 
     return ResourceSummary(
         name=normalize_name(name),
@@ -114,6 +120,9 @@ def summarize_resource(name: str, resource: Any) -> ResourceSummary:
         synth6=sorted(synth6),
         ds_records=sorted(ds_records, key=lambda item: dumps_json(item)),
         authoritative_doh=sorted(authoritative_doh, key=lambda item: dumps_json(item)),
+        tlsa_records=sorted(tlsa_records, key=lambda item: dumps_json(item)),
+        tlsa_cert_not_valid_after=tlsa_cert_not_valid_after,
+        tlsa_cert_expired=tlsa_cert_expired,
         has_ds=has_ds,
         has_txt=has_txt,
         raw_size=len(raw),
@@ -183,6 +192,86 @@ def _normalize_ds_record(record: dict[str, Any]) -> dict[str, Any]:
         "digestType": _safe_int(record.get("digestType")),
         "digest": str(record.get("digest") or "").replace(" ", "").lower(),
     }
+
+
+def _normalize_tlsa_record(record: dict[str, Any]) -> dict[str, Any]:
+    usage = _safe_int(_first_present(record, "usage", "certificateUsage"))
+    selector = _safe_int(record.get("selector"))
+    matching_type = _safe_int(
+        _first_present(record, "matchingType", "matching_type", "mtype")
+    )
+    association = _certificate_association_text(record)
+    normalized: dict[str, Any] = {
+        "usage": usage,
+        "selector": selector,
+        "matchingType": matching_type,
+        "association": association,
+    }
+    owner = str(record.get("owner") or record.get("name") or "").strip().lower().rstrip(".")
+    if owner:
+        normalized["owner"] = owner
+    ttl = _safe_int(record.get("ttl"))
+    if ttl is not None:
+        normalized["ttl"] = ttl
+    if usage is None or selector is None or matching_type is None or not association:
+        return normalized
+    try:
+        bytes.fromhex(association)
+    except ValueError:
+        return normalized
+    metadata = certificate_metadata_from_tlsa(
+        TLSARecord(
+            owner=f"{owner}." if owner else "",
+            ttl=ttl or 0,
+            usage=usage,
+            selector=selector,
+            matching_type=matching_type,
+            association=association,
+        )
+    )
+    if metadata is None:
+        return normalized
+    normalized["certificateSha256"] = metadata.sha256
+    normalized["spkiSha256"] = metadata.spki_sha256
+    normalized["certificateNotValidAfter"] = metadata.not_valid_after
+    normalized["certificateExpired"] = _timestamp_is_expired(metadata.not_valid_after)
+    return normalized
+
+
+def _certificate_association_text(record: dict[str, Any]) -> str:
+    value = _first_present(record, "association", "certificate", "cert", "data")
+    if isinstance(value, bytes):
+        return value.hex()
+    return str(value or "").replace(" ", "").lower()
+
+
+def _first_present(record: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = record.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _tlsa_certificate_summary(records: list[dict[str, Any]]) -> tuple[str | None, bool]:
+    dates = [
+        str(record["certificateNotValidAfter"])
+        for record in records
+        if record.get("certificateNotValidAfter")
+    ]
+    if not dates:
+        return None, False
+    return min(dates), any(bool(record.get("certificateExpired")) for record in records)
+
+
+def _timestamp_is_expired(value: str) -> bool:
+    try:
+        expires_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    return expires_at <= datetime.now(UTC)
 
 
 def _safe_int(value: Any) -> int | None:

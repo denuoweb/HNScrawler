@@ -4,7 +4,7 @@ Failure reasons are stable lowercase identifiers. They should not be renamed cas
 
 | Reason | Meaning |
 | --- | --- |
-| `missing_glue` | The HNS resource delegates to nameservers but lacks usable GLUE4/GLUE6 for strict HNS bootstrap. |
+| `missing_glue` | The HNS resource delegates to nameservers but lacks usable direct GLUE4/GLUE6 for strict HNS bootstrap. Exported `ns_handoff_*` diagnostics can still show an indirect NS-hostname probe path. |
 | `nameserver_unreachable_udp` | Authoritative nameserver did not answer UDP DNS within timeout. |
 | `nameserver_unreachable_tcp` | Authoritative nameserver did not answer TCP DNS within timeout. |
 | `no_a_or_aaaa` | No apex or `www` A/AAAA address was found from the configured resolution path. |

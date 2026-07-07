@@ -55,6 +55,9 @@ class ResourceSummary:
     synth6: list[str]
     ds_records: list[dict[str, Any]]
     authoritative_doh: list[dict[str, Any]]
+    tlsa_records: list[dict[str, Any]]
+    tlsa_cert_not_valid_after: str | None
+    tlsa_cert_expired: bool
     has_ds: bool
     has_txt: bool
     raw_size: int
@@ -104,6 +107,9 @@ class LiveStatus:
     failure_reason: str | None
     checked_at: str
     next_check_at: str
+    https_cert_sha256: str | None = None
+    https_spki_sha256: str | None = None
+    https_cert_not_valid_after: str | None = None
 
 
 @dataclass(frozen=True)
@@ -123,6 +129,40 @@ class DnsEvidence:
     elapsed_ms: int | None
     error: str | None
     captured_at: str
+
+
+@dataclass(frozen=True)
+class BrowserEvidence:
+    name: str
+    host: str
+    url: str
+    source: str
+    source_id: str
+    evidence_type: str
+    browser_result: str
+    status_code: int | None
+    stage: str | None
+    reason: str | None
+    mode: str | None
+    hns_proof: str | None
+    resolution_source: str | None
+    authoritative_udp: str | None
+    authoritative_tcp: str | None
+    authoritative_doh: str | None
+    fallback_used: bool | None
+    fallback_reason: str | None
+    dnssec_status: str | None
+    tlsa_owner: str | None
+    tlsa_status: str | None
+    tlsa_source: str | None
+    dane_status: str | None
+    certificate_sha256: str | None
+    spki_sha256: str | None
+    final_error: str | None
+    raw_json: dict[str, Any]
+    captured_at: str
+    certificate_not_valid_after: str | None = None
+    certificate_expired: bool | None = None
 
 
 JsonDict = dict[str, Any]

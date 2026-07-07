@@ -793,6 +793,9 @@ def test_expired_certificate_without_tlsa_reports_time_failure(monkeypatch):
             "tls_unverified",
             b"cert",
             "certificate_expired",
+            cert_sha256="ab" * 32,
+            spki_sha256="cd" * 32,
+            cert_not_valid_after="2026-07-01T00:00:00Z",
         ),
     )
 
@@ -813,6 +816,9 @@ def test_expired_certificate_without_tlsa_reports_time_failure(monkeypatch):
     assert status.tlsa_status == "missing"
     assert status.dane_status == "unknown"
     assert status.failure_reason == "certificate_expired"
+    assert status.https_cert_sha256 == "ab" * 32
+    assert status.https_spki_sha256 == "cd" * 32
+    assert status.https_cert_not_valid_after == "2026-07-01T00:00:00Z"
 
 
 def test_dnssec_failure_prevents_working_dane(monkeypatch):

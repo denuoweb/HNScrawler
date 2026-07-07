@@ -9,8 +9,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from .browser_summary import (
+    apply_browser_evidence_policy,
+    browser_summary_select_columns,
+    latest_browser_evidence_join,
+)
 from .compliance import compliance_stage_case
 from .db import parse_json_columns
+from .ns_handoff import (
+    NS_HANDOFF_COLUMNS,
+    NS_HANDOFF_TABLE,
+    drop_temp_ns_handoff_table,
+    prepare_temp_ns_handoff_table,
+)
 
 NAME_RE = re.compile(r"^[a-z0-9-]{1,63}$")
 JSON_COLUMNS = (
@@ -22,7 +33,28 @@ JSON_COLUMNS = (
     "synth6",
     "ds_records",
     "authoritative_doh",
+    "tlsa_records",
 )
+
+
+def _dns_evidence_path_sql() -> str:
+    return """
+      CASE WHEN EXISTS(
+        SELECT 1
+        FROM dns_evidence de
+        WHERE de.name = n.name
+      ) THEN 'dns-evidence/' || n.name || '.json' ELSE NULL END AS dns_evidence_path
+    """
+
+
+def _browser_evidence_path_sql() -> str:
+    return """
+      CASE WHEN EXISTS(
+        SELECT 1
+        FROM browser_evidence be
+        WHERE be.name = n.name
+      ) THEN 'browser-evidence/' || n.name || '.json' ELSE NULL END AS browser_evidence_path
+    """
 
 
 def normalize_name(value: str) -> str:
@@ -43,6 +75,7 @@ def lookup_name(db_path: str | Path, name: str) -> dict:
     uri = f"file:{Path(db_path).as_posix()}?mode=ro"
     with sqlite3.connect(uri, uri=True) as conn:
         conn.row_factory = sqlite3.Row
+        prepare_temp_ns_handoff_table(conn, "SELECT ? AS name", (normalized,))
         compliance_stage_sql = compliance_stage_case(
             expired="n.expired",
             provider_type="ps.provider_type",
@@ -56,31 +89,39 @@ def lookup_name(db_path: str | Path, name: str) -> dict:
             doh_fallback_status="ls.doh_fallback_status",
             failure_reason="ls.failure_reason",
         )
-        row = conn.execute(
-            f"""
-            SELECT
-              n.name, n.state, n.expired, n.onchain_class, n.provider_guess,
-              COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types,
-              rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6,
-              rs.ds_records, rs.authoritative_doh, rs.has_ds,
-              rs.raw_size, rs.resource_version, rs.resource_hash, n.last_seen_height, n.updated_at,
-              CASE WHEN EXISTS(
-                SELECT 1
-                FROM dns_evidence de
-                WHERE de.name = n.name
-              ) THEN 'dns-evidence/' || n.name || '.json' ELSE NULL END AS dns_evidence_path,
-              {compliance_stage_sql} AS compliance_stage,
-              ls.dns_reachable, ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.https_status,
-              ls.strict_hns_status, ls.doh_fallback_status, ls.failure_reason, ls.checked_at
-            FROM names n
-            JOIN resource_summary rs ON rs.name = n.name
-            LEFT JOIN live_status ls ON ls.name = n.name
-            LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
-            WHERE n.name = ?
-            LIMIT 1
-            """,
-            (normalized,),
-        ).fetchone()
+        try:
+            row = conn.execute(
+                f"""
+                SELECT
+                  n.name, n.state, n.expired, n.onchain_class, n.provider_guess,
+                  COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types,
+                  rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6,
+                  rs.ds_records, rs.authoritative_doh, rs.tlsa_records,
+                  rs.tlsa_cert_not_valid_after, COALESCE(rs.tlsa_cert_expired, 0) AS tlsa_cert_expired,
+                  rs.has_ds,
+                  {_ns_handoff_select_columns()},
+                  rs.raw_size, rs.resource_version, rs.resource_hash, n.last_seen_height, n.updated_at,
+                  {_dns_evidence_path_sql()},
+                  {_browser_evidence_path_sql()},
+                  {browser_summary_select_columns()},
+                  {compliance_stage_sql} AS compliance_stage,
+                  ls.dns_reachable, ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.https_status,
+                  ls.strict_hns_status, ls.doh_fallback_status, ls.failure_reason,
+                  ls.https_cert_sha256, ls.https_spki_sha256, ls.https_cert_not_valid_after,
+                  ls.checked_at
+                FROM names n
+                JOIN resource_summary rs ON rs.name = n.name
+                LEFT JOIN live_status ls ON ls.name = n.name
+                LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
+                LEFT JOIN {NS_HANDOFF_TABLE} enh ON enh.name = n.name
+                {latest_browser_evidence_join()}
+                WHERE n.name = ?
+                LIMIT 1
+                """,
+                (normalized,),
+            ).fetchone()
+        finally:
+            drop_temp_ns_handoff_table(conn)
         meta = {
             item["key"]: item["value"]
             for item in conn.execute(
@@ -104,8 +145,19 @@ def lookup_name(db_path: str | Path, name: str) -> dict:
         "query": name,
         "normalized": normalized,
         "snapshot": meta,
-        "row": parse_json_columns(dict(row), JSON_COLUMNS),
+        "row": _lookup_row(row),
     }
+
+
+def _lookup_row(row: sqlite3.Row) -> dict:
+    parsed = parse_json_columns(dict(row), JSON_COLUMNS)
+    if "tlsa_cert_expired" in parsed:
+        parsed["tlsa_cert_expired"] = bool(parsed["tlsa_cert_expired"])
+    return apply_browser_evidence_policy(parsed)
+
+
+def _ns_handoff_select_columns() -> str:
+    return ",\n                  ".join(f"enh.{column}" for column in NS_HANDOFF_COLUMNS)
 
 
 class LookupHandler(BaseHTTPRequestHandler):

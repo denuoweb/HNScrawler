@@ -127,6 +127,10 @@ function hasGlue(row) {
   );
 }
 
+function hasNsHandoff(row) {
+  return Boolean(row.ns_handoff_ns && row.ns_handoff_root && row.ns_handoff_bootstrap_ip);
+}
+
 function filterName(filter) {
   if (filter.startsWith(FAILURE_REASON_FILTER_PREFIX)) return prettyToken(filter.slice(FAILURE_REASON_FILTER_PREFIX.length));
   if (filter.startsWith(PROVIDER_FILTER_PREFIX)) return `provider ${filter.slice(PROVIDER_FILTER_PREFIX.length)}`;
@@ -137,6 +141,7 @@ function filterName(filter) {
     default_provider_names: "default providers",
     ds_records: "DS records",
     dnssec_candidates: "DNSSEC candidates",
+    static_tlsa_certificate_expired_names: "static TLSA expired certificate",
     strict_hns_ready: "strict HNS ready",
     likely_websites: "likely websites",
     strict_hns_working: "strict HNS working",
@@ -145,7 +150,13 @@ function filterName(filter) {
     dane_working: "DANE verified",
     needs_fix: "needs fix",
     missing_glue_only: "missing GLUE only",
-    stale_tlsa_only: "stale TLSA only"
+    stale_tlsa_only: "stale TLSA only",
+    live_site_names: "live site evidence",
+    browser_target_names: "browser targets",
+    browser_evidence_names: "browser evidence",
+    browser_dane_verified_names: "browser DANE verified",
+    browser_network_blocks_53_names: "browser network blocks 53",
+    browser_certificate_expired_names: "browser expired certificate"
   })[filter] || filter;
 }
 
@@ -362,6 +373,8 @@ function complianceStage(row) {
 
 function rowAction(row) {
   const stage = complianceStage(row);
+  const browserAction = browserPromotedAction(row, stage);
+  if (browserAction) return browserAction;
   if (stage === "dane_verified") {
     return {
       type: "badge",
@@ -371,6 +384,13 @@ function rowAction(row) {
     };
   }
   if (stage === "missing_glue") {
+    if (hasNsHandoff(row)) {
+      return {
+        label: "Review NS handoff",
+        detail: `${trailingDot(row.ns_handoff_ns)} can be traced through ${row.ns_handoff_root}/, but this name still lacks direct parent-side GLUE.`,
+        href: daneGeneratorUrl(row, "missing_glue")
+      };
+    }
     return {
       label: "Create NS/GLUE handoff",
       detail: "Parent-side nameserver bootstrap is required before the signed TLSA zone is reachable.",
@@ -430,6 +450,25 @@ function rowAction(row) {
   };
 }
 
+function browserPromotedAction(row, stage) {
+  if (row.browser_action === "renew_certificate" && !["missing_glue", "dnssec_broken"].includes(stage)) {
+    return {
+      label: row.browser_action_label || "Renew HTTPS certificate",
+      detail: row.browser_action_detail || "Latest browser evidence saw an expired HTTPS certificate.",
+      href: daneGeneratorUrl(row, "review")
+    };
+  }
+  if (row.browser_action === "compare_browser_dane" && ["tlsa_gap", "bootstrap_ready", "service_blocked"].includes(stage)) {
+    return {
+      type: "badge",
+      label: row.browser_action_label || "Review browser DANE proof",
+      detail: row.browser_action_detail || "Browser evidence verified DANE; compare resolver paths.",
+      href: sitePath(`names.html?filter=browser_dane_verified_names&q=${encodeURIComponent(row.name || "")}`)
+    };
+  }
+  return null;
+}
+
 function actionCell(row) {
   const action = rowAction(row);
   if (action.type === "badge") {
@@ -451,6 +490,8 @@ function snapshot(summary) {
     ${metric("DANE verified", daneVerified, `${pct(daneVerified, summary.active_names)} of active`, `names.html?filter=${COMPLIANCE_STAGE_FILTER_PREFIX}dane_verified`)}
     ${metric("TLSA gaps", tlsaGap, "ready for generator handoff", `names.html?filter=${COMPLIANCE_STAGE_FILTER_PREFIX}tlsa_gap`)}
     ${metric("Compliance blockers", blockerQueue, "blocking verification")}
+    ${metric("Live sites", summary.live_site_names, "live/browser evidence", "names.html?filter=live_site_names")}
+    ${metric("Browser evidence", summary.browser_evidence_names, `${fmt.format(summary.browser_network_blocks_53_names || 0)} network-blocked, ${fmt.format(summary.browser_certificate_expired_names || 0)} expired cert`, "names.html?filter=browser_evidence_names")}
   </section>`;
 }
 
@@ -1036,6 +1077,8 @@ function namesFilterControls({summary, providers, broken, active}) {
     {value: "delegated_names", label: "Delegated names", countKey: "delegated_names"},
     {value: "default_provider_names", label: "Default providers", countKey: "default_provider_names"},
     {value: "likely_websites", label: "Likely websites", countKey: "likely_websites"},
+    {value: "browser_target_names", label: "Browser targets", countKey: "browser_target_names"},
+    {value: "live_site_names", label: "Live site evidence", countKey: "live_site_names"},
     {value: "strict_hns_ready", label: "Strict HNS ready", countKey: "strict_hns_ready"},
     {value: "strict_hns_working", label: "Strict HNS working", countKey: "strict_hns_working"},
     {value: "needs_fix", label: "Needs fix", countKey: "needs_fix"},
@@ -1044,9 +1087,16 @@ function namesFilterControls({summary, providers, broken, active}) {
   const daneOptions = [
     {value: "ds_records", label: "DS records", countKey: "ds_records"},
     {value: "dnssec_candidates", label: "DNSSEC candidates", countKey: "dnssec_candidates"},
+    {value: "static_tlsa_certificate_expired_names", label: "Static TLSA expired certificate", countKey: "static_tlsa_certificate_expired_names"},
     {value: "needs_dane", label: "Needs DANE", countKey: "needs_dane"},
     {value: "dane_working", label: "DANE verified", countKey: "dane_working"},
     {value: "stale_tlsa_only", label: "Stale TLSA", countKey: "stale_tlsa_only"}
+  ];
+  const browserOptions = [
+    {value: "browser_evidence_names", label: "Any browser evidence", countKey: "browser_evidence_names"},
+    {value: "browser_dane_verified_names", label: "Browser DANE verified", countKey: "browser_dane_verified_names"},
+    {value: "browser_network_blocks_53_names", label: "Browser network blocks 53", countKey: "browser_network_blocks_53_names"},
+    {value: "browser_certificate_expired_names", label: "Browser expired certificate", countKey: "browser_certificate_expired_names"}
   ];
   const clearLink = active
     ? `<a class="search-clear" href="${escapeHtml(hrefWithoutParams(["filter", "page"]))}">Clear</a>`
@@ -1059,6 +1109,7 @@ function namesFilterControls({summary, providers, broken, active}) {
         ${filterOptgroup("Compliance Stage", complianceOptions, active)}
         ${filterOptgroup("General", visibleSummaryOptions(generalOptions, summary, active), active)}
         ${filterOptgroup("DANE and DNSSEC", visibleSummaryOptions(daneOptions, summary, active), active)}
+        ${filterOptgroup("Browser Evidence", visibleSummaryOptions(browserOptions, summary, active), active)}
         ${filterOptgroup("Failure Reasons", failureOptions, active)}
         ${filterOptgroup("Providers", providerOptions, active)}
       </select>
@@ -1309,7 +1360,29 @@ function liveDiagnosticStatus(row) {
     ["Strict HNS", row.strict_hns_status],
     ["Resolver fallback", row.doh_fallback_status],
     ["Failure", row.failure_reason],
-    ["Last checked", row.checked_at ? String(row.checked_at).replace("T", " ").replace(/:\d\d(?:\.\d+)?Z$/, " UTC") : ""]
+    ["NS handoff", row.ns_handoff_ns],
+    ["NS handoff root", row.ns_handoff_root ? `${row.ns_handoff_root}/` : ""],
+    ["NS handoff bootstrap", row.ns_handoff_bootstrap_ip
+      ? `${row.ns_handoff_bootstrap_field || "bootstrap"} ${row.ns_handoff_bootstrap_ip}`
+      : ""],
+    ["Static TLSA cert notAfter", row.tlsa_cert_not_valid_after],
+    ["Static TLSA cert expired", row.tlsa_cert_expired === true ? "yes" : ""],
+    ["Cert notAfter", row.https_cert_not_valid_after],
+    ["Cert SHA-256", row.https_cert_sha256],
+    ["SPKI SHA-256", row.https_spki_sha256],
+    ["Last checked", row.checked_at ? String(row.checked_at).replace("T", " ").replace(/:\d\d(?:\.\d+)?Z$/, " UTC") : ""],
+    ["Browser result", row.browser_result],
+    ["Browser HNS proof", row.browser_hns_proof],
+    ["Browser resolution", row.browser_resolution_source],
+    ["Browser UDP 53", row.browser_authoritative_udp],
+    ["Browser TCP 53", row.browser_authoritative_tcp],
+    ["Browser authoritative DoH", row.browser_authoritative_doh],
+    ["Browser fallback", row.browser_fallback_used === true ? (row.browser_fallback_reason || "used") : ""],
+    ["Browser cert notAfter", row.browser_certificate_not_valid_after],
+    ["Browser cert expired", row.browser_certificate_expired === true ? "yes" : ""],
+    ["Browser effect", row.browser_evidence_effect],
+    ["Browser action", row.browser_action_label],
+    ["Browser captured", row.browser_captured_at ? String(row.browser_captured_at).replace("T", " ").replace(/:\d\d(?:\.\d+)?Z$/, " UTC") : ""]
   ].filter(([, value]) => value !== null && value !== undefined && value !== "");
   if (!fields.length) return `<p class="meta">No live-check result in this row.</p>`;
   return `<dl class="diagnostic-kv">${fields.map(([key, value]) => `
@@ -1338,8 +1411,26 @@ function complianceChecklistItems(row) {
     dnssecChainCheck(row),
     tlsaOwnerCheck(row),
     httpsSpkiCheck(row),
-    resolverFallbackCheck(row)
+    resolverFallbackCheck(row),
+    browserEvidencePolicyCheck(row)
   ];
+}
+
+function browserEvidencePolicyCheck(row) {
+  const effect = row.browser_evidence_effect || "";
+  if (!effect) {
+    return {label: "Browser evidence", status: "pending", detail: "No browser/device evidence is available yet."};
+  }
+  if (row.browser_evidence_severity === "action") {
+    return {label: "Browser evidence", status: "fail", detail: row.browser_action_detail || "Latest browser evidence requires action."};
+  }
+  if (row.browser_evidence_severity === "review") {
+    return {label: "Browser evidence", status: "warn", detail: row.browser_action_detail || "Latest browser evidence should be compared with crawler results."};
+  }
+  if (row.browser_evidence_severity === "pass") {
+    return {label: "Browser evidence", status: "pass", detail: row.browser_action_detail || "Browser evidence agrees with crawler results."};
+  }
+  return {label: "Browser evidence", status: "pass", detail: row.browser_action_detail || "Browser evidence is contextual and does not change domain compliance."};
 }
 
 function checklistStatusLabel(status) {
@@ -1372,6 +1463,13 @@ function hnsBootstrapCheck(row) {
   }
   if (hasGlue(row)) {
     return {label: "HNS bootstrap", status: "pass", detail: "Delegated nameserver has parent-side GLUE."};
+  }
+  if (hasNsHandoff(row)) {
+    return {
+      label: "HNS bootstrap",
+      status: "warn",
+      detail: `No direct GLUE for this name; resolve ${trailingDot(row.ns_handoff_ns)} through ${row.ns_handoff_root}/ first.`
+    };
   }
   if (hasNs(row)) {
     return {label: "HNS bootstrap", status: "fail", detail: "Delegation exists but GLUE bootstrap addresses are missing."};
@@ -1413,6 +1511,9 @@ function httpsSpkiCheck(row) {
   if (row.dane_status === "valid") {
     return {label: "HTTPS SPKI match", status: "pass", detail: "HTTPS certificate/SPKI matched the TLSA association."};
   }
+  if (row.browser_certificate_expired === true && failure !== "certificate_expired") {
+    return {label: "HTTPS SPKI match", status: "fail", detail: "Latest browser evidence saw an expired HTTPS certificate; renew it before treating TLSA/DANE gaps as current."};
+  }
   if (stage === "stale_tlsa" || failure === "stale_tlsa_spki_mismatch" || row.dane_status === "invalid") {
     return {label: "HTTPS SPKI match", status: "fail", detail: "TLSA data does not match the current HTTPS certificate/SPKI."};
   }
@@ -1430,24 +1531,68 @@ function httpsSpkiCheck(row) {
 
 function resolverFallbackCheck(row) {
   const fallback = row.doh_fallback_status || "";
+  const browserPort53Blocked = isBrowserPort53Blocked(row);
   if (complianceStage(row) === "resolver_fallback" || fallback === "required" || fallback === "doh_fallback_only" || row.failure_reason === "doh_fallback_only") {
     return {label: "Resolver fallback", status: "warn", detail: "Latest check required the fallback resolver path."};
   }
   if (fallback === "not_required" || row.strict_hns_status === "working" || row.dane_status === "valid") {
+    if (browserPort53Blocked) {
+      return {label: "Resolver fallback", status: "pass", detail: "Crawler strict HNS did not require fallback; latest browser fallback appears to be client-network port 53 blocking context."};
+    }
     return {label: "Resolver fallback", status: "pass", detail: "Strict HNS completed without resolver fallback."};
   }
+  if (browserPort53Blocked) {
+    return {label: "Resolver fallback", status: "pending", detail: "Latest browser trace fell back because the client network blocks UDP/TCP 53; this is device context, not domain-side proof of resolver fallback."};
+  }
   return {label: "Resolver fallback", status: "pending", detail: "No resolver fallback result is available yet."};
+}
+
+function isBrowserPort53Blocked(row) {
+  const reason = String(row.browser_fallback_reason || "").toLowerCase();
+  if (reason === "network_blocks_53") return true;
+  const udp = String(row.browser_authoritative_udp || "").toLowerCase();
+  const tcp = String(row.browser_authoritative_tcp || "").toLowerCase();
+  const doh = String(row.browser_authoritative_doh || "").toLowerCase();
+  return ["blocked", "timeout", "transport_error"].includes(udp)
+    && ["blocked", "timeout", "transport_error", "not_attempted"].includes(tcp)
+    && doh === "ok";
 }
 
 function dnsProbeCommands(row) {
   const name = String(row.name || "").replace(/\.+$/, "");
   const server = firstValue(row.synth4) || firstValue(row.glue4) || row.first_synth4 || row.first_glue4
     || firstValue(row.synth6) || firstValue(row.glue6) || row.first_synth6 || row.first_glue6;
-  if (!name || !server) return [];
+  const nsHost = trailingDot(firstValue(row.ns_names) || row.first_ns || row.ns_handoff_ns);
+  if (!name) return [];
+  if (!server && hasNsHandoff(row)) {
+    return [
+      ...dnsTransportCommands(row.ns_handoff_bootstrap_ip, nsHost, "A"),
+      ...dnsTransportCommands(row.ns_handoff_bootstrap_ip, nsHost, "AAAA"),
+      ...dnsTransportCommands(row.ns_handoff_bootstrap_ip, `_dns.${nsHost}`, "SVCB"),
+      ...targetProbeCommands(name, "<resolved-ns-ip>")
+    ];
+  }
+  if (!server) return [];
   return [
-    `dig @${server} ${name}. A +norecurse +dnssec`,
-    `dig @${server} _443._tcp.${name}. TLSA +norecurse +dnssec`,
-    `dig @${server} ${name}. DNSKEY +norecurse +dnssec`
+    ...(nsHost ? dnsTransportCommands(server, `_dns.${nsHost}`, "SVCB") : []),
+    ...targetProbeCommands(name, server)
+  ];
+}
+
+function targetProbeCommands(name, server) {
+  return [
+    ...dnsTransportCommands(server, `${name}.`, "A"),
+    ...dnsTransportCommands(server, `${name}.`, "AAAA"),
+    ...dnsTransportCommands(server, `_443._tcp.${name}.`, "TLSA"),
+    ...dnsTransportCommands(server, `${name}.`, "DNSKEY")
+  ];
+}
+
+function dnsTransportCommands(server, qname, rrtype) {
+  if (!server || !qname || !rrtype) return [];
+  return [
+    `dig @${server} ${qname} ${rrtype} +norecurse +dnssec`,
+    `dig @${server} ${qname} ${rrtype} +tcp +norecurse +dnssec`
   ];
 }
 
@@ -1458,6 +1603,17 @@ function dnsEvidenceSection(row) {
     <h3>Observed DNS</h3>
     <div class="dns-evidence-body" data-evidence-path="${escapeHtml(path)}">
       <p class="meta">Open diagnostics to load stored DNS evidence.</p>
+    </div>
+  </section>`;
+}
+
+function browserEvidenceSection(row) {
+  const path = row.browser_evidence_path || "";
+  if (!path) return `<section><h3>Browser Evidence</h3><p class="meta">No imported browser evidence for this name yet.</p></section>`;
+  return `<section>
+    <h3>Browser Evidence</h3>
+    <div class="browser-evidence-body" data-browser-evidence-path="${escapeHtml(path)}">
+      <p class="meta">Open diagnostics to load imported browser evidence.</p>
     </div>
   </section>`;
 }
@@ -1484,28 +1640,75 @@ function renderDnsEvidence(payload) {
   }).join("")}</div>`;
 }
 
+function renderBrowserEvidence(payload) {
+  const observations = Array.isArray(payload?.observations) ? payload.observations : [];
+  if (!observations.length) return `<p class="meta">No imported browser evidence for this name yet.</p>`;
+  return `<div class="dns-evidence-list">${observations.map((item) => {
+    const title = `${item.host || payload.name || ""} ${item.browser_result || item.evidence_type || ""}`.trim();
+    const meta = [
+      item.source || "",
+      item.source_id || "",
+      item.mode || "",
+      item.resolution_source || "",
+      item.captured_at || ""
+    ].filter(Boolean).join(" - ");
+    const fields = [
+      ["Status", item.status_code],
+      ["Stage", item.stage],
+      ["Reason", item.reason],
+      ["DNSSEC", item.dnssec_status],
+      ["TLSA", item.tlsa_status],
+      ["DANE", item.dane_status],
+      ["TLSA owner", item.tlsa_owner],
+      ["UDP 53", item.authoritative_udp],
+      ["TCP 53", item.authoritative_tcp],
+      ["Authoritative DoH", item.authoritative_doh],
+      ["Fallback", item.fallback_used === true ? (item.fallback_reason || "used") : ""],
+      ["Cert SHA-256", item.certificate_sha256],
+      ["SPKI SHA-256", item.spki_sha256],
+      ["Cert notAfter", item.certificate_not_valid_after],
+      ["Certificate expired", item.certificate_expired === true ? "yes" : ""],
+      ["Final error", item.final_error]
+    ].filter(([, value]) => value !== null && value !== undefined && value !== "");
+    return `<article class="dns-evidence-item">
+      <header><strong>${escapeHtml(title)}</strong><span>${escapeHtml(meta)}</span></header>
+      <dl class="diagnostic-kv">${fields.map(([key, value]) => `
+        <div><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(prettyToken(value))}</dd></div>`).join("")}</dl>
+    </article>`;
+  }).join("")}</div>`;
+}
+
 function evidenceLines(label, lines) {
   if (!Array.isArray(lines) || !lines.length) return "";
   return `<div class="evidence-lines"><span>${escapeHtml(label)}</span>${lines.map(codeLine).join("")}</div>`;
 }
 
 function wireNameDetails() {
-  document.querySelectorAll(".name-detail[data-evidence-path]").forEach((details) => {
+  document.querySelectorAll(".name-detail").forEach((details) => {
     details.addEventListener("toggle", async () => {
-      if (!details.open || details.dataset.evidenceLoaded === "true") return;
-      const target = details.querySelector(".dns-evidence-body");
-      const path = details.dataset.evidencePath;
-      if (!target || !path) return;
-      target.innerHTML = `<p class="meta">Loading DNS evidence...</p>`;
-      try {
-        const payload = await loadJson(`data/${path}`);
-        target.innerHTML = renderDnsEvidence(payload);
-        details.dataset.evidenceLoaded = "true";
-      } catch (error) {
-        target.innerHTML = `<p class="meta">Could not load DNS evidence: ${escapeHtml(error.message)}</p>`;
-      }
+      if (!details.open) return;
+      await loadLazyEvidence(details, "dns");
+      await loadLazyEvidence(details, "browser");
     });
   });
+}
+
+async function loadLazyEvidence(details, kind) {
+  const datasetKey = `${kind}EvidenceLoaded`;
+  if (details.dataset[datasetKey] === "true") return;
+  const bodyClass = kind === "browser" ? ".browser-evidence-body" : ".dns-evidence-body";
+  const pathKey = kind === "browser" ? "browserEvidencePath" : "evidencePath";
+  const target = details.querySelector(bodyClass);
+  const path = details.dataset[pathKey];
+  if (!target || !path) return;
+  target.innerHTML = `<p class="meta">Loading ${kind} evidence...</p>`;
+  try {
+    const payload = await loadJson(`data/${path}`);
+    target.innerHTML = kind === "browser" ? renderBrowserEvidence(payload) : renderDnsEvidence(payload);
+    details.dataset[datasetKey] = "true";
+  } catch (error) {
+    target.innerHTML = `<p class="meta">Could not load ${kind} evidence: ${escapeHtml(error.message)}</p>`;
+  }
 }
 
 function nameDetailRow(row, colspan) {
@@ -1520,8 +1723,11 @@ function nameDetailRow(row, colspan) {
   const evidenceAttr = row.dns_evidence_path
     ? ` data-evidence-path="${escapeHtml(row.dns_evidence_path)}"`
     : "";
+  const browserEvidenceAttr = row.browser_evidence_path
+    ? ` data-browser-evidence-path="${escapeHtml(row.browser_evidence_path)}"`
+    : "";
   return `<tr class="name-detail-row"><td colspan="${colspan}">
-    <details class="name-detail"${evidenceAttr}>
+    <details class="name-detail"${evidenceAttr}${browserEvidenceAttr}>
       <summary><strong class="name-detail-name">${escapeHtml(displayName)}</strong><span>Audit diagnostics</span></summary>
       <div class="name-detail-grid">
         ${complianceChecklist(row)}
@@ -1538,6 +1744,7 @@ function nameDetailRow(row, colspan) {
           ${commands.length ? `<div class="dns-probes">${commands.map(codeLine).join("")}</div>` : ""}
         </section>
         ${dnsEvidenceSection(row)}
+        ${browserEvidenceSection(row)}
       </div>
     </details>
   </td></tr>`;

@@ -20,7 +20,7 @@ import dns.rdtypes.svcbbase
 import dns.resolver
 from cryptography import x509
 
-from .dane import match_association_bytes, selected_certificate_bytes
+from .dane import certificate_metadata_from_der, match_association_bytes, selected_certificate_bytes
 from .db import insert_dns_evidence_batch, parse_json_columns, upsert_live_status
 from .infra import NON_ACTIONABLE_PROVIDER_TYPES
 from .models import FAILURE_REASONS, PROMISING_CLASSES, DnsEvidence, LiveStatus
@@ -206,6 +206,7 @@ def check_name(row: dict, config: LiveCheckConfig, limiter: RateLimiter) -> Live
     strict_hns_status = "unknown"
     doh_fallback_status = "not_checked"
     failure_reason = None
+    https_result: HttpsResult | None = None
 
     fallback_resolver = _make_resolver(config)
     strict_resolver = _make_strict_resolver(row, config)
@@ -306,6 +307,9 @@ def check_name(row: dict, config: LiveCheckConfig, limiter: RateLimiter) -> Live
         failure_reason=failure_reason,
         checked_at=checked_at,
         next_check_at=next_check_at,
+        https_cert_sha256=https_result.cert_sha256 if https_result is not None else None,
+        https_spki_sha256=https_result.spki_sha256 if https_result is not None else None,
+        https_cert_not_valid_after=https_result.cert_not_valid_after if https_result is not None else None,
     )
 
 
@@ -931,6 +935,9 @@ class HttpsResult:
     status: str
     cert_der: bytes | None
     failure_reason: str | None = None
+    cert_sha256: str | None = None
+    spki_sha256: str | None = None
+    cert_not_valid_after: str | None = None
 
 
 def _https_connect(hostname: str, address: str, timeout: float) -> HttpsResult:
@@ -986,7 +993,24 @@ def _tls_connect(
         socket.create_connection((address, 443), timeout=timeout) as sock,
         context.wrap_socket(sock, server_hostname=hostname) as tls,
     ):
-        return HttpsResult(status, tls.getpeercert(binary_form=True), failure_reason)
+        return _https_result(status, tls.getpeercert(binary_form=True), failure_reason)
+
+
+def _https_result(status: str, cert_der: bytes | None, failure_reason: str | None) -> HttpsResult:
+    if not cert_der:
+        return HttpsResult(status, cert_der, failure_reason)
+    try:
+        metadata = certificate_metadata_from_der(cert_der)
+    except ValueError:
+        return HttpsResult(status, cert_der, failure_reason)
+    return HttpsResult(
+        status,
+        cert_der,
+        failure_reason,
+        cert_sha256=metadata.sha256,
+        spki_sha256=metadata.spki_sha256,
+        cert_not_valid_after=metadata.not_valid_after,
+    )
 
 
 def _match_any_tlsa(cert_der: bytes, records: Iterable[tuple[int, int, int, bytes]]) -> bool:

@@ -8,10 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .browser_targets import HNS_BROWSER_ACTIVITY, HNS_BROWSER_LOAD_URL_EXTRA, browser_target_row
 from .db import connect, get_meta, table_count
 from .exporter import build_summary
 from .fileutil import file_sha256
 from .models import FAILURE_REASONS
+from .verification import build_verification_plan
 
 REQUIRED_TABLES = {
     "snapshot_meta",
@@ -20,6 +22,8 @@ REQUIRED_TABLES = {
     "resource_ip",
     "live_status",
     "provider_summary",
+    "dns_evidence",
+    "browser_evidence",
     "block_history",
     "changed_name_rollbacks",
 }
@@ -57,6 +61,9 @@ REQUIRED_MANIFEST_ARTIFACTS = (
 OPTIONAL_MANIFEST_ARTIFACTS = (
     "names.json",
     "names.csv",
+    "verification.csv",
+    "site-directory.csv",
+    "browser-targets.csv",
     "topology.sqlite.gz",
 )
 
@@ -608,7 +615,7 @@ def _validate_export_manifest(
                 "matched" if not mismatches else ", ".join(mismatches),
             )
         )
-        _validate_export_counts(manifest_path, manifest, summary, checks)
+        _validate_export_counts(manifest_path, manifest, summary, checks, by_path)
 
 
 def _validate_export_counts(
@@ -616,6 +623,7 @@ def _validate_export_counts(
     manifest: dict[str, Any],
     summary: dict[str, Any],
     checks: list[ReleaseCheck],
+    manifest_artifacts: dict[str, dict[str, Any]],
 ) -> None:
     export_meta = manifest.get("export") if isinstance(manifest.get("export"), dict) else {}
     names_limit = export_meta.get("names_limit")
@@ -656,13 +664,20 @@ def _validate_export_counts(
         names_pages = json.loads(names_pages_path.read_text(encoding="utf-8"))
         names_all = names_pages["collections"]["all"]
         page_rows = _count_paginated_rows(manifest_path.parent, names_all)
+        site_directory_expected_rows = _names_collection_row_count(names_pages, "live_site_names")
+        verification_expected_rows = _expected_verification_csv_rows(manifest_path.parent, names_all)
+        browser_targets_expected_rows = _expected_browser_target_rows(manifest_path.parent, names_all)
     except Exception as exc:
         row_mismatches.append(f"names-pages.json: {type(exc).__name__}")
+        site_directory_expected_rows = None
+        verification_expected_rows = None
+        browser_targets_expected_rows = None
     else:
         if names_all.get("row_count") != expected_exported:
             row_mismatches.append(f"names-pages row_count={names_all.get('row_count')}!={expected_exported}")
         if page_rows != expected_exported:
             row_mismatches.append(f"names page rows={page_rows}!={expected_exported}")
+        _validate_row_evidence_paths(manifest_path.parent, names_all, manifest_artifacts, checks)
 
     checks.append(
         ReleaseCheck(
@@ -673,16 +688,29 @@ def _validate_export_counts(
     )
 
     if export_meta.get("download_artifacts_included") is True:
-        _validate_download_export_counts(manifest_path, expected_exported, checks)
+        _validate_download_export_counts(
+            manifest_path,
+            expected_exported,
+            verification_expected_rows,
+            site_directory_expected_rows,
+            browser_targets_expected_rows,
+            checks,
+        )
 
 
 def _validate_download_export_counts(
     manifest_path: Path,
     expected_exported: int,
+    verification_expected_rows: int | None,
+    site_directory_expected_rows: int | None,
+    browser_targets_expected_rows: int | None,
     checks: list[ReleaseCheck],
 ) -> None:
     names_json_path = manifest_path.parent / "names.json"
     names_csv_path = manifest_path.parent / "names.csv"
+    verification_csv_path = manifest_path.parent / "verification.csv"
+    site_directory_csv_path = manifest_path.parent / "site-directory.csv"
+    browser_targets_csv_path = manifest_path.parent / "browser-targets.csv"
     row_mismatches: list[str] = []
     try:
         names_json = json.loads(names_json_path.read_text(encoding="utf-8"))
@@ -702,11 +730,176 @@ def _validate_download_export_counts(
         if csv_rows != expected_exported:
             row_mismatches.append(f"names.csv rows={csv_rows}!={expected_exported}")
 
+    try:
+        with verification_csv_path.open(newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            required_columns = {
+                "name",
+                "mode",
+                "sequence",
+                "purpose",
+                "label",
+                "qname",
+                "rrtype",
+                "transport",
+                "command",
+                "server",
+            }
+            missing_columns = required_columns - set(reader.fieldnames or [])
+            verification_rows = sum(1 for _ in reader)
+    except Exception as exc:
+        row_mismatches.append(f"verification.csv: {type(exc).__name__}")
+    else:
+        if missing_columns:
+            row_mismatches.append(f"verification.csv missing columns={','.join(sorted(missing_columns))}")
+        if verification_expected_rows is not None and verification_rows != verification_expected_rows:
+            row_mismatches.append(
+                f"verification.csv rows={verification_rows}!={verification_expected_rows}"
+            )
+
+    try:
+        with site_directory_csv_path.open(newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            required_columns = {
+                "name",
+                "url",
+                "evidence_source",
+                "evidence_confidence",
+                "transport_note",
+                "diagnostic_path",
+            }
+            missing_columns = required_columns - set(reader.fieldnames or [])
+            site_directory_rows = sum(1 for _ in reader)
+    except Exception as exc:
+        row_mismatches.append(f"site-directory.csv: {type(exc).__name__}")
+    else:
+        if missing_columns:
+            row_mismatches.append(f"site-directory.csv missing columns={','.join(sorted(missing_columns))}")
+        if (
+            site_directory_expected_rows is not None
+            and site_directory_rows != site_directory_expected_rows
+        ):
+            row_mismatches.append(
+                f"site-directory.csv rows={site_directory_rows}!={site_directory_expected_rows}"
+            )
+
+    try:
+        with browser_targets_csv_path.open(newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            required_columns = {
+                "name",
+                "url",
+                "priority",
+                "category",
+                "reason",
+                "adb_command",
+                "diagnostic_path",
+            }
+            missing_columns = required_columns - set(reader.fieldnames or [])
+            browser_target_rows = 0
+            invalid_adb_commands = 0
+            for row in reader:
+                browser_target_rows += 1
+                command = row.get("adb_command") or ""
+                if (
+                    f"-n {HNS_BROWSER_ACTIVITY}" not in command
+                    or f"--es {HNS_BROWSER_LOAD_URL_EXTRA}" not in command
+                ):
+                    invalid_adb_commands += 1
+    except Exception as exc:
+        row_mismatches.append(f"browser-targets.csv: {type(exc).__name__}")
+    else:
+        if missing_columns:
+            row_mismatches.append(f"browser-targets.csv missing columns={','.join(sorted(missing_columns))}")
+        if invalid_adb_commands:
+            row_mismatches.append(f"browser-targets.csv invalid adb_command rows={invalid_adb_commands}")
+        if browser_targets_expected_rows is not None and browser_target_rows != browser_targets_expected_rows:
+            row_mismatches.append(
+                f"browser-targets.csv rows={browser_target_rows}!={browser_targets_expected_rows}"
+            )
+
     checks.append(
         ReleaseCheck(
             "download_export_rows",
             not row_mismatches,
             "matched" if not row_mismatches else "; ".join(row_mismatches),
+        )
+    )
+
+
+def _names_collection_row_count(names_pages: dict[str, Any], key: str) -> int:
+    collections = names_pages.get("collections") if isinstance(names_pages, dict) else {}
+    collection = collections.get(key) if isinstance(collections, dict) else None
+    if not isinstance(collection, dict):
+        return 0
+    value = collection.get("row_count")
+    return int(value) if isinstance(value, int) else 0
+
+
+def _expected_verification_csv_rows(data_dir: Path, collection: dict[str, Any]) -> int:
+    total = 0
+    for row in _iter_paginated_rows(data_dir, collection):
+        plan = build_verification_plan(row)
+        if plan is not None:
+            total += len(plan["commands"])
+    return total
+
+
+def _expected_browser_target_rows(data_dir: Path, collection: dict[str, Any]) -> int:
+    return sum(
+        1
+        for row in _iter_paginated_rows(data_dir, collection)
+        if browser_target_row(row) is not None
+    )
+
+
+def _validate_row_evidence_paths(
+    data_dir: Path,
+    collection: dict[str, Any],
+    manifest_artifacts: dict[str, dict[str, Any]],
+    checks: list[ReleaseCheck],
+) -> None:
+    errors: list[str] = []
+    try:
+        for row in _iter_paginated_rows(data_dir, collection):
+            row_name = str(row.get("name") or "")
+            for column, prefix in (
+                ("dns_evidence_path", "dns-evidence/"),
+                ("browser_evidence_path", "browser-evidence/"),
+            ):
+                value = row.get(column)
+                if not value:
+                    continue
+                if not isinstance(value, str):
+                    errors.append(f"{row_name}:{column} is not a string")
+                    continue
+                if _is_unsafe_manifest_path(value) or not value.startswith(prefix) or not value.endswith(".json"):
+                    errors.append(f"{row_name}:{column} unsafe path {value!r}")
+                    continue
+                if value not in manifest_artifacts:
+                    errors.append(f"{row_name}:{column} {value} missing from manifest")
+                    continue
+                path = data_dir / value
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                except Exception as exc:
+                    errors.append(f"{row_name}:{column} {value}: {type(exc).__name__}")
+                    continue
+                if not isinstance(payload, dict):
+                    errors.append(f"{row_name}:{column} {value}: payload is not an object")
+                    continue
+                if payload.get("name") != row_name:
+                    errors.append(f"{row_name}:{column} {value}: name={payload.get('name')!r}")
+                if not isinstance(payload.get("observations"), list):
+                    errors.append(f"{row_name}:{column} {value}: observations is not a list")
+    except Exception as exc:
+        errors.append(f"names-pages evidence scan: {type(exc).__name__}")
+
+    checks.append(
+        ReleaseCheck(
+            "row_evidence_paths",
+            not errors,
+            "matched" if not errors else "; ".join(errors[:10]),
         )
     )
 
@@ -723,6 +916,28 @@ def _count_paginated_rows(data_dir: Path, collection: dict[str, Any]) -> int:
             raise ValueError(f"{path}: rows is not a list")
         total += len(rows)
     return total
+
+
+def _iter_paginated_rows(data_dir: Path, collection: dict[str, Any]):
+    path_template = collection["path_template"]
+    page_count = int(collection.get("page_count") or 0)
+    collection_columns = collection.get("columns")
+    for page in range(1, page_count + 1):
+        path = data_dir / path_template.replace("{page}", str(page))
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        rows = payload.get("rows")
+        if not isinstance(rows, list):
+            raise ValueError(f"{path}: rows is not a list")
+        columns = payload.get("columns") or collection_columns
+        for row in rows:
+            if isinstance(row, dict):
+                yield row
+            elif isinstance(row, list) and isinstance(columns, list):
+                if len(row) != len(columns):
+                    raise ValueError(f"{path}: compact row has {len(row)} values for {len(columns)} columns")
+                yield dict(zip(columns, row, strict=True))
+            else:
+                raise ValueError(f"{path}: unsupported row shape")
 
 
 def _is_unsafe_manifest_path(relative: str) -> bool:

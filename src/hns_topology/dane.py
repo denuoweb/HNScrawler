@@ -24,6 +24,13 @@ class TLSARecord:
         )
 
 
+@dataclass(frozen=True)
+class CertificateMetadata:
+    sha256: str
+    spki_sha256: str
+    not_valid_after: str
+
+
 def load_certificate(path: str | Path) -> x509.Certificate:
     data = Path(path).read_bytes()
     return load_certificate_bytes(data)
@@ -33,6 +40,27 @@ def load_certificate_bytes(data: bytes) -> x509.Certificate:
     if b"-----BEGIN CERTIFICATE-----" in data:
         return x509.load_pem_x509_certificate(data)
     return x509.load_der_x509_certificate(data)
+
+
+def certificate_metadata_from_der(cert_der: bytes) -> CertificateMetadata:
+    cert = x509.load_der_x509_certificate(cert_der)
+    spki_der = selected_certificate_bytes(cert, selector=1)
+    return CertificateMetadata(
+        sha256=hashlib.sha256(cert_der).hexdigest(),
+        spki_sha256=hashlib.sha256(spki_der).hexdigest(),
+        not_valid_after=cert.not_valid_after_utc.replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z"),
+    )
+
+
+def certificate_metadata_from_tlsa(record: TLSARecord) -> CertificateMetadata | None:
+    if record.selector != 0 or record.matching_type != 0:
+        return None
+    try:
+        return certificate_metadata_from_der(bytes.fromhex(record.association))
+    except ValueError:
+        return None
 
 
 def build_tlsa_records(

@@ -1,8 +1,14 @@
+import csv
 import json
 import stat
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
 
 from hns_topology.compliance import COMPLIANCE_STAGES
 from hns_topology.db import (
@@ -10,10 +16,11 @@ from hns_topology.db import (
     RESOURCE_IP_INDEX_VERSION,
     connect,
     get_meta,
+    insert_browser_evidence_batch,
     set_meta,
     upsert_live_status,
 )
-from hns_topology.exporter import build_summary
+from hns_topology.exporter import build_names, build_summary
 from hns_topology.indexer import (
     UnpaginatedGetNamesError,
     bootstrap_from_fixture,
@@ -25,7 +32,7 @@ from hns_topology.indexer import (
     reclassify_existing_names,
     rollback_reorg,
 )
-from hns_topology.models import FAILURE_REASONS, LiveStatus
+from hns_topology.models import FAILURE_REASONS, BrowserEvidence, LiveStatus
 from hns_topology.provider_rules import ProviderRules
 from hns_topology.site_generator import generate_site
 from hns_topology.validator import release_is_valid, validate_public_release, validate_release
@@ -114,8 +121,15 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     assert summary["default_provider_names"] == 1
     assert summary["ds_records"] == 1
     assert summary["strict_hns_ready"] == 3
+    assert summary["static_tlsa_certificate_expired_names"] == 0
     assert summary["needs_dane"] == 1
     assert summary["needs_fix"] == 2
+    assert summary["live_site_names"] == 0
+    assert summary["browser_target_names"] == 3
+    assert summary["browser_evidence_names"] == 0
+    assert summary["browser_dane_verified_names"] == 0
+    assert summary["browser_network_blocks_53_names"] == 0
+    assert summary["browser_certificate_expired_names"] == 0
     assert [item["stage"] for item in summary["compliance_stages"]] == list(COMPLIANCE_STAGES)
     assert summary["compliance_stage_counts"] == {
         "dane_verified": 0,
@@ -153,6 +167,8 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     assert explainers["needs_dane"]["count"] == 1
     assert "matching HTTPS TLSA" in explainers["needs_dane"]["definition"]
     assert explainers["needs_fix"]["count"] == 2
+    assert explainers["browser_target_names"]["count"] == 3
+    assert explainers["static_tlsa_certificate_expired_names"]["count"] == 0
     assert "examples" not in summary["broken"]
     assert {item["failure_reason"] for item in summary["broken"]["reasons"]} == set(FAILURE_REASONS)
     assert {item["ip"] for item in summary["top_resource_ips"]} >= {
@@ -171,6 +187,70 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     assert resource_ip_count == 5
     assert resource_ip_version == RESOURCE_IP_INDEX_VERSION
     assert "idx_resource_ip_ip_name" in resource_ip_indexes
+
+
+def test_static_embedded_tlsa_expired_certificate_exports_filter(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    out = tmp_path / "public"
+    fixture_path = tmp_path / "static-tlsa-expired.json"
+    cert_der = make_certificate_der(days_valid=-1)
+    fixture_path.write_text(
+        json.dumps(
+            {
+                "chain": "fixture",
+                "height": 337200,
+                "tip_hash": "static-tlsa-expired",
+                "hsd_version": "fixture",
+                "names": [
+                    {
+                        "name": "staticcert",
+                        "nameHash": "hash-staticcert",
+                        "state": "CLOSED",
+                        "renewal": 337000,
+                        "resource": {
+                            "records": [
+                                {
+                                    "type": "TLSA",
+                                    "usage": 3,
+                                    "selector": 0,
+                                    "matchingType": 0,
+                                    "certificate": cert_der.hex(),
+                                }
+                            ]
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=fixture_path, rules=rules)
+        generate_site(conn, db_path=db_path, out_dir=out)
+
+    summary = json.loads((out / "data/summary.json").read_text(encoding="utf-8"))
+    names_pages = json.loads((out / "data/names-pages.json").read_text(encoding="utf-8"))
+    collection = names_pages["collections"]["static_tlsa_certificate_expired_names"]
+    postings_page = json.loads(
+        (out / "data" / collection["path_template"].replace("{page}", "1")).read_text(
+            encoding="utf-8"
+        )
+    )
+    all_page = json.loads(
+        (
+            out
+            / "data"
+            / names_pages["collections"]["all"]["path_template"].replace("{page}", "1")
+        ).read_text(encoding="utf-8")
+    )
+
+    assert summary["static_tlsa_certificate_expired_names"] == 1
+    assert collection["row_count"] == 1
+    assert postings_page["rows"] == [0]
+    assert all_page["rows"][0]["name"] == "staticcert"
+    assert all_page["rows"][0]["tlsa_cert_expired"] is True
+    assert all_page["rows"][0]["tlsa_cert_not_valid_after"].endswith("Z")
 
 
 def test_generate_site_writes_requested_artifacts(tmp_path):
@@ -214,6 +294,9 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
         "data/classes.json",
         "data/names.json",
         "data/names.csv",
+        "data/verification.csv",
+        "data/site-directory.csv",
+        "data/browser-targets.csv",
         "data/topology.sqlite.gz",
         "data/dane.json",
         "data/dane-pages.json",
@@ -277,6 +360,8 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert "dane-pages.json" not in manifest_artifacts
     assert "names.json" not in manifest_artifacts
     assert "names.csv" not in manifest_artifacts
+    assert "verification.csv" not in manifest_artifacts
+    assert "site-directory.csv" not in manifest_artifacts
     assert "topology.sqlite.gz" not in manifest_artifacts
     assert names_pages["collections"]["all"]["row_count"] == 9
     assert names_pages["collections"]["all"]["page_count"] == 1
@@ -287,10 +372,17 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert "missing_glue" not in names_pages["collections"]
     assert "stale_tlsa" not in names_pages["collections"]
     assert "dane_working" not in names_pages["collections"]
+    assert "static_tlsa_certificate_expired_names" not in names_pages["collections"]
     assert "doh_fallback_required" not in names_pages["collections"]
+    assert "live_site_names" not in names_pages["collections"]
+    assert "browser_evidence_names" not in names_pages["collections"]
+    assert "browser_dane_verified_names" not in names_pages["collections"]
+    assert "browser_network_blocks_53_names" not in names_pages["collections"]
+    assert "browser_certificate_expired_names" not in names_pages["collections"]
     assert "provider_type:self_hosted" not in names_pages["collections"]
     assert names_pages["collections"]["ds_records"]["row_count"] == 1
     assert names_pages["collections"]["strict_hns_ready"]["row_count"] == 3
+    assert names_pages["collections"]["browser_target_names"]["row_count"] == 3
     assert names_pages["collections"]["needs_dane"]["row_count"] == 1
     assert names_pages["collections"]["needs_fix"]["row_count"] == 2
     assert names_pages["collections"]["stage:tlsa_gap"]["row_count"] == 1
@@ -382,6 +474,9 @@ def test_certificate_expired_stage_overrides_tlsa_gap(tmp_path):
                 failure_reason="certificate_expired",
                 checked_at="2026-07-06T00:00:00Z",
                 next_check_at="2026-07-13T00:00:00Z",
+                https_cert_sha256="ab" * 32,
+                https_spki_sha256="cd" * 32,
+                https_cert_not_valid_after="2026-07-01T00:00:00Z",
             ),
         )
         generate_site(conn, db_path=db_path, out_dir=out)
@@ -392,6 +487,8 @@ def test_certificate_expired_stage_overrides_tlsa_gap(tmp_path):
 
     assert secure["failure_reason"] == "certificate_expired"
     assert secure["compliance_stage"] == "service_blocked"
+    assert secure["https_cert_not_valid_after"] == "2026-07-01T00:00:00Z"
+    assert secure["https_spki_sha256"] == "cd" * 32
     assert summary["compliance_stage_counts"]["service_blocked"] == 1
 
 
@@ -428,10 +525,191 @@ def test_generate_site_can_include_download_artifacts(tmp_path):
     assert manifest["export"]["download_artifacts_included"] is True
     assert (out / "data/names.json").exists()
     assert (out / "data/names.csv").exists()
+    assert (out / "data/verification.csv").exists()
+    assert (out / "data/site-directory.csv").exists()
+    assert (out / "data/browser-targets.csv").exists()
     assert (out / "data/topology.sqlite.gz").exists()
     assert "names.json" in manifest_artifacts
     assert "names.csv" in manifest_artifacts
+    assert "verification.csv" in manifest_artifacts
+    assert "site-directory.csv" in manifest_artifacts
+    assert "browser-targets.csv" in manifest_artifacts
     assert "topology.sqlite.gz" in manifest_artifacts
+    with (out / "data/verification.csv").open(newline="", encoding="utf-8") as handle:
+        verification_rows = list(csv.DictReader(handle))
+    assert {
+        "dig @203.0.113.10 direct. A +norecurse +dnssec",
+        "dig @198.51.100.2 delegated. A +norecurse +dnssec",
+        "dig @198.51.100.3 secure. DNSKEY +norecurse +dnssec",
+    } <= {row["command"] for row in verification_rows}
+    with (out / "data/site-directory.csv").open(newline="", encoding="utf-8") as handle:
+        site_reader = csv.DictReader(handle)
+        list(site_reader)
+    assert {"name", "url", "evidence_source", "diagnostic_path"} <= set(site_reader.fieldnames or [])
+    with (out / "data/browser-targets.csv").open(newline="", encoding="utf-8") as handle:
+        target_rows = list(csv.DictReader(handle))
+    assert {"name", "url", "priority", "category", "adb_command"} <= set(target_rows[0])
+    assert "com.denuoweb.hnsdane.LOAD_URL" in target_rows[0]["adb_command"]
+
+    checks = validate_release(db_path=db_path, public_dir=out)
+    assert release_is_valid(checks), [check for check in checks if not check.ok]
+
+
+def test_site_directory_csv_exports_live_site_rows(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    out = tmp_path / "public"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+        upsert_live_status(
+            conn,
+            LiveStatus(
+                name="direct",
+                dns_reachable="reachable",
+                dnssec_status="valid",
+                tlsa_status="present",
+                dane_status="valid",
+                https_status="tls_unverified",
+                strict_hns_status="working",
+                doh_fallback_status="not_required",
+                failure_reason=None,
+                checked_at="2026-07-06T00:00:00Z",
+                next_check_at="2026-07-13T00:00:00Z",
+                https_cert_sha256="aa" * 32,
+                https_spki_sha256="bb" * 32,
+                https_cert_not_valid_after="2026-08-01T00:00:00Z",
+            ),
+        )
+        generate_site(conn, db_path=db_path, out_dir=out, include_downloads=True)
+
+    summary = json.loads((out / "data/summary.json").read_text(encoding="utf-8"))
+    names_pages = json.loads((out / "data/names-pages.json").read_text(encoding="utf-8"))
+    live_site_page = json.loads(
+        (
+            out
+            / "data"
+            / names_pages["collections"]["live_site_names"]["path_template"].replace("{page}", "1")
+        ).read_text(encoding="utf-8")
+    )
+    with (out / "data/site-directory.csv").open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert summary["live_site_names"] == 1
+    assert names_pages["collections"]["live_site_names"]["row_count"] == 1
+    assert names_pages["collections"]["live_site_names"]["row_source"] == "postings"
+    assert len(live_site_page["rows"]) == 1
+    assert len(rows) == 1
+    assert rows[0]["name"] == "direct"
+    assert rows[0]["url"] == "https://direct/"
+    assert rows[0]["evidence_source"] == "live_dane"
+    assert rows[0]["evidence_confidence"] == "dane_verified"
+    assert rows[0]["transport_note"] == "strict_hns"
+    assert rows[0]["certificate_not_valid_after"] == "2026-08-01T00:00:00Z"
+    assert rows[0]["spki_sha256"] == "bb" * 32
+    assert rows[0]["diagnostic_path"] == "names.html?q=direct"
+
+
+def test_release_validator_catches_site_directory_count_mismatch(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    out = tmp_path / "public"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+        upsert_live_status(
+            conn,
+            LiveStatus(
+                name="direct",
+                dns_reachable="reachable",
+                dnssec_status="valid",
+                tlsa_status="present",
+                dane_status="valid",
+                https_status="tls_unverified",
+                strict_hns_status="working",
+                doh_fallback_status="not_required",
+                failure_reason=None,
+                checked_at="2026-07-06T00:00:00Z",
+                next_check_at="2026-07-13T00:00:00Z",
+            ),
+        )
+        generate_site(conn, db_path=db_path, out_dir=out, include_downloads=True)
+
+    site_directory_path = out / "data/site-directory.csv"
+    header = site_directory_path.read_text(encoding="utf-8").splitlines()[0]
+    site_directory_path.write_text(f"{header}\n", encoding="utf-8")
+
+    checks = validate_release(db_path=db_path, public_dir=out)
+
+    assert not release_is_valid(checks)
+    failed = {check.name: check.detail for check in checks if not check.ok}
+    assert "download_export_rows" in failed
+    assert "site-directory.csv rows=0!=1" in failed["download_export_rows"]
+
+
+def test_release_validator_catches_verification_count_mismatch(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    out = tmp_path / "public"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+        generate_site(conn, db_path=db_path, out_dir=out, include_downloads=True)
+
+    verification_path = out / "data/verification.csv"
+    header = verification_path.read_text(encoding="utf-8").splitlines()[0]
+    verification_path.write_text(f"{header}\n", encoding="utf-8")
+
+    checks = validate_release(db_path=db_path, public_dir=out)
+
+    assert not release_is_valid(checks)
+    failed = {check.name: check.detail for check in checks if not check.ok}
+    assert "download_export_rows" in failed
+    assert "verification.csv rows=0!=" in failed["download_export_rows"]
+
+
+def test_release_validator_catches_browser_targets_count_mismatch(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    out = tmp_path / "public"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+        generate_site(conn, db_path=db_path, out_dir=out, include_downloads=True)
+
+    targets_path = out / "data/browser-targets.csv"
+    header = targets_path.read_text(encoding="utf-8").splitlines()[0]
+    targets_path.write_text(f"{header}\n", encoding="utf-8")
+
+    checks = validate_release(db_path=db_path, public_dir=out)
+
+    assert not release_is_valid(checks)
+    failed = {check.name: check.detail for check in checks if not check.ok}
+    assert "download_export_rows" in failed
+    assert "browser-targets.csv rows=0!=" in failed["download_export_rows"]
+
+
+def test_include_downloads_uses_canonical_limited_name_set(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    out = tmp_path / "public"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+        generate_site(conn, db_path=db_path, out_dir=out, names_limit=3, include_downloads=True)
+
+    names_pages = json.loads((out / "data/names-pages.json").read_text(encoding="utf-8"))
+    names_page_rows = json.loads((out / "data/names-pages/all/page-1.json").read_text(encoding="utf-8"))["rows"]
+    names_json_rows = json.loads((out / "data/names.json").read_text(encoding="utf-8"))
+    with (out / "data/names.csv").open(newline="", encoding="utf-8") as handle:
+        names_csv_rows = list(csv.DictReader(handle))
+    with (out / "data/verification.csv").open(newline="", encoding="utf-8") as handle:
+        verification_rows = list(csv.DictReader(handle))
+    with (out / "data/browser-targets.csv").open(newline="", encoding="utf-8") as handle:
+        browser_target_rows = list(csv.DictReader(handle))
+
+    names_page_names = [row["name"] for row in names_page_rows]
+    assert names_page_names == ["delegated", "direct", "empty"]
+    assert [row["name"] for row in names_json_rows] == names_page_names
+    assert [row["name"] for row in names_csv_rows] == names_page_names
+    assert {row["name"] for row in verification_rows} == {"delegated", "direct"}
+    assert {row["name"] for row in browser_target_rows} == {"delegated", "direct"}
+    assert names_pages["collections"]["all"]["row_count"] == 3
 
     checks = validate_release(db_path=db_path, public_dir=out)
     assert release_is_valid(checks), [check for check in checks if not check.ok]
@@ -457,6 +735,8 @@ def test_generate_site_records_limited_names_export_counts(tmp_path):
     assert len(names_page_rows) == 3
     assert not (out / "data/names.json").exists()
     assert not (out / "data/names.csv").exists()
+    assert not (out / "data/site-directory.csv").exists()
+    assert not (out / "data/browser-targets.csv").exists()
 
     checks = validate_release(db_path=db_path, public_dir=out)
     assert release_is_valid(checks), [check for check in checks if not check.ok]
@@ -486,15 +766,34 @@ def test_compact_names_pages_include_generator_handoff_fields(tmp_path, monkeypa
         "first_glue6",
         "first_synth4",
         "first_synth6",
+        "tlsa_cert_not_valid_after",
+        "tlsa_cert_expired",
         "compliance_stage",
         "https_status",
         "strict_hns_status",
         "doh_fallback_status",
+        "https_cert_sha256",
+        "https_spki_sha256",
+        "https_cert_not_valid_after",
         "raw_size",
         "resource_version",
         "resource_hash",
         "last_seen_height",
         "updated_at",
+        "browser_evidence_path",
+        "browser_result",
+        "browser_fallback_used",
+        "browser_fallback_reason",
+        "browser_authoritative_udp",
+        "browser_authoritative_tcp",
+        "browser_authoritative_doh",
+        "browser_certificate_expired",
+        "browser_certificate_not_valid_after",
+        "browser_evidence_effect",
+        "browser_evidence_severity",
+        "browser_action",
+        "browser_action_label",
+        "browser_action_detail",
         "checked_at",
     ):
         assert key in columns
@@ -505,6 +804,83 @@ def test_compact_names_pages_include_generator_handoff_fields(tmp_path, monkeypa
     assert direct["compliance_stage"] == "bootstrap_ready"
     assert direct["resource_version"] == 0
     assert direct["raw_size"] > 0
+
+
+def test_missing_glue_exports_indirect_nameserver_handoff(tmp_path, monkeypatch):
+    db_path = tmp_path / "topology.sqlite"
+    out = tmp_path / "public"
+    fixture_path = tmp_path / "handoff.json"
+    fixture_path.write_text(
+        json.dumps(
+            {
+                "chain": "fixture",
+                "height": 337132,
+                "tip_hash": "handoff-tip",
+                "hsd_version": "fixture",
+                "names": [
+                    {
+                        "name": "mercenary",
+                        "nameHash": "hash-mercenary",
+                        "state": "CLOSED",
+                        "renewal": 337000,
+                        "resource": {
+                            "records": [
+                                {
+                                    "type": "DS",
+                                    "keyTag": 42382,
+                                    "algorithm": 13,
+                                    "digestType": 2,
+                                    "digest": "e538f930aad964f49f22a8c50d25a367d8e410b097c92f0a953deac07ed3ac93",
+                                },
+                                {"type": "NS", "ns": "ns1.skyinclude."},
+                            ]
+                        },
+                    },
+                    {
+                        "name": "skyinclude",
+                        "nameHash": "hash-skyinclude",
+                        "state": "CLOSED",
+                        "renewal": 337000,
+                        "resource": {
+                            "records": [
+                                {"type": "GLUE4", "ns": "ns1.hshub.", "address": "192.155.93.228"},
+                                {"type": "NS", "ns": "ns1.hshub."},
+                            ]
+                        },
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    monkeypatch.setattr("hns_topology.exporter.DETAILED_NAME_COLLECTION_ROW_LIMIT", 0)
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=fixture_path, rules=rules)
+        full_rows = build_names(conn, limit=10)
+        generate_site(conn, db_path=db_path, out_dir=out)
+
+    full_mercenary = next(row for row in full_rows if row["name"] == "mercenary")
+    assert full_mercenary["compliance_stage"] == "missing_glue"
+    assert full_mercenary["ns_handoff_ns"] == "ns1.skyinclude"
+    assert full_mercenary["ns_handoff_root"] == "skyinclude"
+    assert full_mercenary["ns_handoff_glue4"] == "192.155.93.228"
+    assert full_mercenary["ns_handoff_bootstrap_ip"] == "192.155.93.228"
+    assert full_mercenary["ns_handoff_bootstrap_field"] == "GLUE4"
+
+    names_pages = json.loads((out / "data/names-pages.json").read_text(encoding="utf-8"))
+    collection = names_pages["collections"]["all"]
+    page = json.loads((out / "data" / collection["path_template"].replace("{page}", "1")).read_text(encoding="utf-8"))
+    rows = [dict(zip(page["columns"], row, strict=True)) for row in page["rows"]]
+    compact_mercenary = next(row for row in rows if row["name"] == "mercenary")
+
+    assert compact_mercenary["first_ns"] == "ns1.skyinclude"
+    assert compact_mercenary["first_glue4"] is None
+    assert compact_mercenary["compliance_stage"] == "missing_glue"
+    assert compact_mercenary["ns_handoff_ns"] == "ns1.skyinclude"
+    assert compact_mercenary["ns_handoff_root"] == "skyinclude"
+    assert compact_mercenary["ns_handoff_bootstrap_ip"] == "192.155.93.228"
+    assert compact_mercenary["ns_handoff_bootstrap_field"] == "GLUE4"
 
 
 def test_release_validator_catches_missing_artifacts(tmp_path):
@@ -538,6 +914,64 @@ def test_release_validator_catches_manifest_checksum_mismatch(tmp_path):
     failed = {check.name: check.detail for check in checks if not check.ok}
     assert "manifest_artifacts" in failed
     assert "names-pages.json" in failed["manifest_artifacts"]
+
+
+def test_release_validator_catches_missing_row_evidence_artifact(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    out = tmp_path / "public"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+        insert_browser_evidence_batch(
+            conn,
+            [
+                BrowserEvidence(
+                    name="secure",
+                    host="secure",
+                    url="https://secure/",
+                    source="hns-browser",
+                    source_id="pixel9",
+                    evidence_type="resolver_trace",
+                    browser_result="dane_verified",
+                    status_code=None,
+                    stage=None,
+                    reason=None,
+                    mode="hns_compatibility",
+                    hns_proof="verified",
+                    resolution_source="authoritative_doh",
+                    authoritative_udp="blocked",
+                    authoritative_tcp="blocked",
+                    authoritative_doh="ok",
+                    fallback_used=True,
+                    fallback_reason="network_blocks_53",
+                    dnssec_status="secure",
+                    tlsa_owner="_443._tcp.secure",
+                    tlsa_status="present",
+                    tlsa_source="native_tlsa",
+                    dane_status="verified",
+                    certificate_sha256="aa" * 32,
+                    spki_sha256="bb" * 32,
+                    final_error=None,
+                    raw_json={"host": "secure"},
+                    captured_at="2026-07-06T00:00:00Z",
+                )
+            ],
+        )
+        generate_site(conn, db_path=db_path, out_dir=out)
+
+    summary = json.loads((out / "data/summary.json").read_text(encoding="utf-8"))
+    names_pages = json.loads((out / "data/names-pages.json").read_text(encoding="utf-8"))
+    assert summary["live_site_names"] == 1
+    assert names_pages["collections"]["live_site_names"]["row_count"] == 1
+    assert names_pages["collections"]["live_site_names"]["row_source"] == "postings"
+
+    (out / "data/browser-evidence/secure.json").unlink()
+    checks = validate_release(db_path=db_path, public_dir=out)
+
+    assert not release_is_valid(checks)
+    failed = {check.name: check.detail for check in checks if not check.ok}
+    assert "row_evidence_paths" in failed
+    assert "browser-evidence/secure.json" in failed["row_evidence_paths"]
 
 
 def test_release_validator_catches_manifest_export_count_mismatch(tmp_path):
@@ -974,3 +1408,20 @@ def test_reorg_rollback_restores_previous_compact_rows(tmp_path):
     assert json.loads(restored_resource["ns_names"]) == []
     assert json.loads(restored_resource["synth4"]) == ["203.0.113.10"]
     assert remaining_history == 0
+
+
+def make_certificate_der(*, days_valid: int) -> bytes:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "staticcert")])
+    now = datetime.now(UTC)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(days=2))
+        .not_valid_after(now + timedelta(days=days_valid))
+        .sign(key, hashes.SHA256())
+    )
+    return cert.public_bytes(serialization.Encoding.DER)

@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from .archiver import archive_is_valid, archive_release, validate_archive_manifest
+from .browser_evidence import parse_browser_evidence_text
 from .classifier import normalize_name
 from .dane import (
     build_tlsa_records,
@@ -18,6 +19,7 @@ from .db import (
     connect,
     get_meta,
     init_db,
+    insert_browser_evidence_batch,
     insert_dns_evidence_batch,
     rebuild_resource_ip_index,
     recompute_provider_summary,
@@ -148,6 +150,21 @@ def build_parser() -> argparse.ArgumentParser:
     import_evidence.add_argument("--source", default="crowd")
     import_evidence.add_argument("--source-id", default="")
     import_evidence.set_defaults(func=cmd_import_dns_evidence)
+
+    import_browser = sub.add_parser(
+        "import-browser-evidence",
+        help="Import HNS Browser resolver trace JSON or gateway event logs.",
+    )
+    import_browser.add_argument("--db", required=True)
+    import_browser.add_argument(
+        "--file",
+        required=True,
+        action="append",
+        help="Browser trace/log file. Repeat or pass a directory to import multiple files.",
+    )
+    import_browser.add_argument("--source", default="hns-browser")
+    import_browser.add_argument("--source-id", default="")
+    import_browser.set_defaults(func=cmd_import_browser_evidence)
 
     rebuild_ip = sub.add_parser(
         "rebuild-resource-ip", help="Rebuild the derived resource IP index."
@@ -559,6 +576,70 @@ def cmd_import_dns_evidence(args: argparse.Namespace) -> int:
             insert_dns_evidence_batch(conn, evidence)
     print(f"imported {len(evidence)} DNS evidence observations")
     return 0
+
+
+def cmd_import_browser_evidence(args: argparse.Namespace) -> int:
+    evidence = []
+    paths = _browser_evidence_input_paths(args.file)
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        evidence.extend(
+            parse_browser_evidence_text(
+                text,
+                source=args.source,
+                source_id=args.source_id,
+            )
+        )
+    with connect(args.db) as conn:
+        init_db(conn)
+        with conn:
+            known_evidence = _known_browser_evidence(conn, evidence)
+            insert_browser_evidence_batch(conn, known_evidence)
+    skipped = len(evidence) - len(known_evidence)
+    suffix = f"; skipped {skipped} observations for unknown names" if skipped else ""
+    print(f"imported {len(known_evidence)} browser evidence observations from {len(paths)} files{suffix}")
+    return 0
+
+
+def _known_browser_evidence(conn, evidence):
+    if not evidence:
+        return []
+    names = {item.name for item in evidence}
+    placeholders = ",".join("?" for _ in names)
+    known = {
+        row["name"]
+        for row in conn.execute(
+            f"SELECT name FROM names WHERE name IN ({placeholders})",
+            sorted(names),
+        )
+    }
+    return [item for item in evidence if item.name in known]
+
+
+def _browser_evidence_input_paths(value: str | list[str]) -> list[Path]:
+    raw_paths = value if isinstance(value, list) else [value]
+    paths: list[Path] = []
+    for raw_path in raw_paths:
+        path = Path(raw_path)
+        if path.is_dir():
+            paths.extend(
+                child
+                for child in sorted(path.rglob("*"))
+                if child.is_file() and _is_browser_evidence_file(child)
+            )
+        else:
+            paths.append(path)
+    return paths
+
+
+def _is_browser_evidence_file(path: Path) -> bool:
+    return path.name == "gateway-events.log" or path.suffix.lower() in {
+        ".json",
+        ".jsonl",
+        ".log",
+        ".md",
+        ".txt",
+    }
 
 
 def cmd_rebuild_resource_ip(args: argparse.Namespace) -> int:

@@ -90,6 +90,10 @@ Broken/failure summaries keep only reason counts for the Names filter dropdown. 
 
 Metric definitions that previously lived on the FAQ page are embedded in `summary.json` as `overview_explainers` for downstream consumers and future UI surfaces; the Compliance page itself stays focused on the pipeline, generator queues, and supporting evidence.
 
+The Names filter `browser_target_names` exposes active names worth opening in the sister Android browser from static HNS resources, live crawler evidence, or imported browser evidence. With `--include-downloads`, `browser-targets.csv` turns the same investigation into a ranked ADB queue and can include additional indirect NS handoff diagnostics.
+
+The crawler can mark static TLSA certificate expiry only when an HNS resource contains an embedded full-certificate TLSA association (`selector=0`, `matchingType=0`). Normal TLSA `3 1 1` SPKI hashes do not carry a validity window, so certificate expiry for those names must come from live HTTPS or imported browser evidence.
+
 Generated site files:
 
 - `index.html`
@@ -117,6 +121,7 @@ hns-topology incremental --db data/topology.sqlite --changed-names-file changed_
 hns-topology reorg-check --db data/topology.sqlite --rollback
 hns-topology live-check --db data/topology.sqlite --limit 100 --concurrency 4 --min-delay-ms 250
 hns-topology import-dns-evidence --db data/topology.sqlite --file evidence.json --source crowd --source-id worker-1
+hns-topology import-browser-evidence --db data/topology.sqlite --file browser-traces/ --source hns-browser --source-id pixel9
 hns-topology rebuild-resource-ip --db data/topology.sqlite
 hns-topology reclassify --db data/topology.sqlite
 hns-topology export --db data/topology.sqlite --out public/data

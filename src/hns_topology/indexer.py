@@ -262,6 +262,7 @@ def index_compact_name_batch(
         synth6 = _string_list(row.get("synth6"))
         ds_records = _dict_list(row.get("ds_records"))
         authoritative_doh = _dict_list(row.get("authoritative_doh"))
+        tlsa_records = _dict_list(row.get("tlsa_records"))
         record_types = _record_type_list(row.get("record_types"))
         has_ds = bool(row.get("has_ds")) or bool(ds_records)
         has_ns = bool(ns_names)
@@ -314,6 +315,9 @@ def index_compact_name_batch(
                 _json_string_list(synth6),
                 _json_list(ds_records, sort_keys=True),
                 _json_list(authoritative_doh, sort_keys=True),
+                _json_list(tlsa_records, sort_keys=True),
+                row.get("tlsa_cert_not_valid_after"),
+                int(_bool_flag(row.get("tlsa_cert_expired"))),
                 int(has_ds),
                 int(has_ns),
                 int(has_glue),
@@ -441,8 +445,9 @@ def reclassify_existing_names(
         SELECT
           n.name, n.expired, n.record_types, n.onchain_class, n.provider_guess,
           rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6,
-          rs.ds_records, rs.authoritative_doh, rs.has_ds, rs.has_txt, rs.raw_size,
-          rs.resource_version, rs.resource_hash
+          rs.ds_records, rs.authoritative_doh, rs.tlsa_records,
+          rs.tlsa_cert_not_valid_after, rs.tlsa_cert_expired,
+          rs.has_ds, rs.has_txt, rs.raw_size, rs.resource_version, rs.resource_hash
         FROM names n
         JOIN resource_summary rs ON rs.name = n.name
         ORDER BY n.name
@@ -630,6 +635,12 @@ def _summary_from_compact_row(name: str, row: dict[str, Any]) -> ResourceSummary
             _dict_list(row.get("authoritative_doh")),
             key=lambda item: json.dumps(item, sort_keys=True),
         ),
+        tlsa_records=sorted(
+            _dict_list(row.get("tlsa_records")),
+            key=lambda item: json.dumps(item, sort_keys=True),
+        ),
+        tlsa_cert_not_valid_after=row.get("tlsa_cert_not_valid_after"),
+        tlsa_cert_expired=_bool_flag(row.get("tlsa_cert_expired")),
         has_ds=bool(row.get("has_ds")) or bool(ds_records),
         has_txt=bool(row.get("has_txt")),
         raw_size=int(row.get("raw_size") or 0),
@@ -651,6 +662,9 @@ def _summary_from_stored_row(name: str, row: Any) -> ResourceSummary:
             "synth6": loads_json_list(row["synth6"]),
             "ds_records": loads_json_list(row["ds_records"]),
             "authoritative_doh": loads_json_list(row["authoritative_doh"]),
+            "tlsa_records": loads_json_list(row["tlsa_records"]),
+            "tlsa_cert_not_valid_after": row["tlsa_cert_not_valid_after"],
+            "tlsa_cert_expired": row["tlsa_cert_expired"],
             "record_types": loads_json_list(row["record_types"]),
             "has_ds": row["has_ds"],
             "has_txt": row["has_txt"],
@@ -719,6 +733,16 @@ def _maybe_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _bool_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes"}
+    return bool(value)
 
 
 def _fixture_tip_hash(data: dict[str, Any]) -> str:
