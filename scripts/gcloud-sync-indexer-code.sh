@@ -6,8 +6,10 @@ GCP_ZONE="${GCP_ZONE:-us-west1-b}"
 INDEXER_VM="${INDEXER_VM:-hns-topology-indexer}"
 INDEXER_REPO_DIR="${INDEXER_REPO_DIR:-/mnt/hnscrawler/HNScrawler}"
 REPO_URL="${REPO_URL:-https://github.com/denuoweb/HNScrawler.git}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/gcloud-ssh-lib.sh"
 
-gcloud compute ssh "$INDEXER_VM" \
+gcloud_compute_ssh "$INDEXER_VM" \
   --project "$GCP_PROJECT" \
   --zone "$GCP_ZONE" \
   --quiet \

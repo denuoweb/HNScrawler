@@ -41,6 +41,8 @@ RESTART_HSD_AFTER_EXPORT="${RESTART_HSD_AFTER_EXPORT:-0}"
 ALLOW_RUNNING_HSD_EXPORT="${ALLOW_RUNNING_HSD_EXPORT:-0}"
 HSD_NETWORK="${HSD_NETWORK:-main}"
 HSD_MODULE_ROOT="${HSD_MODULE_ROOT:-}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/gcloud-ssh-lib.sh"
 
 case "$PIPELINE_MODE" in
   bootstrap|incremental|jsonl|extract-jsonl)
@@ -51,7 +53,7 @@ case "$PIPELINE_MODE" in
     ;;
 esac
 
-gcloud compute ssh "$INDEXER_VM" \
+gcloud_compute_ssh "$INDEXER_VM" \
   --project "$GCP_PROJECT" \
   --zone "$GCP_ZONE" \
   --quiet \

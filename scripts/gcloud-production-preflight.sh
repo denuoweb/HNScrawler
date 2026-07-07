@@ -10,6 +10,8 @@ PROD_ARTIFACT_MOUNT="${PROD_ARTIFACT_MOUNT:-/mnt/hns-topology}"
 INDEXER_VM="${INDEXER_VM:-hns-topology-indexer}"
 INDEXER_DISK="${INDEXER_DISK:-hns-topology-indexer-disk}"
 ALLOW_PROJECT_MISMATCH="${ALLOW_PROJECT_MISMATCH:-0}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/gcloud-ssh-lib.sh"
 
 configured_project="$(gcloud config get-value project 2>/dev/null || true)"
 if [ "$configured_project" != "$GCP_PROJECT" ] && [ "$ALLOW_PROJECT_MISMATCH" != "1" ]; then
@@ -36,7 +38,7 @@ gcloud compute disks describe "$PROD_ARTIFACT_DISK" \
 
 echo
 echo "production mount/path:"
-gcloud compute ssh "$DENUO_WEB_VM" \
+gcloud_compute_ssh "$DENUO_WEB_VM" \
   --project "$GCP_PROJECT" \
   --zone "$GCP_ZONE" \
   --quiet \

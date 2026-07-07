@@ -7,8 +7,10 @@ INDEXER_VM="${INDEXER_VM:-hns-topology-indexer}"
 INDEXER_MOUNT="${INDEXER_MOUNT:-/mnt/hnscrawler}"
 INDEXER_REPO_DIR="${INDEXER_REPO_DIR:-/mnt/hnscrawler/HNScrawler}"
 INDEXER_HSD_PREFIX="${INDEXER_HSD_PREFIX:-/mnt/hnscrawler/hsd}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/gcloud-ssh-lib.sh"
 
-gcloud compute ssh "$INDEXER_VM" \
+gcloud_compute_ssh "$INDEXER_VM" \
   --project "$GCP_PROJECT" \
   --zone "$GCP_ZONE" \
   --quiet \

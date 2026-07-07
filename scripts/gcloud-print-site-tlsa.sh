@@ -8,10 +8,12 @@ DANE_SITE_NAME="${DANE_SITE_NAME:-denuoweb}"
 DANE_CERT_PATH="${DANE_CERT_PATH:-/etc/ssl/denuoweb/denuoweb.crt}"
 DANE_TLSA_TTL="${DANE_TLSA_TTL:-300}"
 DANE_INCLUDE_WWW="${DANE_INCLUDE_WWW:-1}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/gcloud-ssh-lib.sh"
 
 SITE_FQDN="${DANE_SITE_NAME%.}."
 
-gcloud compute ssh "$DENUO_WEB_VM" \
+gcloud_compute_ssh "$DENUO_WEB_VM" \
   --project "$GCP_PROJECT" \
   --zone "$GCP_ZONE" \
   --quiet \

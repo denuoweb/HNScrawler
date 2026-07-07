@@ -9,6 +9,8 @@ ALLOW_BOOT_DISK_PUBLISH="${ALLOW_BOOT_DISK_PUBLISH:-0}"
 VALIDATE_BEFORE_PUBLISH="${VALIDATE_BEFORE_PUBLISH:-1}"
 MIN_INDEXED_HEIGHT="${MIN_INDEXED_HEIGHT:-0}"
 PUBLISH_ARCHIVE="${PUBLISH_ARCHIVE:-}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/gcloud-ssh-lib.sh"
 
 log() {
   printf '[publish] %s\n' "$*" >&2
@@ -59,7 +61,7 @@ if [[ "$PUBLISH_VIA_GCLOUD" == "1" ]]; then
   trap cleanup_archive EXIT
 
   log "preparing remote staging directory $REMOTE_TMP"
-  gcloud compute ssh "$DENUO_WEB_VM" \
+  gcloud_compute_ssh "$DENUO_WEB_VM" \
     --project "$GCP_PROJECT" \
     --zone "$GCP_ZONE" \
     --quiet \
@@ -89,7 +91,7 @@ sudo mkdir -p '$REMOTE_TMP' '$REMOTE_ARCHIVE_DIR'
 sudo chown \"\$REMOTE_USER:\$REMOTE_USER\" '$REMOTE_TMP' '$REMOTE_ARCHIVE_DIR'"
 
   log "uploading compressed archive to $DENUO_WEB_VM:$REMOTE_ARCHIVE"
-  gcloud compute scp \
+  gcloud_compute_scp \
     --project "$GCP_PROJECT" \
     --zone "$GCP_ZONE" \
     --quiet \
@@ -97,7 +99,7 @@ sudo chown \"\$REMOTE_USER:\$REMOTE_USER\" '$REMOTE_TMP' '$REMOTE_ARCHIVE_DIR'"
     "$DENUO_WEB_VM:$REMOTE_ARCHIVE"
 
   log "extracting archive and syncing live site"
-  gcloud compute ssh "$DENUO_WEB_VM" \
+  gcloud_compute_ssh "$DENUO_WEB_VM" \
     --project "$GCP_PROJECT" \
     --zone "$GCP_ZONE" \
     --quiet \

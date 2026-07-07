@@ -13,8 +13,10 @@ HSD_CACHE_SIZE_MB="${HSD_CACHE_SIZE_MB:-512}"
 HSD_BLOCK_CACHE_SIZE_MB="${HSD_BLOCK_CACHE_SIZE_MB:-128}"
 HSD_MAX_FILES="${HSD_MAX_FILES:-256}"
 HSD_ENTRY_CACHE="${HSD_ENTRY_CACHE:-50000}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/gcloud-ssh-lib.sh"
 
-gcloud compute ssh "$INDEXER_VM" \
+gcloud_compute_ssh "$INDEXER_VM" \
   --project "$GCP_PROJECT" \
   --zone "$GCP_ZONE" \
   --quiet \

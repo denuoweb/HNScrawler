@@ -19,8 +19,11 @@ PUBLISH_FIREWALL_PRIORITY="${PUBLISH_FIREWALL_PRIORITY:-850}"
 PUBLISH_FIREWALL_RULE="${PUBLISH_FIREWALL_RULE:-hns-topology-publish-ssh-$(date +%s)-$$}"
 PUBLISH_SSH_ATTEMPTS="${PUBLISH_SSH_ATTEMPTS:-18}"
 PUBLISH_SSH_WAIT_SECONDS="${PUBLISH_SSH_WAIT_SECONDS:-5}"
+PUBLISH_DB_RSYNC_INFO="${PUBLISH_DB_RSYNC_INFO:-progress2}"
 INDEXER_PUBLISH_KEY="${INDEXER_PUBLISH_KEY:-/home/den/.ssh/hns_topology_publish_tmp}"
 INDEXER_PUBLISH_KNOWN_HOSTS="${INDEXER_PUBLISH_KNOWN_HOSTS:-/home/den/.ssh/hns_topology_publish_known_hosts}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/gcloud-ssh-lib.sh"
 
 log() {
   printf '[publish-indexer] %s\n' "$*" >&2
@@ -29,7 +32,7 @@ log() {
 gce_ssh() {
   local vm="$1"
   local command="$2"
-  gcloud compute ssh "$vm" \
+  gcloud_compute_ssh "$vm" \
     --project "$GCP_PROJECT" \
     --zone "$GCP_ZONE" \
     --quiet \
@@ -214,6 +217,7 @@ if [[ "$PUBLISH_LOOKUP_DB" == "1" ]]; then
   test -f '$INDEXER_DB'
   rsync -a \
     --whole-file \
+    --info='$PUBLISH_DB_RSYNC_INFO' \
     --chmod=Fu=rw,Fgo=r \
     --chown=www-data:www-data \
     --rsync-path='sudo rsync' \

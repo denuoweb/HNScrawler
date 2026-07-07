@@ -5,6 +5,8 @@ GCP_PROJECT="${GCP_PROJECT:-denuo-web-site}"
 GCP_ZONE="${GCP_ZONE:-us-west1-b}"
 INDEXER_VM="${INDEXER_VM:-hns-topology-indexer}"
 INDEXER_REPO_DIR="${INDEXER_REPO_DIR:-/mnt/hnscrawler/HNScrawler}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/gcloud-ssh-lib.sh"
 
 CONFIRM_PRODUCTION_RUN="${CONFIRM_PRODUCTION_RUN:-0}"
 DRY_RUN="${DRY_RUN:-0}"
@@ -64,7 +66,7 @@ wait_for_hsd_ready() {
   fi
 
   for attempt in $(seq 1 "$HSD_READY_ATTEMPTS"); do
-    if run_cmd gcloud compute ssh "$INDEXER_VM" \
+    if run_cmd gcloud_compute_ssh "$INDEXER_VM" \
       --project "$GCP_PROJECT" \
       --zone "$GCP_ZONE" \
       --quiet \
@@ -130,7 +132,7 @@ if [ "$PROVISION_INDEXER" = "1" ]; then
 fi
 
 if [ "$SETUP_INDEXER" = "1" ]; then
-  run_cmd gcloud compute ssh "$INDEXER_VM" \
+  run_cmd gcloud_compute_ssh "$INDEXER_VM" \
     --project "$GCP_PROJECT" \
     --zone "$GCP_ZONE" \
     --quiet \
@@ -142,7 +144,7 @@ if [ "$SETUP_HSD" = "1" ]; then
 fi
 
 if [ "$START_HSD" = "1" ]; then
-  run_cmd gcloud compute ssh "$INDEXER_VM" \
+  run_cmd gcloud_compute_ssh "$INDEXER_VM" \
     --project "$GCP_PROJECT" \
     --zone "$GCP_ZONE" \
     --quiet \

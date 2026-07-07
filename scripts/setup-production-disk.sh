@@ -8,8 +8,10 @@ PROD_ARTIFACT_DISK="${PROD_ARTIFACT_DISK:-hns-topology-data}"
 PROD_ARTIFACT_MOUNT="${PROD_ARTIFACT_MOUNT:-/mnt/hns-topology}"
 PROD_ARTIFACT_SITE_DIR="${PROD_ARTIFACT_SITE_DIR:-/mnt/hns-topology/site}"
 DENUO_WEB_PATH="${DENUO_WEB_PATH:-/var/www/denuoweb/hns-topology}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/gcloud-ssh-lib.sh"
 
-gcloud compute ssh "$DENUO_WEB_VM" \
+gcloud_compute_ssh "$DENUO_WEB_VM" \
   --project "$GCP_PROJECT" \
   --zone "$GCP_ZONE" \
   --quiet \
