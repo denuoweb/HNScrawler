@@ -12,7 +12,8 @@ HNS_BROWSER_ACTIVITY = f"{HNS_BROWSER_PACKAGE}/.ui.MainActivity"
 HNS_BROWSER_LOAD_URL_EXTRA = "com.denuoweb.hnsdane.LOAD_URL"
 
 BROWSER_TARGET_FIELDS = [
-    "name",
+    "root_name",
+    "host",
     "url",
     "priority",
     "category",
@@ -40,7 +41,7 @@ BROWSER_TARGET_FIELDS = [
     "dane_status",
     "https_status",
     "strict_hns_status",
-    "doh_fallback_status",
+    "fallback_status",
     "failure_reason",
     "browser_result",
     "browser_evidence_effect",
@@ -52,16 +53,18 @@ BROWSER_TARGET_FIELDS = [
 
 
 def browser_target_row(row: Mapping[str, Any]) -> dict[str, Any] | None:
-    name = _name(row)
-    if not name or _truthy(row.get("expired")):
+    root_name = _root_name(row)
+    host = _host(row) or root_name
+    if not root_name or not host or _truthy(row.get("expired")):
         return None
     category = _target_category(row)
     if category is None:
         return None
     priority, label, reason = category
-    url = f"https://{name}/"
+    url = _text(row.get("url")) or f"https://{host}/"
     return {
-        "name": name,
+        "root_name": root_name,
+        "host": host,
         "url": url,
         "priority": priority,
         "category": label,
@@ -89,14 +92,14 @@ def browser_target_row(row: Mapping[str, Any]) -> dict[str, Any] | None:
         "dane_status": _text(row.get("dane_status")),
         "https_status": _text(row.get("https_status")),
         "strict_hns_status": _text(row.get("strict_hns_status")),
-        "doh_fallback_status": _text(row.get("doh_fallback_status")),
+        "fallback_status": _fallback_status(row),
         "failure_reason": _text(row.get("failure_reason")),
         "browser_result": _text(row.get("browser_result")),
         "browser_evidence_effect": _text(row.get("browser_evidence_effect")),
         "browser_action": _text(row.get("browser_action")),
         "browser_fallback_reason": _text(row.get("browser_fallback_reason")),
         "browser_captured_at": _text(row.get("browser_captured_at")),
-        "diagnostic_path": f"names.html?q={quote(name)}",
+        "diagnostic_path": f"names.html?q={quote(root_name)}&host={quote(host)}",
     }
 
 
@@ -197,6 +200,18 @@ def _record_types(value: Any) -> str:
 
 def _name(row: Mapping[str, Any]) -> str:
     return str(row.get("name") or "").strip().lower().rstrip(".")
+
+
+def _root_name(row: Mapping[str, Any]) -> str:
+    return str(row.get("root_name") or row.get("name") or "").strip().lower().rstrip(".")
+
+
+def _host(row: Mapping[str, Any]) -> str:
+    return str(row.get("host") or row.get("name") or "").strip().lower().rstrip(".")
+
+
+def _fallback_status(row: Mapping[str, Any]) -> str:
+    return _text(row.get("fallback_status") or row.get("doh_fallback_status"))
 
 
 def _text(value: Any) -> str:

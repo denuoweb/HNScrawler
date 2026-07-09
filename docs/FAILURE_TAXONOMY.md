@@ -7,13 +7,13 @@ Failure reasons are stable lowercase identifiers. They should not be renamed cas
 | `missing_glue` | The HNS resource delegates to nameservers but lacks usable direct GLUE4/GLUE6 for strict HNS bootstrap. Exported `ns_handoff_*` diagnostics can still show an indirect NS-hostname probe path. |
 | `nameserver_unreachable_udp` | Authoritative nameserver did not answer UDP DNS within timeout. |
 | `nameserver_unreachable_tcp` | Authoritative nameserver did not answer TCP DNS within timeout. |
-| `no_a_or_aaaa` | No apex or `www` A/AAAA address was found from the configured resolution path. |
+| `no_a_or_aaaa` | No A/AAAA address was found for the checked host from the configured resolution path. |
 | `dnssec_missing` | Expected DNSSEC data was absent. |
 | `dnssec_bogus` | DNSSEC validation failed. |
 | `ds_dnskey_mismatch` | Parent DS did not match child DNSKEY. |
 | `rrsig_expired` | DNSSEC signature was expired at check time. |
-| `tlsa_missing` | No TLSA record was found for the checked HTTPS owner names. |
-| `tlsa_wrong_owner` | TLSA data exists under an owner name that does not match the checked endpoint. |
+| `tlsa_missing` | No TLSA record was found at `_443._tcp.<host>` for the checked HTTPS host. |
+| `tlsa_wrong_owner` | TLSA data exists under an owner name that does not match the checked host endpoint. |
 | `stale_tlsa_spki_mismatch` | TLSA association data no longer matches the HTTPS certificate or SPKI. |
 | `https_connect_failed` | TCP/TLS connection to HTTPS failed. |
 | `certificate_expired` | HTTPS reached the origin, but the presented certificate is past its validity window. |
@@ -22,4 +22,4 @@ Failure reasons are stable lowercase identifiers. They should not be renamed cas
 | `malformed_resource` | HNS resource data could not be decoded into expected records. |
 | `unknown_error` | The checker failed in a way that needs a narrower taxonomy entry. |
 
-New failure reasons should be added only when they change user-facing diagnosis or materially improve analysis.
+A root-level failure reason does not prove that no live host exists below the root. For example, `crewball` apex can have `no_a_or_aaaa` while `jaron.crewball` is still a live host. New failure reasons should be added only when they change user-facing diagnosis or materially improve analysis.

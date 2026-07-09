@@ -22,6 +22,16 @@ Key-value snapshot metadata.
 - `live_check_timeout_seconds`
 - `live_check_recheck_seconds`
 - `live_check_resolver`
+- `host_live_check_started_at`
+- `host_live_check_finished_at`
+- `host_live_check_limit`
+- `host_live_check_candidate_count`
+- `host_live_check_checked_count`
+- `host_live_check_concurrency`
+- `host_live_check_min_delay_ms`
+- `host_live_check_timeout_seconds`
+- `host_live_check_recheck_seconds`
+- `host_live_check_resolver`
 - `source_type`
 - `source_file`
 - `source_file_hash`
@@ -78,7 +88,7 @@ The primary key is `(name, ip, field)`. `idx_resource_ip_ip_name` supports pagin
 
 ## `live_status`
 
-Latest live-check result per name.
+Latest legacy apex live-check result per name. New host checks write `host_live_status`; `live_status` remains for compatibility with older databases and the `live-check` apex wrapper.
 
 - `dns_reachable`
 - `dnssec_status`
@@ -101,6 +111,49 @@ Latest live-check result per name.
 `strict_hns_status = working` means address discovery and HTTPS loading succeeded without using the fallback resolver. `SYNTH4`/`SYNTH6` and `GLUE4`/`GLUE6` records are used as nameserver bootstrap addresses for strict resolution; when direct UDP/TCP 53 cannot complete, live checks can use RFC 9461 `_dns.<nameserver>` SVCB records to discover an RFC 8484 retry transport to the same delegated nameserver. Website `A`, `AAAA`, and `TLSA` records still come from authoritative DNS and DNSSEC validation.
 
 `doh_fallback_status = required` means strict HNS address discovery failed and the checker found an address only through the configured fallback resolver path. The field name is retained for export stability; the value records resolver fallback dependency, not a guaranteed DoH transport.
+
+## `host_candidates`
+
+Bounded queue of hosts worth checking under indexed HNS roots.
+
+- `root_name`: indexed HNS root that supplies authority/bootstrap
+- `host`: website/service hostname to check
+- `source`: stable source identifier such as `default_apex`, `default_www`, `browser_evidence`, `resource_tlsa_owner`, `dns_evidence_tlsa_owner`, `previous_live_host`, `operator_import`, or `link_evidence`
+- `source_detail`: short source context
+- `confidence`: integer ranking hint
+- `first_seen_at`
+- `last_seen_at`
+- `next_check_at`
+- `suppressed`: boolean integer; discovery upserts preserve suppression
+
+The primary key is `(root_name, host, source)`. Default apex and `www.<root>` candidates are created only for active roots with actionable bootstrap material. Browser evidence, TLSA owner evidence, and previous live host status can add subdomain hosts. The crawler does not expand arbitrary subdomains without evidence.
+
+## `host_live_status`
+
+Latest live-check result per `(root_name, host)`.
+
+- `root_name`: HNS authority/root container
+- `host`: checked website/service host
+- `url`: canonical `https://<host>/` directory URL
+- `address_status`
+- `dns_reachable`
+- `dnssec_status`
+- `tlsa_status`
+- `dane_status`
+- `https_status`
+- `strict_hns_status`
+- `authoritative_udp_status`
+- `authoritative_tcp_status`
+- `authoritative_doh_status`
+- `fallback_status`
+- `failure_reason`
+- `certificate_sha256`
+- `spki_sha256`
+- `certificate_not_valid_after`
+- `checked_at`
+- `next_check_at`
+
+For host checks, A/AAAA RRset owners are the host, TLSA owner is `_443._tcp.<host>`, HTTPS SNI is the host, and DNSSEC validation uses the root/zone key owner. This lets `jaron.crewball` or `impervious.forever` be live directory entries even if `crewball` or `forever` apex is not live.
 
 `ns_handoff_*` export and lookup fields are derived from current HNS resources. They appear when a name has NS delegation without direct GLUE/SYNTH, and the rightmost HNS root of a nameserver hostname has its own bootstrap material. For example, `mercenary/` with `NS ns1.skyinclude.` can expose `ns_handoff_ns = ns1.skyinclude`, `ns_handoff_root = skyinclude`, and a `ns_handoff_bootstrap_ip` from `skyinclude/`. This is a two-step probe path for resolving the nameserver hostname first; it is not treated as direct parent-side GLUE and does not change `missing_glue` to `bootstrap_ready`.
 
@@ -206,18 +259,19 @@ Public exports are generated from SQLite:
 - `summary.json`
 - `manifest.json`
 - `names-pages.json`
+- `host-directory.json`
 - `names-pages/<collection>/page-<n>.json`
 - compact `ip-addresses/<ip>.json` and `ip-addresses/<ip>/page-<n>.json` postings for GLUE and SYNTH address lookups
 - `dns-evidence/<name>.json` when scanner or crowd evidence exists
 - `browser-evidence/<name>.json` when imported browser/device evidence exists
 
-The default public export does not write standalone Providers, Classes, Broken, DANE, CSV, SQLite, verification-command CSV, browser-target CSV, live-site directory CSV, or full `names.json` artifacts. Provider, class, failure, and DANE summaries live in `summary.json`; rows are searched and filtered through the Names collections. `names.json`, `names.csv`, `verification.csv`, `browser-targets.csv`, `site-directory.csv`, and `topology.sqlite.gz` are written only when `--include-downloads` is explicitly requested.
+The default public export does not write standalone Providers, Classes, Broken, DANE, CSV, SQLite, verification-command CSV, browser-target CSV, live-site directory CSV, or full `names.json` artifacts. Provider, class, failure, and DANE summaries live in `summary.json`; rows are searched and filtered through the Names collections. The default host-level live directory is `host-directory.json`; `names.json`, `names.csv`, `verification.csv`, `browser-targets.csv`, `site-directory.csv`, and `topology.sqlite.gz` are written only when `--include-downloads` is explicitly requested.
 
 `verification.csv` contains directory-ready `dig` probes for exported names with direct bootstrap material or indirect NS handoff evidence. Each row carries `purpose`, `qname`, `rrtype`, `transport`, and `command`. Direct rows query the HNS-proven GLUE/SYNTH address. Indirect handoff rows first resolve the nameserver hostname through its HNS root, then use `<resolved-ns-ip>` placeholders for target-zone A, AAAA, TLSA, and DNSKEY probes. Commands include UDP 53 and TCP 53 variants. When a nameserver hostname is known, `_dns.<nameserver>` SVCB probes are included to discover RFC 9461/RFC 8484 authoritative DoH alternatives. The file is generated from the same canonical exported name set as `names-pages/all`, so truncated exports do not mix rows from different name windows. Command failures from a client network that blocks UDP/TCP 53 should be interpreted alongside browser evidence and resolver fallback observations.
 
-`site-directory.csv` contains one row per exported active name with live crawler or imported browser evidence that a site loaded, strict HTTPS worked, or DANE verified. It includes a canonical HTTPS URL, evidence source/confidence, transport note, DANE/TLS/certificate fields, browser context, and a static diagnostic path back into the Names page. The same rule is available in the static Names report as `live_site_names`. It intentionally excludes static-only candidates and expired names.
+`host-directory.json` and the optional `site-directory.csv` contain one row per live host with crawler or imported browser evidence that the host loaded, HTTPS was reachable, or DANE verified. They include `root_name`, `host`, canonical HTTPS URL, normalized `directory_status`, evidence source/confidence, transport note, DANE/TLS/certificate fields, browser context, and a static diagnostic path back into the Names page. The static `live_site_names` collection is root-level for navigation, so release validation compares distinct directory roots rather than raw host row count. Static-only candidates and expired roots are excluded.
 
-`browser-targets.csv` contains a ranked browser-testing queue for the same exported name window. Each row includes `url`, `priority`, `category`, `reason`, the current static/live/browser evidence fields, a `diagnostic_path`, and an `adb_command` that force-stops `com.denuoweb.hnsdane` and reloads the URL through `com.denuoweb.hnsdane/.ui.MainActivity` using the browser's `com.denuoweb.hnsdane.LOAD_URL` extra. This is the bridge between static analysis and device/browser reverse engineering: use high-priority rows to collect resolver trace or gateway evidence, then import the resulting trace/log files with `hns-topology import-browser-evidence`. The related `browser_target_names` Names filter exposes the direct browser-test population from static/live/browser evidence; the CSV can be broader because it also includes indirect NS handoff diagnostics.
+`browser-targets.csv` contains a ranked browser-testing queue for the same exported root window. Each row includes `root_name`, `host`, `url`, `priority`, `category`, `reason`, current static/live/browser evidence fields, a `diagnostic_path`, and an `adb_command` that force-stops `com.denuoweb.hnsdane` and reloads the URL through `com.denuoweb.hnsdane/.ui.MainActivity` using the browser's `com.denuoweb.hnsdane.LOAD_URL` extra. This is the bridge between static analysis and device/browser reverse engineering: use high-priority rows to collect resolver trace or gateway evidence, then import the resulting trace/log files with `hns-topology import-browser-evidence`.
 
 There is no standalone DANE row exporter in the production path. The first-class DANE workflow state is `compliance_stage`, with nonzero `stage:<stage>` Names postings generated from the canonical row store. Older DANE-specific facets such as DS records, needs DANE, stale TLSA, and DANE verified remain Names filters for compatibility and investigation.
 

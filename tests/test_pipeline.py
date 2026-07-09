@@ -21,6 +21,7 @@ from hns_topology.db import (
     upsert_live_status,
 )
 from hns_topology.exporter import build_names, build_summary
+from hns_topology.host_candidates import discover_host_candidates
 from hns_topology.indexer import (
     UnpaginatedGetNamesError,
     bootstrap_from_fixture,
@@ -125,7 +126,8 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     assert summary["needs_dane"] == 1
     assert summary["needs_fix"] == 2
     assert summary["live_site_names"] == 0
-    assert summary["browser_target_names"] == 3
+    assert summary["browser_target_names"] == 0
+    assert summary["host_candidates"] == 0
     assert summary["browser_evidence_names"] == 0
     assert summary["browser_dane_verified_names"] == 0
     assert summary["browser_network_blocks_53_names"] == 0
@@ -167,7 +169,7 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     assert explainers["needs_dane"]["count"] == 1
     assert "matching HTTPS TLSA" in explainers["needs_dane"]["definition"]
     assert explainers["needs_fix"]["count"] == 2
-    assert explainers["browser_target_names"]["count"] == 3
+    assert explainers["browser_target_names"]["count"] == 0
     assert explainers["static_tlsa_certificate_expired_names"]["count"] == 0
     assert "examples" not in summary["broken"]
     assert {item["failure_reason"] for item in summary["broken"]["reasons"]} == set(FAILURE_REASONS)
@@ -277,6 +279,7 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
         "data/summary.json",
         "data/manifest.json",
         "data/names-pages.json",
+        "data/host-directory.json",
         "data/ip-addresses/198.51.100.2.json",
         "data/ip-addresses/203.0.113.10.json",
         "data/ip-addresses/2001%3Adb8%3A%3A10.json",
@@ -350,6 +353,7 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert "classes.json" not in manifest_artifacts
     assert "broken.json" not in manifest_artifacts
     assert "names-pages.json" in manifest_artifacts
+    assert "host-directory.json" in manifest_artifacts
     assert "names-pages/all/page-1.json" in manifest_artifacts
     assert "ip-addresses/198.51.100.2.json" in manifest_artifacts
     assert "ip-addresses/198.51.100.2/page-1.json" in manifest_artifacts
@@ -517,6 +521,7 @@ def test_generate_site_can_include_download_artifacts(tmp_path):
     rules = ProviderRules.from_file("configs/provider_rules.json")
     with connect(db_path) as conn:
         bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+        discover_host_candidates(conn)
         generate_site(conn, db_path=db_path, out_dir=out, include_downloads=True)
 
     manifest = json.loads((out / "data/manifest.json").read_text(encoding="utf-8"))
@@ -526,12 +531,14 @@ def test_generate_site_can_include_download_artifacts(tmp_path):
     assert (out / "data/names.json").exists()
     assert (out / "data/names.csv").exists()
     assert (out / "data/verification.csv").exists()
+    assert (out / "data/host-directory.json").exists()
     assert (out / "data/site-directory.csv").exists()
     assert (out / "data/browser-targets.csv").exists()
     assert (out / "data/topology.sqlite.gz").exists()
     assert "names.json" in manifest_artifacts
     assert "names.csv" in manifest_artifacts
     assert "verification.csv" in manifest_artifacts
+    assert "host-directory.json" in manifest_artifacts
     assert "site-directory.csv" in manifest_artifacts
     assert "browser-targets.csv" in manifest_artifacts
     assert "topology.sqlite.gz" in manifest_artifacts
@@ -545,10 +552,14 @@ def test_generate_site_can_include_download_artifacts(tmp_path):
     with (out / "data/site-directory.csv").open(newline="", encoding="utf-8") as handle:
         site_reader = csv.DictReader(handle)
         list(site_reader)
-    assert {"name", "url", "evidence_source", "diagnostic_path"} <= set(site_reader.fieldnames or [])
+    assert {"root_name", "host", "url", "directory_status", "evidence_source", "diagnostic_path"} <= set(
+        site_reader.fieldnames or []
+    )
     with (out / "data/browser-targets.csv").open(newline="", encoding="utf-8") as handle:
         target_rows = list(csv.DictReader(handle))
-    assert {"name", "url", "priority", "category", "adb_command"} <= set(target_rows[0])
+    assert {"root_name", "host", "url", "priority", "category", "adb_command"} <= set(
+        target_rows[0]
+    )
     assert "com.denuoweb.hnsdane.LOAD_URL" in target_rows[0]["adb_command"]
 
     checks = validate_release(db_path=db_path, public_dir=out)
@@ -593,20 +604,28 @@ def test_site_directory_csv_exports_live_site_rows(tmp_path):
     )
     with (out / "data/site-directory.csv").open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
+    host_directory = json.loads((out / "data/host-directory.json").read_text(encoding="utf-8"))
 
     assert summary["live_site_names"] == 1
     assert names_pages["collections"]["live_site_names"]["row_count"] == 1
     assert names_pages["collections"]["live_site_names"]["row_source"] == "postings"
     assert len(live_site_page["rows"]) == 1
     assert len(rows) == 1
-    assert rows[0]["name"] == "direct"
+    assert host_directory["row_count"] == 1
+    assert host_directory["rows"][0]["root_name"] == "direct"
+    assert host_directory["rows"][0]["host"] == "direct"
+    assert host_directory["rows"][0]["directory_status"] == "dane_verified"
+    assert host_directory["rows"][0]["evidence_source"] == "host_live_dane"
+    assert rows[0]["root_name"] == "direct"
+    assert rows[0]["host"] == "direct"
     assert rows[0]["url"] == "https://direct/"
-    assert rows[0]["evidence_source"] == "live_dane"
+    assert rows[0]["directory_status"] == "dane_verified"
+    assert rows[0]["evidence_source"] == "host_live_dane"
     assert rows[0]["evidence_confidence"] == "dane_verified"
     assert rows[0]["transport_note"] == "strict_hns"
     assert rows[0]["certificate_not_valid_after"] == "2026-08-01T00:00:00Z"
     assert rows[0]["spki_sha256"] == "bb" * 32
-    assert rows[0]["diagnostic_path"] == "names.html?q=direct"
+    assert rows[0]["diagnostic_path"] == "names.html?q=direct&host=direct"
 
 
 def test_release_validator_catches_site_directory_count_mismatch(tmp_path):
@@ -642,7 +661,7 @@ def test_release_validator_catches_site_directory_count_mismatch(tmp_path):
     assert not release_is_valid(checks)
     failed = {check.name: check.detail for check in checks if not check.ok}
     assert "download_export_rows" in failed
-    assert "site-directory.csv rows=0!=1" in failed["download_export_rows"]
+    assert "site-directory.csv roots=0!=1" in failed["download_export_rows"]
 
 
 def test_release_validator_catches_verification_count_mismatch(tmp_path):
@@ -682,7 +701,7 @@ def test_release_validator_catches_browser_targets_count_mismatch(tmp_path):
     assert not release_is_valid(checks)
     failed = {check.name: check.detail for check in checks if not check.ok}
     assert "download_export_rows" in failed
-    assert "browser-targets.csv rows=0!=" in failed["download_export_rows"]
+    assert "browser-targets.csv roots=0!=" in failed["download_export_rows"]
 
 
 def test_include_downloads_uses_canonical_limited_name_set(tmp_path):
@@ -691,6 +710,7 @@ def test_include_downloads_uses_canonical_limited_name_set(tmp_path):
     rules = ProviderRules.from_file("configs/provider_rules.json")
     with connect(db_path) as conn:
         bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+        discover_host_candidates(conn)
         generate_site(conn, db_path=db_path, out_dir=out, names_limit=3, include_downloads=True)
 
     names_pages = json.loads((out / "data/names-pages.json").read_text(encoding="utf-8"))
@@ -708,7 +728,13 @@ def test_include_downloads_uses_canonical_limited_name_set(tmp_path):
     assert [row["name"] for row in names_json_rows] == names_page_names
     assert [row["name"] for row in names_csv_rows] == names_page_names
     assert {row["name"] for row in verification_rows} == {"delegated", "direct"}
-    assert {row["name"] for row in browser_target_rows} == {"delegated", "direct"}
+    assert {row["root_name"] for row in browser_target_rows} == {"delegated", "direct"}
+    assert {row["host"] for row in browser_target_rows} == {
+        "delegated",
+        "www.delegated",
+        "direct",
+        "www.direct",
+    }
     assert names_pages["collections"]["all"]["row_count"] == 3
 
     checks = validate_release(db_path=db_path, public_dir=out)
@@ -735,6 +761,7 @@ def test_generate_site_records_limited_names_export_counts(tmp_path):
     assert len(names_page_rows) == 3
     assert not (out / "data/names.json").exists()
     assert not (out / "data/names.csv").exists()
+    assert (out / "data/host-directory.json").exists()
     assert not (out / "data/site-directory.csv").exists()
     assert not (out / "data/browser-targets.csv").exists()
 

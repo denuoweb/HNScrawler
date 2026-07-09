@@ -7,7 +7,16 @@ from pathlib import Path
 from typing import Any
 
 from .jsonutil import dumps_json, loads_json_list
-from .models import BrowserEvidence, DnsEvidence, LiveStatus, NameRecord, ResourceSummary
+from .models import (
+    BrowserEvidence,
+    DnsEvidence,
+    HostCandidate,
+    HostLiveStatus,
+    LiveStatus,
+    NameRecord,
+    ResourceSummary,
+)
+from .timeutil import utc_now
 
 RESOURCE_IP_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS resource_ip (
@@ -87,6 +96,45 @@ CREATE TABLE IF NOT EXISTS live_status (
   checked_at TEXT,
   next_check_at TEXT,
   FOREIGN KEY(name) REFERENCES names(name) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS host_candidates (
+  root_name TEXT NOT NULL,
+  host TEXT NOT NULL,
+  source TEXT NOT NULL,
+  source_detail TEXT NOT NULL DEFAULT '',
+  confidence INTEGER NOT NULL DEFAULT 0,
+  first_seen_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  next_check_at TEXT,
+  suppressed INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(root_name, host, source),
+  FOREIGN KEY(root_name) REFERENCES names(name) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS host_live_status (
+  root_name TEXT NOT NULL,
+  host TEXT NOT NULL,
+  url TEXT NOT NULL,
+  address_status TEXT,
+  dns_reachable TEXT,
+  dnssec_status TEXT,
+  tlsa_status TEXT,
+  dane_status TEXT,
+  https_status TEXT,
+  strict_hns_status TEXT,
+  authoritative_udp_status TEXT,
+  authoritative_tcp_status TEXT,
+  authoritative_doh_status TEXT,
+  fallback_status TEXT,
+  failure_reason TEXT,
+  certificate_sha256 TEXT,
+  spki_sha256 TEXT,
+  certificate_not_valid_after TEXT,
+  checked_at TEXT,
+  next_check_at TEXT,
+  PRIMARY KEY(root_name, host),
+  FOREIGN KEY(root_name) REFERENCES names(name) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS provider_summary (
@@ -183,6 +231,20 @@ CREATE INDEX IF NOT EXISTS idx_names_provider ON names(provider_guess);
 CREATE INDEX IF NOT EXISTS idx_names_expired ON names(expired);
 CREATE INDEX IF NOT EXISTS idx_live_failure ON live_status(failure_reason);
 CREATE INDEX IF NOT EXISTS idx_live_next_check ON live_status(next_check_at);
+CREATE INDEX IF NOT EXISTS idx_host_candidates_next_check
+  ON host_candidates(next_check_at, confidence DESC);
+CREATE INDEX IF NOT EXISTS idx_host_candidates_root_host
+  ON host_candidates(root_name, host);
+CREATE INDEX IF NOT EXISTS idx_host_candidates_host
+  ON host_candidates(host);
+CREATE INDEX IF NOT EXISTS idx_host_live_status_dane
+  ON host_live_status(dane_status, checked_at DESC);
+CREATE INDEX IF NOT EXISTS idx_host_live_status_https
+  ON host_live_status(https_status, checked_at DESC);
+CREATE INDEX IF NOT EXISTS idx_host_live_status_next_check
+  ON host_live_status(next_check_at);
+CREATE INDEX IF NOT EXISTS idx_host_live_status_host
+  ON host_live_status(host);
 CREATE INDEX IF NOT EXISTS idx_dns_evidence_name_captured ON dns_evidence(name, captured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_dns_evidence_query_captured ON dns_evidence(name, qname, rrtype, captured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_browser_evidence_name_captured ON browser_evidence(name, captured_at DESC);
@@ -252,6 +314,41 @@ LIVE_COLUMNS = (
     "next_check_at",
 )
 
+HOST_CANDIDATE_COLUMNS = (
+    "root_name",
+    "host",
+    "source",
+    "source_detail",
+    "confidence",
+    "first_seen_at",
+    "last_seen_at",
+    "next_check_at",
+    "suppressed",
+)
+
+HOST_LIVE_COLUMNS = (
+    "root_name",
+    "host",
+    "url",
+    "address_status",
+    "dns_reachable",
+    "dnssec_status",
+    "tlsa_status",
+    "dane_status",
+    "https_status",
+    "strict_hns_status",
+    "authoritative_udp_status",
+    "authoritative_tcp_status",
+    "authoritative_doh_status",
+    "fallback_status",
+    "failure_reason",
+    "certificate_sha256",
+    "spki_sha256",
+    "certificate_not_valid_after",
+    "checked_at",
+    "next_check_at",
+)
+
 DNS_EVIDENCE_COLUMNS = (
     "name",
     "qname",
@@ -310,15 +407,22 @@ def _insert_sql(table: str, columns: tuple[str, ...]) -> str:
     return f"INSERT INTO {table}({column_sql}) VALUES({placeholders})"
 
 
-def _upsert_sql(table: str, columns: tuple[str, ...], *, conflict_column: str = "name") -> str:
+def _upsert_sql(
+    table: str,
+    columns: tuple[str, ...],
+    *,
+    conflict_column: str | tuple[str, ...] = "name",
+) -> str:
+    conflict_columns = (conflict_column,) if isinstance(conflict_column, str) else conflict_column
     column_sql = ", ".join(columns)
     placeholders = ", ".join("?" for _ in columns)
     assignments = ", ".join(
-        f"{column}=excluded.{column}" for column in columns if column != conflict_column
+        f"{column}=excluded.{column}" for column in columns if column not in conflict_columns
     )
+    conflict_sql = ", ".join(conflict_columns)
     return (
         f"INSERT INTO {table}({column_sql}) VALUES({placeholders}) "
-        f"ON CONFLICT({conflict_column}) DO UPDATE SET {assignments}"
+        f"ON CONFLICT({conflict_sql}) DO UPDATE SET {assignments}"
     )
 
 
@@ -367,6 +471,39 @@ SCHEMA_COLUMN_MIGRATIONS = {
         "https_cert_sha256": "TEXT",
         "https_spki_sha256": "TEXT",
         "https_cert_not_valid_after": "TEXT",
+        "checked_at": "TEXT",
+        "next_check_at": "TEXT",
+    },
+    "host_candidates": {
+        "root_name": "TEXT NOT NULL DEFAULT ''",
+        "host": "TEXT NOT NULL DEFAULT ''",
+        "source": "TEXT NOT NULL DEFAULT 'unknown'",
+        "source_detail": "TEXT NOT NULL DEFAULT ''",
+        "confidence": "INTEGER NOT NULL DEFAULT 0",
+        "first_seen_at": "TEXT NOT NULL DEFAULT ''",
+        "last_seen_at": "TEXT NOT NULL DEFAULT ''",
+        "next_check_at": "TEXT",
+        "suppressed": "INTEGER NOT NULL DEFAULT 0",
+    },
+    "host_live_status": {
+        "root_name": "TEXT NOT NULL DEFAULT ''",
+        "host": "TEXT NOT NULL DEFAULT ''",
+        "url": "TEXT NOT NULL DEFAULT ''",
+        "address_status": "TEXT",
+        "dns_reachable": "TEXT",
+        "dnssec_status": "TEXT",
+        "tlsa_status": "TEXT",
+        "dane_status": "TEXT",
+        "https_status": "TEXT",
+        "strict_hns_status": "TEXT",
+        "authoritative_udp_status": "TEXT",
+        "authoritative_tcp_status": "TEXT",
+        "authoritative_doh_status": "TEXT",
+        "fallback_status": "TEXT",
+        "failure_reason": "TEXT",
+        "certificate_sha256": "TEXT",
+        "spki_sha256": "TEXT",
+        "certificate_not_valid_after": "TEXT",
         "checked_at": "TEXT",
         "next_check_at": "TEXT",
     },
@@ -456,6 +593,24 @@ JSON_ARRAY_DEFAULT_COLUMNS = {
 UPSERT_NAME_SQL = _upsert_sql("names", NAMES_COLUMNS)
 UPSERT_RESOURCE_SQL = _upsert_sql("resource_summary", RESOURCE_COLUMNS)
 UPSERT_LIVE_SQL = _upsert_sql("live_status", LIVE_COLUMNS)
+UPSERT_HOST_CANDIDATE_SQL = """
+INSERT INTO host_candidates(
+  root_name, host, source, source_detail, confidence, first_seen_at,
+  last_seen_at, next_check_at, suppressed
+) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(root_name, host, source) DO UPDATE SET
+  source_detail=excluded.source_detail,
+  confidence=MAX(host_candidates.confidence, excluded.confidence),
+  first_seen_at=MIN(host_candidates.first_seen_at, excluded.first_seen_at),
+  last_seen_at=MAX(host_candidates.last_seen_at, excluded.last_seen_at),
+  next_check_at=COALESCE(host_candidates.next_check_at, excluded.next_check_at),
+  suppressed=host_candidates.suppressed
+"""
+UPSERT_HOST_LIVE_SQL = _upsert_sql(
+    "host_live_status",
+    HOST_LIVE_COLUMNS,
+    conflict_column=("root_name", "host"),
+)
 INSERT_DNS_EVIDENCE_SQL = _insert_sql("dns_evidence", DNS_EVIDENCE_COLUMNS)
 INSERT_BROWSER_EVIDENCE_SQL = _insert_sql("browser_evidence", BROWSER_EVIDENCE_COLUMNS)
 
@@ -528,6 +683,133 @@ def upsert_resource_rows(conn: sqlite3.Connection, rows: Iterable[tuple[Any, ...
 
 def upsert_live_status(conn: sqlite3.Connection, status: LiveStatus) -> None:
     conn.execute(UPSERT_LIVE_SQL, _live_status_params(status))
+
+
+def upsert_host_candidate(conn: sqlite3.Connection, candidate: HostCandidate) -> None:
+    conn.execute(UPSERT_HOST_CANDIDATE_SQL, _host_candidate_params(candidate))
+
+
+def upsert_host_candidates(conn: sqlite3.Connection, candidates: Iterable[HostCandidate]) -> None:
+    conn.executemany(
+        UPSERT_HOST_CANDIDATE_SQL,
+        (_host_candidate_params(candidate) for candidate in candidates),
+    )
+
+
+def upsert_host_live_status(conn: sqlite3.Connection, status: HostLiveStatus) -> None:
+    conn.execute(UPSERT_HOST_LIVE_SQL, _host_live_status_params(status))
+
+
+def select_known_roots(conn: sqlite3.Connection, *, active_only: bool = True) -> set[str]:
+    where = "WHERE COALESCE(expired, 0) = 0" if active_only else ""
+    return {
+        str(row["name"]).strip().lower().rstrip(".")
+        for row in conn.execute(f"SELECT name FROM names {where}")
+        if str(row["name"] or "").strip()
+    }
+
+
+def select_latest_browser_hosts(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT be.*
+        FROM browser_evidence be
+        WHERE be.id = (
+          SELECT be_latest.id
+          FROM browser_evidence be_latest
+          WHERE COALESCE(NULLIF(be_latest.host, ''), be_latest.url)
+                = COALESCE(NULLIF(be.host, ''), be.url)
+          ORDER BY be_latest.captured_at DESC, be_latest.id DESC
+          LIMIT 1
+        )
+        ORDER BY be.name, be.host, be.captured_at DESC, be.id DESC
+        """
+    ).fetchall()
+    return rows_to_dicts(rows)
+
+
+def select_host_live_check_candidates(
+    conn: sqlite3.Connection,
+    *,
+    limit: int | None,
+) -> list[dict[str, Any]]:
+    sql = """
+      WITH candidate_hosts AS (
+        SELECT
+          hc.root_name,
+          hc.host,
+          MAX(hc.confidence) AS confidence,
+          GROUP_CONCAT(DISTINCT hc.source) AS sources,
+          MIN(hc.next_check_at) AS candidate_next_check_at
+        FROM host_candidates hc
+        WHERE COALESCE(hc.suppressed, 0) = 0
+          AND (hc.next_check_at IS NULL OR hc.next_check_at <= ?)
+        GROUP BY hc.root_name, hc.host
+      )
+      SELECT
+        n.name, n.onchain_class, n.provider_guess,
+        rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6,
+        rs.ds_records, rs.authoritative_doh, rs.tlsa_records,
+        rs.has_ds, rs.has_ns, rs.has_glue, rs.has_synth,
+        ch.host, ch.confidence AS candidate_confidence, ch.sources AS candidate_sources,
+        hls.dane_status AS host_dane_status,
+        hls.https_status AS host_https_status,
+        hls.strict_hns_status AS host_strict_hns_status,
+        hls.next_check_at AS host_next_check_at,
+        lbe.browser_result AS browser_result,
+        lbe.dane_status AS browser_dane_status
+      FROM candidate_hosts ch
+      JOIN names n ON n.name = ch.root_name
+      JOIN resource_summary rs ON rs.name = n.name
+      LEFT JOIN host_live_status hls ON hls.root_name = ch.root_name AND hls.host = ch.host
+      LEFT JOIN browser_evidence lbe ON lbe.id = (
+        SELECT be_latest.id
+        FROM browser_evidence be_latest
+        WHERE be_latest.host = ch.host
+        ORDER BY be_latest.captured_at DESC, be_latest.id DESC
+        LIMIT 1
+      )
+      WHERE COALESCE(n.expired, 0) = 0
+        AND (hls.next_check_at IS NULL OR hls.next_check_at <= ?)
+      ORDER BY
+        CASE
+          WHEN hls.dane_status = 'valid' THEN 0
+          WHEN hls.https_status IN ('working', 'tls_unverified') THEN 1
+          WHEN lbe.browser_result = 'dane_verified' OR lbe.dane_status = 'verified' THEN 2
+          WHEN lbe.browser_result = 'loaded' THEN 3
+          WHEN instr(',' || ch.sources || ',', ',resource_tlsa_owner,') > 0
+            OR instr(',' || ch.sources || ',', ',dns_evidence_tlsa_owner,') > 0 THEN 4
+          WHEN (ch.host = ch.root_name OR ch.host = 'www.' || ch.root_name)
+            AND rs.has_ds = 1 AND (rs.has_glue = 1 OR rs.has_synth = 1) THEN 5
+          WHEN (ch.host = ch.root_name OR ch.host = 'www.' || ch.root_name)
+            AND (rs.has_glue = 1 OR rs.has_synth = 1) THEN 6
+          WHEN instr(',' || ch.sources || ',', ',previous_live_host,') > 0 THEN 7
+          ELSE 8
+        END,
+        ch.confidence DESC,
+        ch.host
+    """
+    params: list[Any] = [utc_now(), utc_now()]
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(max(0, limit))
+    rows = conn.execute(sql, params).fetchall()
+    return [
+        parse_json_columns(
+            dict(row),
+            [
+                "ns_names",
+                "glue4",
+                "glue6",
+                "synth4",
+                "synth6",
+                "ds_records",
+                "authoritative_doh",
+                "tlsa_records",
+            ],
+        )
+        for row in rows
+    ]
 
 
 def insert_dns_evidence(conn: sqlite3.Connection, evidence: DnsEvidence) -> None:
@@ -920,6 +1202,45 @@ def _live_status_params(status: LiveStatus) -> tuple[Any, ...]:
         status.https_cert_sha256,
         status.https_spki_sha256,
         status.https_cert_not_valid_after,
+        status.checked_at,
+        status.next_check_at,
+    )
+
+
+def _host_candidate_params(candidate: HostCandidate) -> tuple[Any, ...]:
+    return (
+        candidate.root_name,
+        candidate.host,
+        candidate.source,
+        candidate.source_detail,
+        candidate.confidence,
+        candidate.first_seen_at,
+        candidate.last_seen_at,
+        candidate.next_check_at,
+        int(candidate.suppressed),
+    )
+
+
+def _host_live_status_params(status: HostLiveStatus) -> tuple[Any, ...]:
+    return (
+        status.root_name,
+        status.host,
+        status.url,
+        status.address_status,
+        status.dns_reachable,
+        status.dnssec_status,
+        status.tlsa_status,
+        status.dane_status,
+        status.https_status,
+        status.strict_hns_status,
+        status.authoritative_udp_status,
+        status.authoritative_tcp_status,
+        status.authoritative_doh_status,
+        status.fallback_status,
+        status.failure_reason,
+        status.certificate_sha256,
+        status.spki_sha256,
+        status.certificate_not_valid_after,
         status.checked_at,
         status.next_check_at,
     )

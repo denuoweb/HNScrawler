@@ -1,18 +1,21 @@
-# Denuo HNS DANE Compliance
+# Denuo Live HNS Host Directory
 
-Generated DANE compliance snapshots for the current Handshake namespace.
+Generated live host-directory snapshots for the current Handshake namespace.
 
-This project is intentionally not a live explorer, a full DNS warehouse, or a web crawler. It builds periodic snapshots from HSD-derived name state, classifies compact on-chain resource summaries, runs rate-limited DNSSEC/TLSA/HTTPS checks only for promising names, and publishes a bounded static compliance dashboard.
+HNScrawler separates HNS root names from website hosts. A root name such as `crewball` or `forever` is the HNS authority and resource container. A host such as `jaron.crewball`, `www.denuoweb`, or `impervious.forever` is the website/service target that gets checked and published in the live directory. Apex failure only means the apex host was not proven live; it does not prove that no live hosts exist below that root.
+
+This project is intentionally not a live explorer, a full DNS warehouse, or an arbitrary subdomain crawler. It builds periodic snapshots from HSD-derived root state, classifies compact on-chain resource summaries, discovers bounded host candidates from resource/browser/live evidence, runs rate-limited DNSSEC/TLSA/HTTPS checks against hosts, and publishes a host-level static directory plus root-level diagnostics.
 
 ## What It Answers
 
-- Which HNS names are already indexer-verified for DANE?
+- Which HNS hosts are already indexer-verified for DANE?
+- Which roots have live hosts below the apex?
 - Which names are one generator handoff away from TLSA, DS, or NS/GLUE repair?
 - How many HNS names use `SYNTH4` or `SYNTH6` nameserver bootstrap records?
 - How many delegate to nameservers, with or without glue?
 - Which delegated names can be retried through RFC 9461 DNS-server SVCB authoritative DoH during live checks?
 - How many have DS records and are DNSSEC candidates?
-- How many load in strict HNS mode or require resolver fallback?
+- How many hosts load in strict HNS mode or require resolver fallback?
 - Which providers and parent-side resource classes shape the DANE opportunity set?
 - Which names are blocked by missing glue, DNSSEC failure, or stale TLSA?
 
@@ -41,6 +44,7 @@ python -m venv .venv
 . .venv/bin/activate
 pip install -e '.[dev]'
 hns-topology bootstrap-fixture --fixture tests/fixtures/sample_hsd_names.json --db data/topology.sqlite
+hns-topology discover-hosts --db data/topology.sqlite
 hns-topology generate-site --db data/topology.sqlite --out public
 python -m http.server 8080 -d public
 ```
@@ -70,7 +74,7 @@ See `docs/PERFORMANCE.md` for the HSD data-structure audit and bootstrap tuning 
 
 Use a temporary or dedicated indexer VM with a persistent disk for HSD and the working database. Publish only generated `public/` artifacts to the existing production web VM, backed by its attached artifact disk rather than its boot disk. The production publish path validates on the indexer, opens temporary VPC SSH access from the indexer to the web VM, and rsyncs the generated site directly cloud-to-cloud. The production defaults keep no release archives or downloadable database backups; validation runs before publish, and only the live site tree remains.
 
-Every generated snapshot includes source provenance, provider-rule provenance, provider/class/failure summaries, and live-check run settings in `data/summary.json`, including source type/hash, crawler version, provider rule version, provider rule hash, live-check rate limits, candidate counts, and checked counts. `data/manifest.json` records the export format version plus SHA-256 and byte-size entries for the public data files.
+Every generated snapshot includes source provenance, provider-rule provenance, provider/class/failure summaries, host-candidate counts, and live-check run settings in `data/summary.json`, including source type/hash, crawler version, provider rule version, provider rule hash, live-check rate limits, candidate counts, and checked counts. `data/host-directory.json` is the default host-level live directory consumed by the overview page. `data/manifest.json` records the export format version plus SHA-256 and byte-size entries for the public data files.
 
 The Name Audit page is backed by paginated `data/names-pages/` JSON. Each row has an expandable compliance checklist for parent delegation, HNS bootstrap, DNSSEC chain, TLSA owner, HTTPS SPKI match, and resolver fallback, followed by current HNS resource records, resource hash/size/version metadata, live-check status, low-level DNS probe commands where bootstrap addresses are available, and stored DNS evidence when the scanner or a crowd worker has submitted actual RRset observations. `--names-limit=0` means the generated browse data covers the full snapshot. Optional download artifacts (`data/names.json`, `data/names.csv`, and `data/topology.sqlite.gz`) can still be generated explicitly with `--include-downloads`, but are not part of the production default.
 
@@ -78,7 +82,7 @@ Exact name search first tries the lightweight lookup API when it is available. O
 
 IP address search detects IPv4 and IPv6 literals in the Name Audit page and loads compact `data/ip-addresses/` postings. Page files contain only names for the common single-field case, or name plus field-mask pairs when an address appears in multiple record fields. They do not duplicate full Names rows. `summary.json` also carries compact top resource-IP and nameserver-host aggregates so shared infrastructure clusters can be audited without creating new high-cardinality page sets.
 
-Known high-frequency marketplace/default glue IPs are classified before the self-hosted rule, and known public HNS resolver IPs are marked as resolver infrastructure. Default parking and resolver infrastructure are excluded from live-check candidate selection and from actionable website queues such as likely websites, strict HNS ready, needs DANE, and the actionable compliance stages. Existing databases can apply provider-rule changes with `hns-topology reclassify --db data/topology.sqlite` without rerunning HSD extraction.
+Known high-frequency marketplace/default glue IPs are classified before the self-hosted rule, and known public HNS resolver IPs are marked as resolver infrastructure. Default parking and resolver infrastructure are excluded from live-check candidate selection and from actionable queues such as likely host roots, strict HNS ready, needs DANE, and the actionable compliance stages. Existing databases can apply provider-rule changes with `hns-topology reclassify --db data/topology.sqlite` without rerunning HSD extraction.
 
 `generate-site` builds into a fresh staging directory and swaps the completed tree into place, so removed pages or renamed JSON artifacts do not linger in `public/`. It requires the derived `resource_ip` index to already be current. Existing databases from before the IP index change should run `hns-topology rebuild-resource-ip --db data/topology.sqlite` once before export; this heavy backfill is deliberately not hidden inside site generation.
 
@@ -90,7 +94,7 @@ Broken/failure summaries keep only reason counts for the Names filter dropdown. 
 
 Metric definitions that previously lived on the FAQ page are embedded in `summary.json` as `overview_explainers` for downstream consumers and future UI surfaces; the Compliance page itself stays focused on the pipeline, generator queues, and supporting evidence.
 
-The Names filter `browser_target_names` exposes active names worth opening in the sister Android browser from static HNS resources, live crawler evidence, or imported browser evidence. With `--include-downloads`, `browser-targets.csv` turns the same investigation into a ranked ADB queue and can include additional indirect NS handoff diagnostics.
+The Names filter `browser_target_names` remains a root-level diagnostic filter. With `--include-downloads`, `browser-targets.csv` is host-level: it includes `root_name`, `host`, URL, priority, evidence fields, and an ADB command for the sister Android browser. Default apex and `www.<root>` candidates come from `hns-topology discover-hosts`; subdomain candidates come from browser evidence, TLSA owners, previous live hosts, or explicit imports. The crawler does not expand arbitrary subdomains without evidence.
 
 The crawler can mark static TLSA certificate expiry only when an HNS resource contains an embedded full-certificate TLSA association (`selector=0`, `matchingType=0`). Normal TLSA `3 1 1` SPKI hashes do not carry a validity window, so certificate expiry for those names must come from live HTTPS or imported browser evidence.
 
@@ -101,6 +105,7 @@ Generated site files:
 - `data/summary.json`
 - `data/manifest.json`
 - `data/names-pages.json`
+- `data/host-directory.json`
 - `data/names-pages/...`
 - compact `data/ip-addresses/...` postings for GLUE and SYNTH address lookups
 - `data/dns-evidence/...` when DNS observations exist
@@ -119,7 +124,9 @@ hns-topology incremental --db data/topology.sqlite
 hns-topology incremental --db data/topology.sqlite --scan-block-height 123457
 hns-topology incremental --db data/topology.sqlite --changed-names-file changed_names.txt
 hns-topology reorg-check --db data/topology.sqlite --rollback
-hns-topology live-check --db data/topology.sqlite --limit 100 --concurrency 4 --min-delay-ms 250
+hns-topology discover-hosts --db data/topology.sqlite
+hns-topology live-check-hosts --db data/topology.sqlite --limit 100 --concurrency 4 --min-delay-ms 250
+hns-topology live-check --db data/topology.sqlite --limit 100 --concurrency 4 --min-delay-ms 250  # legacy apex wrapper
 hns-topology import-dns-evidence --db data/topology.sqlite --file evidence.json --source crowd --source-id worker-1
 hns-topology import-browser-evidence --db data/topology.sqlite --file browser-traces/ --source hns-browser --source-id pixel9
 hns-topology rebuild-resource-ip --db data/topology.sqlite
@@ -161,6 +168,7 @@ scripts/gcloud-print-site-tlsa.sh
 
 - [Architecture](docs/ARCHITECTURE.md)
 - [Data model](docs/DATA_MODEL.md)
+- [Host directory](docs/HOST_DIRECTORY.md)
 - [Failure taxonomy](docs/FAILURE_TAXONOMY.md)
 - [Deployment](docs/DEPLOYMENT.md)
 - [DANE site deployment](docs/DANE_SITE.md)

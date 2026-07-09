@@ -21,9 +21,16 @@ import dns.resolver
 from cryptography import x509
 
 from .dane import certificate_metadata_from_der, match_association_bytes, selected_certificate_bytes
-from .db import insert_dns_evidence_batch, parse_json_columns, upsert_live_status
+from .db import (
+    insert_dns_evidence_batch,
+    parse_json_columns,
+    select_host_live_check_candidates,
+    upsert_host_live_status,
+    upsert_live_status,
+)
+from .host_candidates import normalize_host
 from .infra import NON_ACTIONABLE_PROVIDER_TYPES
-from .models import FAILURE_REASONS, PROMISING_CLASSES, DnsEvidence, LiveStatus
+from .models import FAILURE_REASONS, PROMISING_CLASSES, DnsEvidence, HostLiveStatus, LiveStatus
 from .timeutil import utc_after, utc_now
 
 DNS_EVIDENCE_SERVER_LIMIT = 3
@@ -82,10 +89,55 @@ def run_live_checks(
             status, evidence = future.result()
             with conn:
                 upsert_live_status(conn, status)
+                upsert_host_live_status(conn, _host_status_from_live_status(status))
                 if evidence:
                     insert_dns_evidence_batch(conn, evidence)
             checked += 1
     return checked
+
+
+def run_host_live_checks(
+    conn,
+    *,
+    limit: int | None,
+    config: LiveCheckConfig,
+) -> int:
+    rows = select_host_live_check_candidates(conn, limit=limit)
+    limiter = RateLimiter(config.min_delay_ms)
+    checked = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=config.concurrency) as executor:
+        futures = [executor.submit(check_host, row, row["host"], config, limiter) for row in rows]
+        for future in concurrent.futures.as_completed(futures):
+            status = future.result()
+            with conn:
+                upsert_host_live_status(conn, status)
+            checked += 1
+    return checked
+
+
+def _host_status_from_live_status(status: LiveStatus) -> HostLiveStatus:
+    return HostLiveStatus(
+        root_name=status.name,
+        host=status.name,
+        url=f"https://{status.name}/",
+        address_status="unknown",
+        dns_reachable=status.dns_reachable,
+        dnssec_status=status.dnssec_status,
+        tlsa_status=status.tlsa_status,
+        dane_status=status.dane_status,
+        https_status=status.https_status,
+        strict_hns_status=status.strict_hns_status,
+        authoritative_udp_status="not_recorded",
+        authoritative_tcp_status="not_recorded",
+        authoritative_doh_status="not_recorded",
+        fallback_status=status.doh_fallback_status,
+        failure_reason=status.failure_reason,
+        checked_at=status.checked_at,
+        next_check_at=status.next_check_at,
+        certificate_sha256=status.https_cert_sha256,
+        spki_sha256=status.https_spki_sha256,
+        certificate_not_valid_after=status.https_cert_not_valid_after,
+    )
 
 
 def _check_name_with_evidence(
@@ -195,9 +247,38 @@ def select_live_check_candidates(
 
 
 def check_name(row: dict, config: LiveCheckConfig, limiter: RateLimiter) -> LiveStatus:
-    name = row["name"]
+    host_status = check_host(row, row["name"], config, limiter)
+    return LiveStatus(
+        name=host_status.root_name,
+        dns_reachable=host_status.dns_reachable,
+        dnssec_status=host_status.dnssec_status,
+        tlsa_status=host_status.tlsa_status,
+        dane_status=host_status.dane_status,
+        https_status=host_status.https_status,
+        strict_hns_status=host_status.strict_hns_status,
+        doh_fallback_status=host_status.fallback_status,
+        failure_reason=host_status.failure_reason,
+        checked_at=host_status.checked_at,
+        next_check_at=host_status.next_check_at,
+        https_cert_sha256=host_status.certificate_sha256,
+        https_spki_sha256=host_status.spki_sha256,
+        https_cert_not_valid_after=host_status.certificate_not_valid_after,
+    )
+
+
+def check_host(
+    root_row: dict,
+    host: str,
+    config: LiveCheckConfig,
+    limiter: RateLimiter,
+) -> HostLiveStatus:
+    root_name = normalize_host(str(root_row["name"]))
+    host = normalize_host(host)
+    zone_name = root_name
+    directory_url = f"https://{host}/" if host else ""
     checked_at = utc_now()
     next_check_at = utc_after(config.recheck_seconds)
+    address_status = "unknown"
     dns_reachable = "unknown"
     dnssec_status = "unknown"
     tlsa_status = "unknown"
@@ -208,46 +289,98 @@ def check_name(row: dict, config: LiveCheckConfig, limiter: RateLimiter) -> Live
     failure_reason = None
     https_result: HttpsResult | None = None
 
+    if not root_name or not host or not (host == root_name or host.endswith(f".{root_name}")):
+        return HostLiveStatus(
+            root_name=root_name,
+            host=host,
+            url=directory_url,
+            address_status="invalid_host",
+            dns_reachable="not_checked",
+            dnssec_status="not_checked",
+            tlsa_status="not_checked",
+            dane_status="not_checked",
+            https_status="not_checked",
+            strict_hns_status="not_checked",
+            authoritative_udp_status="not_checked",
+            authoritative_tcp_status="not_checked",
+            authoritative_doh_status="not_checked",
+            fallback_status="not_checked",
+            failure_reason="unknown_error",
+            checked_at=checked_at,
+            next_check_at=next_check_at,
+        )
+
     fallback_resolver = _make_resolver(config)
-    strict_resolver = _make_strict_resolver(row, config)
-    strict_doh_endpoints = _strict_doh_endpoints(row, strict_resolver)
+    strict_resolver = _make_strict_resolver(root_row, config)
+    strict_doh_endpoints = _strict_doh_endpoints(root_row, strict_resolver)
 
     try:
         limiter.wait()
-        dnssec_result = _validate_dnssec_for_row(strict_resolver, row, name, strict_doh_endpoints)
+        dnssec_result = _validate_dnssec_for_row(strict_resolver, root_row, zone_name, strict_doh_endpoints)
         dnssec_status = dnssec_result.status
-        strict_address_result = _strict_address_resolution(strict_resolver, name, dnssec_result, strict_doh_endpoints)
+        strict_address_result = (
+            _strict_address_resolution(
+                strict_resolver,
+                host,
+                dnssec_result,
+                strict_doh_endpoints,
+                key_owner=zone_name,
+            )
+            if zone_name != host
+            else _strict_address_resolution(strict_resolver, host, dnssec_result, strict_doh_endpoints)
+        )
         strict_addresses = strict_address_result.addresses
         fallback_addresses: list[str] = []
         addresses = strict_addresses
         if strict_addresses:
             doh_fallback_status = "not_required"
         else:
-            if row.get("ns_names") and not _strict_bootstrap_addresses(row):
+            if root_row.get("ns_names") and not _strict_bootstrap_addresses(root_row):
                 dns_reachable = "missing_glue"
                 failure_reason = "missing_glue"
-            fallback_addresses = _resolve_addresses(fallback_resolver, name)
+            fallback_addresses = _resolve_addresses(fallback_resolver, host)
             if fallback_addresses:
                 doh_fallback_status = "required"
                 strict_hns_status = "fallback_only"
                 addresses = fallback_addresses
         if not addresses:
+            address_status = "missing"
             failure_reason = _choose_failure(failure_reason, "no_a_or_aaaa")
             dns_reachable = dns_reachable if dns_reachable != "unknown" else "no_address"
         else:
+            address_status = "present"
             dns_reachable = "reachable" if strict_addresses else "fallback_reachable"
             if strict_addresses:
                 strict_hns_status = "candidate"
-            https_result = _https_connect(name, addresses[0], config.timeout)
+            https_result = _https_connect(host, addresses[0], config.timeout)
             https_status = https_result.status
             if fallback_addresses and https_result.failure_reason:
                 failure_reason = https_result.failure_reason
             else:
                 failure_reason = _choose_failure(failure_reason, https_result.failure_reason)
             if strict_resolver and strict_doh_endpoints:
-                tlsa_result = _resolve_tlsa_secure(strict_resolver, name, dnssec_result, strict_doh_endpoints)
+                tlsa_result = (
+                    _resolve_tlsa_secure(
+                        strict_resolver,
+                        host,
+                        dnssec_result,
+                        strict_doh_endpoints,
+                        key_owner=zone_name,
+                    )
+                    if zone_name != host
+                    else _resolve_tlsa_secure(strict_resolver, host, dnssec_result, strict_doh_endpoints)
+                )
             elif strict_resolver:
-                tlsa_result = _resolve_tlsa_secure(strict_resolver, name, dnssec_result)
+                tlsa_result = (
+                    _resolve_tlsa_secure(
+                        strict_resolver,
+                        host,
+                        dnssec_result,
+                        key_owner=zone_name,
+                    )
+                    if zone_name != host
+                    else _resolve_tlsa_secure(strict_resolver, host, dnssec_result)
+                )
             else:
                 tlsa_result = TlsaResolution([])
             tlsa_records = tlsa_result.records
@@ -278,7 +411,7 @@ def check_name(row: dict, config: LiveCheckConfig, limiter: RateLimiter) -> Live
                     )
             else:
                 tlsa_status = "missing"
-                if failure_reason is None and row.get("has_ds"):
+                if failure_reason is None and root_row.get("has_ds"):
                     failure_reason = "tlsa_missing"
             if strict_addresses and https_result.status == "working" and strict_hns_status != "working":
                 strict_hns_status = "working"
@@ -295,21 +428,27 @@ def check_name(row: dict, config: LiveCheckConfig, limiter: RateLimiter) -> Live
     if failure_reason not in FAILURE_REASONS and failure_reason is not None:
         failure_reason = "unknown_error"
 
-    return LiveStatus(
-        name=name,
+    return HostLiveStatus(
+        root_name=root_name,
+        host=host,
+        url=directory_url,
+        address_status=address_status,
         dns_reachable=dns_reachable,
         dnssec_status=dnssec_status,
         tlsa_status=tlsa_status,
         dane_status=dane_status,
         https_status=https_status,
         strict_hns_status=strict_hns_status,
-        doh_fallback_status=doh_fallback_status,
+        authoritative_udp_status="not_recorded",
+        authoritative_tcp_status="not_recorded",
+        authoritative_doh_status="not_recorded",
+        fallback_status=doh_fallback_status,
         failure_reason=failure_reason,
         checked_at=checked_at,
         next_check_at=next_check_at,
-        https_cert_sha256=https_result.cert_sha256 if https_result is not None else None,
-        https_spki_sha256=https_result.spki_sha256 if https_result is not None else None,
-        https_cert_not_valid_after=https_result.cert_not_valid_after if https_result is not None else None,
+        certificate_sha256=https_result.cert_sha256 if https_result is not None else None,
+        spki_sha256=https_result.spki_sha256 if https_result is not None else None,
+        certificate_not_valid_after=https_result.cert_not_valid_after if https_result is not None else None,
     )
 
 
@@ -586,12 +725,34 @@ def _strict_address_resolution(
     name: str,
     dnssec_result: DnssecResult,
     doh_endpoints: list[dict] | None = None,
+    *,
+    key_owner: str | None = None,
 ) -> AddressResolution:
     if strict_resolver is None:
         return AddressResolution([])
     if doh_endpoints:
-        return _resolve_strict_address_resolution(strict_resolver, name, dnssec_result, doh_endpoints)
-    return _resolve_strict_address_resolution(strict_resolver, name, dnssec_result)
+        if key_owner is None:
+            return _resolve_strict_address_resolution(
+                strict_resolver,
+                name,
+                dnssec_result,
+                doh_endpoints,
+            )
+        return _resolve_strict_address_resolution(
+            strict_resolver,
+            name,
+            dnssec_result,
+            doh_endpoints,
+            key_owner=key_owner,
+        )
+    if key_owner is None:
+        return _resolve_strict_address_resolution(strict_resolver, name, dnssec_result)
+    return _resolve_strict_address_resolution(
+        strict_resolver,
+        name,
+        dnssec_result,
+        key_owner=key_owner,
+    )
 
 
 def _make_resolver(
@@ -784,10 +945,12 @@ def _resolve_strict_address_resolution(
     name: str,
     dnssec_result: DnssecResult,
     doh_endpoints: list[dict] | None = None,
+    *,
+    key_owner: str | None = None,
 ) -> AddressResolution:
     addresses: list[str] = []
     secure_checks: list[bool] = []
-    key_owner = dns.name.from_text(_fqdn(name))
+    key_owner_name = dns.name.from_text(_fqdn(key_owner or name))
     for rrtype in ("A", "AAAA"):
         answer = (
             _strict_resolve_rrset(resolver, name, rrtype, doh_endpoints)
@@ -798,7 +961,12 @@ def _resolve_strict_address_resolution(
             addresses.extend(item.to_text() for item in answer.rrset)
             if dnssec_result.status == "valid" and dnssec_result.dnskey_rrset is not None:
                 secure_checks.append(
-                    _rrset_signature_valid(answer.rrset, answer.response, key_owner, dnssec_result.dnskey_rrset)
+                    _rrset_signature_valid(
+                        answer.rrset,
+                        answer.response,
+                        key_owner_name,
+                        dnssec_result.dnskey_rrset,
+                    )
                 )
     secure = bool(addresses) and bool(secure_checks) and all(secure_checks)
     return AddressResolution(addresses=addresses, secure=secure)
@@ -904,10 +1072,12 @@ def _resolve_tlsa_secure(
     name: str,
     dnssec_result: DnssecResult,
     doh_endpoints: list[dict] | None = None,
+    *,
+    key_owner: str | None = None,
 ) -> TlsaResolution:
     records: list[tuple[int, int, int, bytes]] = []
     secure_checks: list[bool] = []
-    key_owner = dns.name.from_text(_fqdn(name))
+    key_owner_name = dns.name.from_text(_fqdn(key_owner or name))
     owner = f"_443._tcp.{name}"
     answer = (
         _strict_resolve_rrset(resolver, owner, "TLSA", doh_endpoints)
@@ -920,7 +1090,12 @@ def _resolve_tlsa_secure(
         records.append((int(item.usage), int(item.selector), int(item.mtype), bytes(item.cert)))
     if dnssec_result.status == "valid" and dnssec_result.dnskey_rrset is not None:
         secure_checks.append(
-            _rrset_signature_valid(answer.rrset, answer.response, key_owner, dnssec_result.dnskey_rrset)
+            _rrset_signature_valid(
+                answer.rrset,
+                answer.response,
+                key_owner_name,
+                dnssec_result.dnskey_rrset,
+            )
         )
     secure = bool(records) and bool(secure_checks) and all(secure_checks)
     return TlsaResolution(records=records, secure=secure)

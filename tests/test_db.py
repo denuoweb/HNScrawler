@@ -103,6 +103,8 @@ def test_init_db_migrates_previous_schema_and_backfills_resource_flags(tmp_path)
                 "names",
                 "resource_summary",
                 "live_status",
+                "host_candidates",
+                "host_live_status",
                 "provider_summary",
                 "dns_evidence",
                 "browser_evidence",
@@ -152,6 +154,35 @@ def test_init_db_migrates_previous_schema_and_backfills_resource_flags(tmp_path)
         "https_spki_sha256",
         "https_cert_not_valid_after",
     } <= tables["live_status"]
+    assert {
+        "root_name",
+        "host",
+        "source",
+        "source_detail",
+        "confidence",
+        "first_seen_at",
+        "last_seen_at",
+        "next_check_at",
+        "suppressed",
+    } <= tables["host_candidates"]
+    assert {
+        "root_name",
+        "host",
+        "url",
+        "address_status",
+        "dns_reachable",
+        "dnssec_status",
+        "tlsa_status",
+        "dane_status",
+        "https_status",
+        "strict_hns_status",
+        "fallback_status",
+        "certificate_sha256",
+        "spki_sha256",
+        "certificate_not_valid_after",
+        "checked_at",
+        "next_check_at",
+    } <= tables["host_live_status"]
     assert {"provider_type", "ns_pattern", "ip_pattern"} <= tables["provider_summary"]
     assert {"server", "source", "source_id", "authority_json", "additional_json"} <= tables[
         "dns_evidence"

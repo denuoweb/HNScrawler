@@ -59,3 +59,25 @@ function loadApp(search = "") {
     "data/ip-addresses/2001%253Adb8%253A%253A10/page-1.json"
   );
 }
+
+{
+  const app = loadApp("");
+  const html = app.hostDirectoryPanel({
+    row_count: 1,
+    rows: [
+      {
+        root_name: "crewball",
+        host: "jaron.crewball",
+        url: "https://jaron.crewball/",
+        evidence_confidence: "dane_verified",
+        dane_status: "valid",
+        https_status: "working",
+        checked_at: "2026-07-06T00:00:00Z"
+      }
+    ]
+  });
+  assert.equal(html.includes("Live HNS Hosts"), true);
+  assert.equal(html.includes("https://jaron.crewball/"), true);
+  assert.equal(html.includes("status-ok"), true);
+  assert.equal(html.includes("names.html?q=crewball&amp;host=jaron.crewball"), true);
+}

@@ -8,8 +8,8 @@ from pathlib import Path
 from .exporter import export_all
 
 PAGES = {
-    "index.html": ("overview", "HNS DANE Compliance"),
-    "names.html": ("names", "DANE Name Audit"),
+    "index.html": ("overview", "Live HNS Host Directory"),
+    "names.html": ("names", "HNS Root Diagnostics"),
 }
 SITE_BASE_PATH = "/hns-topology/"
 
@@ -95,8 +95,8 @@ def _html(*, page: str, title: str) -> str:
     nav = "\n".join(
         f'<a href="{SITE_BASE_PATH}{filename}" data-nav="{name}">{label}</a>'
         for filename, (name, label) in [
-            ("index.html", ("overview", "Compliance")),
-            ("names.html", ("names", "Name Audit")),
+            ("index.html", ("overview", "Host Directory")),
+            ("names.html", ("names", "Root Diagnostics")),
         ]
     )
     return f"""<!doctype html>

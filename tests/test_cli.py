@@ -72,6 +72,24 @@ def live_check_args(db_path, **overrides):
     return argparse.Namespace(**values)
 
 
+def discover_hosts_args(db_path):
+    return argparse.Namespace(db=str(db_path))
+
+
+def live_check_hosts_args(db_path, **overrides):
+    values = {
+        "db": str(db_path),
+        "rules": "configs/provider_rules.json",
+        "limit": 2,
+        "concurrency": 1,
+        "min_delay_ms": 1,
+        "timeout": 0.1,
+        "resolver": "192.0.2.53",
+    }
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
 def import_dns_evidence_args(db_path, evidence_path, **overrides):
     values = {
         "db": str(db_path),
@@ -290,6 +308,31 @@ def test_live_check_records_rate_limit_metadata(tmp_path, monkeypatch):
 
     checks = validate_release(db_path=db_path, public_dir=public_dir, require_live_checks=True)
     assert release_is_valid(checks), [check for check in checks if not check.ok]
+
+
+def test_discover_and_live_check_hosts_record_host_metadata(tmp_path, monkeypatch):
+    db_path = tmp_path / "topology.sqlite"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+
+    assert cli.cmd_discover_hosts(discover_hosts_args(db_path)) == 0
+
+    def fake_run_host_live_checks(conn, *, limit, config):
+        assert limit == 2
+        assert config.resolver == "192.0.2.53"
+        return 2
+
+    monkeypatch.setattr(cli, "run_host_live_checks", fake_run_host_live_checks)
+
+    result = cli.cmd_live_check_hosts(live_check_hosts_args(db_path))
+
+    with connect(db_path) as conn:
+        assert result == 0
+        assert conn.execute("SELECT COUNT(*) FROM host_candidates").fetchone()[0] == 6
+        assert get_meta(conn, "host_live_check_limit") == "2"
+        assert get_meta(conn, "host_live_check_concurrency") == "1"
+        assert get_meta(conn, "host_live_check_checked_count") == "2"
 
 
 def test_import_dns_evidence_exports_static_observations(tmp_path):

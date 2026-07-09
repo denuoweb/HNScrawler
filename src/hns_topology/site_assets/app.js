@@ -143,7 +143,7 @@ function filterName(filter) {
     dnssec_candidates: "DNSSEC candidates",
     static_tlsa_certificate_expired_names: "static TLSA expired certificate",
     strict_hns_ready: "strict HNS ready",
-    likely_websites: "likely websites",
+    likely_websites: "likely host roots",
     strict_hns_working: "strict HNS working",
     doh_fallback_required: "resolver fallback required",
     needs_dane: "needs DANE",
@@ -151,7 +151,7 @@ function filterName(filter) {
     needs_fix: "needs fix",
     missing_glue_only: "missing GLUE only",
     stale_tlsa_only: "stale TLSA only",
-    live_site_names: "live site evidence",
+    live_site_names: "live host evidence",
     browser_target_names: "browser targets",
     browser_evidence_names: "browser evidence",
     browser_dane_verified_names: "browser DANE verified",
@@ -235,6 +235,17 @@ function formatCell(value) {
   if (value === null || value === undefined) return "";
   if (typeof value === "number") return fmt.format(value);
   return escapeHtml(String(value));
+}
+
+function statusPill(value) {
+  const token = String(value || "").trim();
+  if (!token) return "";
+  const className = ["valid", "working", "tls_unverified", "loaded", "verified"].includes(token)
+    ? "status-ok"
+    : ["failed", "invalid", "expired", "timeout", "unreachable"].includes(token)
+      ? "status-bad"
+      : "";
+  return `<span${className ? ` class="${className}"` : ""}>${escapeHtml(prettyToken(token))}</span>`;
 }
 
 function prettyToken(value) {
@@ -490,14 +501,19 @@ function snapshot(summary) {
     ${metric("DANE verified", daneVerified, `${pct(daneVerified, summary.active_names)} of active`, `names.html?filter=${COMPLIANCE_STAGE_FILTER_PREFIX}dane_verified`)}
     ${metric("TLSA gaps", tlsaGap, "ready for generator handoff", `names.html?filter=${COMPLIANCE_STAGE_FILTER_PREFIX}tlsa_gap`)}
     ${metric("Compliance blockers", blockerQueue, "blocking verification")}
-    ${metric("Live sites", summary.live_site_names, "live/browser evidence", "names.html?filter=live_site_names")}
+    ${metric("Live hosts", summary.live_site_names, "live/browser evidence", "names.html?filter=live_site_names")}
     ${metric("Browser evidence", summary.browser_evidence_names, `${fmt.format(summary.browser_network_blocks_53_names || 0)} network-blocked, ${fmt.format(summary.browser_certificate_expired_names || 0)} expired cert`, "names.html?filter=browser_evidence_names")}
   </section>`;
 }
 
 function liveCheckMeta(summary) {
-  if (!summary.live_check_started_at) return "";
-  return `<p class="meta">Live checks ${fmt.format(summary.live_check_checked_count ?? 0)} of ${fmt.format(summary.live_check_candidate_count ?? 0)} due - concurrency ${fmt.format(summary.live_check_concurrency ?? 0)} - delay ${fmt.format(summary.live_check_min_delay_ms ?? 0)}ms - timeout ${summary.live_check_timeout_seconds ?? ""}s</p>`;
+  const checked = summary.host_live_check_checked_count ?? summary.live_check_checked_count ?? 0;
+  const candidates = summary.host_live_check_candidate_count ?? summary.live_check_candidate_count ?? 0;
+  const concurrency = summary.host_live_check_concurrency ?? summary.live_check_concurrency ?? 0;
+  const delay = summary.host_live_check_min_delay_ms ?? summary.live_check_min_delay_ms ?? 0;
+  const timeout = summary.host_live_check_timeout_seconds ?? summary.live_check_timeout_seconds ?? "";
+  if (!summary.host_live_check_started_at && !summary.live_check_started_at) return "";
+  return `<p class="meta">Host checks ${fmt.format(checked)} of ${fmt.format(candidates)} due - concurrency ${fmt.format(concurrency)} - delay ${fmt.format(delay)}ms - timeout ${timeout}s</p>`;
 }
 
 function collectionForFilter(index, filter) {
@@ -1076,9 +1092,9 @@ function namesFilterControls({summary, providers, broken, active}) {
     {value: "direct_ip_records", label: "SYNTH nameservers", countKey: "direct_ip_records"},
     {value: "delegated_names", label: "Delegated names", countKey: "delegated_names"},
     {value: "default_provider_names", label: "Default providers", countKey: "default_provider_names"},
-    {value: "likely_websites", label: "Likely websites", countKey: "likely_websites"},
+    {value: "likely_websites", label: "Likely host roots", countKey: "likely_websites"},
     {value: "browser_target_names", label: "Browser targets", countKey: "browser_target_names"},
-    {value: "live_site_names", label: "Live site evidence", countKey: "live_site_names"},
+    {value: "live_site_names", label: "Live host evidence", countKey: "live_site_names"},
     {value: "strict_hns_ready", label: "Strict HNS ready", countKey: "strict_hns_ready"},
     {value: "strict_hns_working", label: "Strict HNS working", countKey: "strict_hns_working"},
     {value: "needs_fix", label: "Needs fix", countKey: "needs_fix"},
@@ -1126,13 +1142,14 @@ function wireAutoSubmitFilter() {
 
 function adoptionFunnel(summary) {
   const active = Number(summary.active_names || 0);
-  const checked = Number(summary.live_check_checked_count || 0);
+  const checked = Number(summary.host_live_check_checked_count ?? summary.live_check_checked_count ?? 0);
+  const candidates = Number(summary.host_live_check_candidate_count ?? summary.live_check_candidate_count ?? 0);
   const stages = (summary.compliance_stages || []).filter((stage) => Number(stage.count || 0) > 0);
   return `<section class="panel adoption-funnel">
     <div class="panel-heading">
       <div>
-        <h2>DANE Compliance Pipeline</h2>
-        <p class="meta">${fmt.format(checked)} live checks sampled from ${fmt.format(summary.live_check_candidate_count ?? 0)} candidates. Terminal state is signed TLSA matching the live HTTPS key.</p>
+        <h2>Host Verification Pipeline</h2>
+        <p class="meta">${fmt.format(checked)} host checks sampled from ${fmt.format(candidates)} candidates. Terminal state is signed TLSA matching the live HTTPS key.</p>
       </div>
     </div>
     <div class="funnel-grid">${stages.map((stage) => `
@@ -1182,11 +1199,43 @@ function namesActionContext(actions = [], filter = "") {
   </section>`;
 }
 
+function hostDirectoryPanel(directory) {
+  const rows = (directory?.rows || []).slice(0, 12);
+  const columns = [
+    {
+      key: "host",
+      label: "Host",
+      render: (row) => `<a href="${escapeHtml(row.url || `https://${row.host}/`)}">${escapeHtml(row.host || "")}</a>`
+    },
+    {
+      key: "root_name",
+      label: "Root",
+      render: (row) => `<a href="${escapeHtml(sitePath(`names.html?q=${encodeURIComponent(row.root_name || "")}&host=${encodeURIComponent(row.host || "")}`))}">${escapeHtml(row.root_name || "")}</a>`
+    },
+    {key: "directory_status", label: "Status", render: (row) => escapeHtml(prettyToken(row.directory_status || row.evidence_confidence || row.evidence_source || ""))},
+    {key: "dane_status", label: "DANE", render: (row) => statusPill(row.dane_status || "")},
+    {key: "https_status", label: "HTTPS", render: (row) => statusPill(row.https_status || "")},
+    {key: "checked_at", label: "Checked", render: lastCheckedCell}
+  ];
+  return `<section class="panel">
+    <div class="panel-heading">
+      <div>
+        <h2>Live HNS Hosts</h2>
+        <p class="meta">${fmt.format(directory?.row_count || 0)} host rows with crawler or browser evidence.</p>
+      </div>
+      <a href="${escapeHtml(sitePath("names.html?filter=live_site_names"))}">Root diagnostics</a>
+    </div>
+    ${table(rows, columns, "No live hosts in this snapshot.")}
+  </section>`;
+}
+
 async function renderOverview(app) {
   const summary = await loadJson("data/summary.json");
+  const hostDirectory = await loadJson("data/host-directory.json");
   const providers = summary.providers || [];
   const classes = summary.classes || [];
   app.innerHTML = `${snapshot(summary)}
+    ${hostDirectoryPanel(hostDirectory)}
     ${adoptionFunnel(summary)}
     <section class="grid">
       ${nextActionsPanel(summary.next_actions || [])}

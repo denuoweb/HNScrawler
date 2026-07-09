@@ -1,6 +1,6 @@
 # Architecture
 
-Denuo HNS DANE Compliance is a periodic snapshot system for finding, triaging, and verifying Handshake names on the DNSSEC + TLSA path.
+Denuo HNS Host Directory is a periodic snapshot system for finding, triaging, and verifying live Handshake website/service hosts on the DNSSEC + TLSA path.
 
 It has two deployment surfaces:
 
@@ -16,12 +16,26 @@ HSD node
   -> current name state
   -> stopped-node JSONL state export
   -> compact SQLite compliance DB
-  -> optional live DNS/DNSSEC/TLSA/HTTPS checks for promising names
+  -> host candidate discovery from root resources, browser evidence, TLSA owners, and prior checks
+  -> optional live DNS/DNSSEC/TLSA/HTTPS checks for promising hosts
   -> static JSON exports
-  -> static compliance site
+  -> static host directory and root diagnostics site
   -> release archive manifest, site tarball, and SQLite backup
   -> rsync to denuowebsite-vm
 ```
+
+## Root and Host Model
+
+HNScrawler treats an HNS root name and a website host as separate objects.
+
+- `root_name`: the indexed HNS authority/root container, such as `crewball`, `forever`, or `denuoweb`.
+- `host`: the website/service target, such as `jaron.crewball`, `impervious.forever`, `denuoweb`, or `www.denuoweb`.
+- `zone_name`: the signed DNSSEC zone owner used for key validation. The first implementation uses the root name unless existing evidence proves a narrower zone.
+- `tlsa_owner`: `_443._tcp.<host>`.
+- `sni_hostname`: the host used in the TLS handshake.
+- `directory_url`: `https://<host>/`.
+
+Root topology is still required because hosts inherit HNS authority and bootstrap from roots. A root can be active and legitimate even when the root apex is not a website. For example, `forever` can be the HNS root while `impervious.forever` is the live host. Apex failure is recorded as an apex-host failure only; it must not be summarized as root-wide site failure.
 
 ## Boundary
 
@@ -34,14 +48,15 @@ The crawler stores:
 - DS/TXT presence
 - provider guesses from versioned rules
 - provider rule patterns used for each materialized provider bucket
-- compact live-check status
+- compact root-level compatibility live-check status
+- host candidates and host live-check status
 - explicit failure reasons
 - recent reorg metadata
 
 The crawler does not store:
 
 - full HTTP response bodies
-- arbitrary subdomain results
+- arbitrary subdomain expansion without evidence
 - full delegated zone contents
 - complete DNS history
 - private keys or account state
@@ -68,31 +83,36 @@ The compact DB keeps recent rollback metadata:
 
 For nightly or weekly reports, keeping the last few hundred blocks is enough practical safety. If a stored height hash no longer matches HSD, `hns-topology reorg-check --rollback` restores changed names from the highest affected height downward, removes affected block metadata, and leaves the index ready to replay names changed in the new canonical blocks.
 
-## Live Checks
+## Host Discovery and Live Checks
 
-Live checks are intentionally limited to promising names:
+Host discovery is bounded. The crawler generates default `<root>` and `www.<root>` candidates only for active roots with actionable bootstrap material. Additional host candidates come from browser evidence, TLSA owner names, previous host live status, operator imports, or future link evidence. It does not brute-force or recursively expand subdomains.
+
+Host live checks are intentionally limited to promising candidates:
 
 - `DIRECT_SYNTH`
 - `DELEGATED_WITH_GLUE`
 - `DNSSEC_CANDIDATE`
 - `DANE_CANDIDATE`
-- recently updated names
-- previously working names
-- user-submitted names, once that queue exists
+- browser-observed hosts
+- TLSA-owner-derived hosts
+- previously working hosts
+- operator-submitted hosts, once that queue exists
 
-Checks are rate-limited and store status metadata plus DNS evidence observations. Each live-check run records its candidate count, checked count, concurrency, minimum inter-check delay, timeout, recheck window, resolver setting, and start/finish timestamps in `snapshot_meta`. For names with strict-HNS bootstrap addresses, the scanner also performs direct DNSSEC-enabled, non-recursive probes against the bootstrap nameserver for A, AAAA, TLSA, and DNSKEY data. These observations are append-only and are exported as per-name evidence JSON.
+Checks are rate-limited and store host status metadata keyed by `(root_name, host)`. Each host live-check run records its candidate count, checked count, concurrency, minimum inter-check delay, timeout, recheck window, resolver setting, and start/finish timestamps in `snapshot_meta`. The legacy `live-check` command remains as an apex compatibility wrapper; the primary path is `discover-hosts` followed by `live-check-hosts`.
+
+For a host check, A/AAAA queries use the host, TLSA queries use `_443._tcp.<host>`, HTTPS SNI uses the host, and DNSSEC validation uses the root/zone key owner. This is the main correctness fix for subdomain hosts.
 
 External workers can submit the same evidence JSON through `hns-topology import-dns-evidence`. This gives the project a crowd-sourced path: independent scanners can publish actual RRset observations with `source` and `source_id`, while the public report shows the latest observation per query/source.
 
-Live device observations from the sister HNS Browser are imported separately with `hns-topology import-browser-evidence`. The command accepts repeated trace/log files or a directory containing resolver trace JSON and `gateway-events.log` files. Imported entries are stored append-only in `browser_evidence` and exported as `data/browser-evidence/<name>.json`. Browser fallback is contextual evidence: mobile and public networks often block UDP/TCP 53, so a trace with authoritative DoH or fallback can still be useful proof of browser behavior without automatically becoming a domain-side compliance failure.
+Live device observations from the sister HNS Browser are imported separately with `hns-topology import-browser-evidence`. The command accepts repeated trace/log files or a directory containing resolver trace JSON and `gateway-events.log` files. Imported entries are stored append-only in `browser_evidence`, mapped to known HNS roots by longest host suffix, and also upsert host candidates. Browser fallback is contextual evidence: mobile and public networks often block UDP/TCP 53, so a trace with authoritative DoH or fallback can still be useful proof of browser behavior without automatically becoming a domain-side compliance failure.
 
 Static TLSA certificate-expiry inference is limited to resource records that embed the full certificate (`selector=0`, `matchingType=0`). The common `3 1 1` SPKI-hash profile remains intentionally small and does not expose notAfter, so expiry for those names stays a live HTTPS/browser evidence concern.
 
 When downloads are explicitly enabled, `verification.csv` provides a flat command list for operators who want to run `dig` outside the browser. Direct bootstrap rows query GLUE/SYNTH addresses from the HNS resource. Indirect handoff rows include the preliminary nameserver-host lookup plus target-zone probes that use a `<resolved-ns-ip>` placeholder. The export is streamed from the same canonical name window as the static row store and includes UDP 53 and TCP 53 variants, plus `_dns.<nameserver>` SVCB discovery probes where a nameserver hostname is known, so operators can distinguish authoritative DNS failure from client-network port-53 blocking and discover authoritative DoH alternatives.
 
-The same download set includes `site-directory.csv`, a live-site-oriented export for active names with live crawler or browser evidence. The same inclusion rule is exposed as the `live_site_names` Names filter for browsing inside the static report. It is deliberately evidence-based: static HNS resource candidates stay in browser-target queues until HTTPS/browser evidence proves that a site loaded or DANE verified.
+The default public export includes `host-directory.json`, a host-level live directory for active roots with crawler or browser evidence that a host loaded, HTTPS was reachable, or DANE verified. The optional download set also includes the same rows as `site-directory.csv`. The same inclusion rule is summarized as the `live_site_names` root-level Names filter for browsing inside the static report. It is deliberately evidence-based: strict-ready roots produce host candidates, not live directory rows.
 
-The download set also includes `browser-targets.csv`, a ranked queue for reverse-engineering live HNS sites with the sister Android browser. Rows include the candidate URL, why it was selected, current static/live/browser evidence, and an ADB command that force-stops `com.denuoweb.hnsdane` before starting `MainActivity` with the `com.denuoweb.hnsdane.LOAD_URL` extra. The fresh start avoids stale WebView state when walking many candidates. Known browser DANE and loaded-site evidence ranks first, followed by crawler live evidence, strict-HNS-ready static candidates, DNSSEC delegated candidates, and indirect NS handoff diagnostics. The `browser_target_names` Names filter and summary count expose the direct static/live/browser candidate population; the CSV remains the broader operator queue because it can include indirect handoff rows.
+The download set also includes `browser-targets.csv`, a host-level ranked queue for reverse-engineering live HNS sites with the sister Android browser. Rows include `root_name`, `host`, candidate URL, why it was selected, current static/live/browser evidence, and an ADB command that force-stops `com.denuoweb.hnsdane` before starting `MainActivity` with the `com.denuoweb.hnsdane.LOAD_URL` extra. The fresh start avoids stale WebView state when walking many candidates. Known browser DANE and loaded-site evidence ranks first, followed by crawler live evidence, TLSA-owner candidates, and default apex/www candidates.
 
 ## DANE Compliance Pipeline
 

@@ -113,6 +113,43 @@ class LiveStatus:
 
 
 @dataclass(frozen=True)
+class HostCandidate:
+    root_name: str
+    host: str
+    source: str
+    source_detail: str
+    confidence: int
+    first_seen_at: str
+    last_seen_at: str
+    next_check_at: str | None = None
+    suppressed: bool = False
+
+
+@dataclass(frozen=True)
+class HostLiveStatus:
+    root_name: str
+    host: str
+    url: str
+    address_status: str
+    dns_reachable: str
+    dnssec_status: str
+    tlsa_status: str
+    dane_status: str
+    https_status: str
+    strict_hns_status: str
+    authoritative_udp_status: str
+    authoritative_tcp_status: str
+    authoritative_doh_status: str
+    fallback_status: str
+    failure_reason: str | None
+    checked_at: str
+    next_check_at: str
+    certificate_sha256: str | None = None
+    spki_sha256: str | None = None
+    certificate_not_valid_after: str | None = None
+
+
+@dataclass(frozen=True)
 class DnsEvidence:
     name: str
     qname: str

@@ -29,6 +29,7 @@ from hns_topology.livecheck import (
     _resolve_tlsa_secure,
     _strict_doh_endpoints,
     _validate_dnssec_delegation,
+    check_host,
     check_name,
     collect_dns_evidence,
     select_live_check_candidates,
@@ -370,6 +371,74 @@ def test_tlsa_lookup_uses_exact_requested_service_owner(monkeypatch):
     assert result.records == []
 
 
+def test_strict_address_resolution_uses_host_owner_and_root_key_owner(monkeypatch):
+    seen = {}
+
+    def fake_strict_resolve(resolver, owner, rrtype, doh_endpoints=None):
+        seen.setdefault("queries", []).append((owner, rrtype))
+        if rrtype == "A":
+            return StrictAnswer(
+                rrset=dns.rrset.from_text("www.denuoweb.", 300, "IN", "A", "198.51.100.10"),
+                response=dns.message.make_response(
+                    dns.message.make_query("www.denuoweb.", dns.rdatatype.A)
+                ),
+            )
+        return None
+
+    def fake_rrset_signature_valid(rrset, response, key_owner, dnskey_rrset):
+        seen["key_owner"] = key_owner.to_text()
+        return True
+
+    resolver = dns.resolver.Resolver(configure=False)
+    resolver.nameservers = ["203.0.113.53"]
+    monkeypatch.setattr("hns_topology.livecheck._strict_resolve_rrset", fake_strict_resolve)
+    monkeypatch.setattr("hns_topology.livecheck._rrset_signature_valid", fake_rrset_signature_valid)
+
+    result = _resolve_strict_address_resolution(
+        resolver,
+        "www.denuoweb",
+        DnssecResult("valid", dnskey_rrset=object()),
+        key_owner="denuoweb",
+    )
+
+    assert result.addresses == ["198.51.100.10"]
+    assert seen["queries"] == [("www.denuoweb", "A"), ("www.denuoweb", "AAAA")]
+    assert seen["key_owner"] == "denuoweb."
+
+
+def test_tlsa_lookup_uses_host_owner_and_root_key_owner(monkeypatch):
+    seen = {}
+
+    def fake_strict_resolve(resolver, owner, rrtype, doh_endpoints=None):
+        seen["owner"] = owner
+        return StrictAnswer(
+            rrset=dns.rrset.from_text("_443._tcp.jaron.crewball.", 300, "IN", "TLSA", "3 1 1 aa"),
+            response=dns.message.make_response(
+                dns.message.make_query("_443._tcp.jaron.crewball.", dns.rdatatype.TLSA)
+            ),
+        )
+
+    def fake_rrset_signature_valid(rrset, response, key_owner, dnskey_rrset):
+        seen["key_owner"] = key_owner.to_text()
+        return True
+
+    resolver = dns.resolver.Resolver(configure=False)
+    resolver.nameservers = ["203.0.113.53"]
+    monkeypatch.setattr("hns_topology.livecheck._strict_resolve_rrset", fake_strict_resolve)
+    monkeypatch.setattr("hns_topology.livecheck._rrset_signature_valid", fake_rrset_signature_valid)
+
+    result = _resolve_tlsa_secure(
+        resolver,
+        "jaron.crewball",
+        DnssecResult("valid", dnskey_rrset=object()),
+        key_owner="crewball",
+    )
+
+    assert result.records == [(3, 1, 1, bytes.fromhex("aa"))]
+    assert seen["owner"] == "_443._tcp.jaron.crewball"
+    assert seen["key_owner"] == "crewball."
+
+
 def test_dnssec_validation_requires_dnskey_rrsig(monkeypatch):
     owner = dns.name.from_text("example.")
     dnskey = dns.rdata.from_text(
@@ -413,6 +482,63 @@ class DummyLimiter:
 
     def wait(self):
         self.waits += 1
+
+
+def test_check_host_uses_host_for_resolution_tlsa_and_sni(monkeypatch):
+    seen = {}
+
+    def validate_dnssec(resolver, name, ds_records):
+        seen["zone_name"] = name
+        return DnssecResult("valid", dnskey_rrset=object())
+
+    def resolve_addresses(resolver, name, dnssec_result, doh_endpoints=None, *, key_owner=None):
+        seen["address_owner"] = name
+        seen["address_key_owner"] = key_owner
+        return AddressResolution(["198.51.100.99"], secure=True)
+
+    def resolve_tlsa(resolver, name, dnssec_result, doh_endpoints=None, *, key_owner=None):
+        seen["tlsa_host"] = name
+        seen["tlsa_key_owner"] = key_owner
+        return TlsaResolution([])
+
+    def https_connect(hostname, address, timeout):
+        seen["sni_hostname"] = hostname
+        seen["https_address"] = address
+        return HttpsResult("working", b"cert", None)
+
+    monkeypatch.setattr("hns_topology.livecheck._validate_dnssec_delegation", validate_dnssec)
+    monkeypatch.setattr("hns_topology.livecheck._resolve_strict_address_resolution", resolve_addresses)
+    monkeypatch.setattr("hns_topology.livecheck._resolve_tlsa_secure", resolve_tlsa)
+    monkeypatch.setattr("hns_topology.livecheck._https_connect", https_connect)
+
+    status = check_host(
+        {
+            "name": "denuoweb",
+            "ns_names": ["ns1.denuoweb"],
+            "synth4": [],
+            "synth6": [],
+            "glue4": ["203.0.113.53"],
+            "glue6": [],
+            "has_ds": 1,
+            "ds_records": [{"keyTag": 1, "algorithm": 8, "digestType": 2, "digest": "00"}],
+        },
+        "www.denuoweb",
+        LiveCheckConfig(timeout=0.1),
+        DummyLimiter(),
+    )
+
+    assert status.root_name == "denuoweb"
+    assert status.host == "www.denuoweb"
+    assert status.url == "https://www.denuoweb/"
+    assert seen == {
+        "zone_name": "denuoweb",
+        "address_owner": "www.denuoweb",
+        "address_key_owner": "denuoweb",
+        "sni_hostname": "www.denuoweb",
+        "https_address": "198.51.100.99",
+        "tlsa_host": "www.denuoweb",
+        "tlsa_key_owner": "denuoweb",
+    }
 
 
 def test_synth_is_used_as_nameserver_bootstrap_not_website_address(monkeypatch):

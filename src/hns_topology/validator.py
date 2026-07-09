@@ -21,6 +21,8 @@ REQUIRED_TABLES = {
     "resource_summary",
     "resource_ip",
     "live_status",
+    "host_candidates",
+    "host_live_status",
     "provider_summary",
     "dns_evidence",
     "browser_evidence",
@@ -50,6 +52,7 @@ REQUIRED_PUBLIC_FILES = (
     "data/summary.json",
     "data/manifest.json",
     "data/names-pages.json",
+    "data/host-directory.json",
 )
 
 PUBLIC_JSON_FILES = tuple(path for path in REQUIRED_PUBLIC_FILES if path.endswith(".json"))
@@ -57,6 +60,7 @@ FORBIDDEN_PUBLIC_SUFFIXES = (".key", ".pem")
 REQUIRED_MANIFEST_ARTIFACTS = (
     "summary.json",
     "names-pages.json",
+    "host-directory.json",
 )
 OPTIONAL_MANIFEST_ARTIFACTS = (
     "names.json",
@@ -195,9 +199,9 @@ def _validate_public_summary_metadata(
     )
 
     if require_live_checks:
-        live_started = bool(summary.get("live_check_started_at"))
-        live_finished = bool(summary.get("live_check_finished_at"))
-        checked_count = summary.get("live_check_checked_count")
+        live_started = bool(summary.get("host_live_check_started_at") or summary.get("live_check_started_at"))
+        live_finished = bool(summary.get("host_live_check_finished_at") or summary.get("live_check_finished_at"))
+        checked_count = summary.get("host_live_check_checked_count") or summary.get("live_check_checked_count")
         checks.append(
             ReleaseCheck(
                 "live_status_present",
@@ -216,14 +220,14 @@ def _validate_public_summary_metadata(
 
 
 def _validate_public_live_check_metadata(summary: dict[str, Any], checks: list[ReleaseCheck]) -> None:
-    concurrency = summary.get("live_check_concurrency")
-    min_delay = summary.get("live_check_min_delay_ms")
-    timeout = summary.get("live_check_timeout_seconds")
-    recheck = summary.get("live_check_recheck_seconds")
-    resolver = str(summary.get("live_check_resolver") or "")
-    limit = summary.get("live_check_limit")
-    candidate_count = summary.get("live_check_candidate_count")
-    checked_count = summary.get("live_check_checked_count")
+    concurrency = summary.get("host_live_check_concurrency") or summary.get("live_check_concurrency")
+    min_delay = summary.get("host_live_check_min_delay_ms") or summary.get("live_check_min_delay_ms")
+    timeout = summary.get("host_live_check_timeout_seconds") or summary.get("live_check_timeout_seconds")
+    recheck = summary.get("host_live_check_recheck_seconds") or summary.get("live_check_recheck_seconds")
+    resolver = str(summary.get("host_live_check_resolver") or summary.get("live_check_resolver") or "")
+    limit = summary.get("host_live_check_limit") or summary.get("live_check_limit")
+    candidate_count = summary.get("host_live_check_candidate_count") or summary.get("live_check_candidate_count")
+    checked_count = summary.get("host_live_check_checked_count") or summary.get("live_check_checked_count")
 
     config_ok = (
         _is_positive_int_value(concurrency)
@@ -334,9 +338,15 @@ def _validate_database(
 
     if require_live_checks:
         live_rows = table_count(conn, "SELECT COUNT(*) FROM live_status")
-        live_started = bool(get_meta(conn, "live_check_started_at", ""))
-        live_finished = bool(get_meta(conn, "live_check_finished_at", ""))
-        checks.append(ReleaseCheck("live_status_present", live_rows > 0, f"{live_rows} rows"))
+        host_live_rows = table_count(conn, "SELECT COUNT(*) FROM host_live_status")
+        live_started = bool(
+            get_meta(conn, "host_live_check_started_at", "") or get_meta(conn, "live_check_started_at", "")
+        )
+        live_finished = bool(
+            get_meta(conn, "host_live_check_finished_at", "") or get_meta(conn, "live_check_finished_at", "")
+        )
+        total_live_rows = live_rows + host_live_rows
+        checks.append(ReleaseCheck("live_status_present", total_live_rows > 0, f"{total_live_rows} rows"))
         checks.append(
             ReleaseCheck(
                 "live_check_timestamps",
@@ -395,14 +405,14 @@ def _validate_metadata(
 
 
 def _validate_live_check_metadata(conn: sqlite3.Connection, checks: list[ReleaseCheck]) -> None:
-    concurrency = get_meta(conn, "live_check_concurrency", "")
-    min_delay = get_meta(conn, "live_check_min_delay_ms", "")
-    timeout = get_meta(conn, "live_check_timeout_seconds", "")
-    recheck = get_meta(conn, "live_check_recheck_seconds", "")
-    resolver = get_meta(conn, "live_check_resolver", "")
-    limit = get_meta(conn, "live_check_limit", "")
-    candidate_count = get_meta(conn, "live_check_candidate_count", "")
-    checked_count = get_meta(conn, "live_check_checked_count", "")
+    concurrency = _live_check_meta(conn, "concurrency")
+    min_delay = _live_check_meta(conn, "min_delay_ms")
+    timeout = _live_check_meta(conn, "timeout_seconds")
+    recheck = _live_check_meta(conn, "recheck_seconds")
+    resolver = _live_check_meta(conn, "resolver")
+    limit = _live_check_meta(conn, "limit")
+    candidate_count = _live_check_meta(conn, "candidate_count")
+    checked_count = _live_check_meta(conn, "checked_count")
 
     config_ok = (
         _is_positive_int(concurrency)
@@ -431,6 +441,14 @@ def _validate_live_check_metadata(conn: sqlite3.Connection, checks: list[Release
             counts_ok,
             f"candidates={candidate_count or 'missing'} checked={checked_count or 'missing'}",
         )
+    )
+
+
+def _live_check_meta(conn: sqlite3.Connection, suffix: str) -> str:
+    return get_meta(conn, f"host_live_check_{suffix}", "") or get_meta(
+        conn,
+        f"live_check_{suffix}",
+        "",
     )
 
 
@@ -761,15 +779,17 @@ def _validate_download_export_counts(
         with site_directory_csv_path.open(newline="", encoding="utf-8") as handle:
             reader = csv.DictReader(handle)
             required_columns = {
-                "name",
+                "root_name",
+                "host",
                 "url",
+                "directory_status",
                 "evidence_source",
                 "evidence_confidence",
                 "transport_note",
                 "diagnostic_path",
             }
             missing_columns = required_columns - set(reader.fieldnames or [])
-            site_directory_rows = sum(1 for _ in reader)
+            site_directory_roots = {row.get("root_name") for row in reader if row.get("root_name")}
     except Exception as exc:
         row_mismatches.append(f"site-directory.csv: {type(exc).__name__}")
     else:
@@ -777,17 +797,18 @@ def _validate_download_export_counts(
             row_mismatches.append(f"site-directory.csv missing columns={','.join(sorted(missing_columns))}")
         if (
             site_directory_expected_rows is not None
-            and site_directory_rows != site_directory_expected_rows
+            and len(site_directory_roots) != site_directory_expected_rows
         ):
             row_mismatches.append(
-                f"site-directory.csv rows={site_directory_rows}!={site_directory_expected_rows}"
+                f"site-directory.csv roots={len(site_directory_roots)}!={site_directory_expected_rows}"
             )
 
     try:
         with browser_targets_csv_path.open(newline="", encoding="utf-8") as handle:
             reader = csv.DictReader(handle)
             required_columns = {
-                "name",
+                "root_name",
+                "host",
                 "url",
                 "priority",
                 "category",
@@ -796,10 +817,11 @@ def _validate_download_export_counts(
                 "diagnostic_path",
             }
             missing_columns = required_columns - set(reader.fieldnames or [])
-            browser_target_rows = 0
+            browser_target_roots = set()
             invalid_adb_commands = 0
             for row in reader:
-                browser_target_rows += 1
+                if row.get("root_name"):
+                    browser_target_roots.add(row["root_name"])
                 command = row.get("adb_command") or ""
                 if (
                     f"-n {HNS_BROWSER_ACTIVITY}" not in command
@@ -813,9 +835,12 @@ def _validate_download_export_counts(
             row_mismatches.append(f"browser-targets.csv missing columns={','.join(sorted(missing_columns))}")
         if invalid_adb_commands:
             row_mismatches.append(f"browser-targets.csv invalid adb_command rows={invalid_adb_commands}")
-        if browser_targets_expected_rows is not None and browser_target_rows != browser_targets_expected_rows:
+        if (
+            browser_targets_expected_rows is not None
+            and len(browser_target_roots) != browser_targets_expected_rows
+        ):
             row_mismatches.append(
-                f"browser-targets.csv rows={browser_target_rows}!={browser_targets_expected_rows}"
+                f"browser-targets.csv roots={len(browser_target_roots)}!={browser_targets_expected_rows}"
             )
 
     checks.append(
