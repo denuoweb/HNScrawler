@@ -78,6 +78,8 @@ CONFIRM_PRODUCTION_RUN=1 PIPELINE_MODE=bootstrap BOOTSTRAP_LIMIT=100 RUN_PUBLISH
 
 `scripts/gcloud-production-cycle.sh` runs preflight, provisions or starts the indexer VM, mounts the indexer disk, syncs code, installs dependencies, starts HSD, optionally waits for HSD readiness, runs the pipeline, publishes the generated site, and then applies `INDEXER_FINAL_ACTION`. The default final and failure action is `stop`, not delete. Set `INDEXER_FINAL_ACTION=delete-vm` only when you intentionally want to remove the ephemeral compute VM after the run. The persistent indexer disk is not deleted by this wrapper.
 
+Operational note: production cycles are long-running and should be launched from the VM-hosted logged wrapper or another detached scheduler, not from an interactive polling session. On `denuoweb-vm`, use the repo copy under `/mnt/hns-topology/HNScrawler` and run `scripts/run-production-cycle-logged.sh <label>` under a system scheduler or `nohup`; follow `logs/production-cycle/latest.log` for progress. Do not rely on a foreground terminal or Codex tool session to remain attached through live checks, generation, publish, and cleanup.
+
 To resume HSD sync without running or publishing a report, use:
 
 ```bash
