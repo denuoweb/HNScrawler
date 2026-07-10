@@ -117,9 +117,12 @@ Default export:
 
 - `summary.json`
 - `manifest.json`
+- `overview-pages.json`
+- `overview-pages/**`
 - `names-pages.json`
 - `names-pages/**`
 - `ip-addresses/**`
+- `nameservers/**`
 - `dns-evidence/**` when imported DNS evidence exists
 
 Optional with `--include-downloads`:

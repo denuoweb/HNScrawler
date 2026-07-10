@@ -347,7 +347,9 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
         "app.js",
         "data/summary.json",
         "data/manifest.json",
+        "data/overview-pages.json",
         "data/names-pages.json",
+        "data/nameservers/ns1.delegated.json",
         "data/ip-addresses/198.51.100.2.json",
         "data/ip-addresses/203.0.113.10.json",
         "data/ip-addresses/2001%3Adb8%3A%3A10.json",
@@ -379,8 +381,30 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     manifest_artifacts = {item["path"]: item for item in manifest["artifacts"]}
     summary = json.loads((out / "data/summary.json").read_text(encoding="utf-8"))
     providers = summary["providers"]
+    overview_pages = json.loads((out / "data/overview-pages.json").read_text(encoding="utf-8"))
     names_pages = json.loads((out / "data/names-pages.json").read_text(encoding="utf-8"))
     names_page_rows = json.loads((out / "data/names-pages/all/page-1.json").read_text(encoding="utf-8"))["rows"]
+    resource_ip_overview_page = json.loads(
+        (
+            out
+            / "data"
+            / overview_pages["collections"]["resource_ips"]["path_template"].replace("{page}", "1")
+        ).read_text(encoding="utf-8")
+    )
+    nameserver_overview_page = json.loads(
+        (
+            out
+            / "data"
+            / overview_pages["collections"]["nameservers"]["path_template"].replace("{page}", "1")
+        ).read_text(encoding="utf-8")
+    )
+    resolver_overview_page = json.loads(
+        (
+            out
+            / "data"
+            / overview_pages["collections"]["resolvers"]["path_template"].replace("{page}", "1")
+        ).read_text(encoding="utf-8")
+    )
     provider_postings_page = json.loads(
         (
             out
@@ -393,6 +417,7 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     direct_ipv6_index = json.loads(
         (out / "data/ip-addresses/2001%3Adb8%3A%3A10.json").read_text(encoding="utf-8")
     )
+    nameserver_index = json.loads((out / "data/nameservers/ns1.delegated.json").read_text(encoding="utf-8"))
     delegated_ip_page = json.loads(
         (out / "data" / delegated_ip_index["path_template"].replace("{page}", "1")).read_text(encoding="utf-8")
     )
@@ -401,6 +426,9 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     )
     direct_ipv6_page = json.loads(
         (out / "data" / direct_ipv6_index["path_template"].replace("{page}", "1")).read_text(encoding="utf-8")
+    )
+    nameserver_page = json.loads(
+        (out / "data" / nameserver_index["path_template"].replace("{page}", "1")).read_text(encoding="utf-8")
     )
     names_page_names = [row["name"] for row in names_page_rows]
     direct_row = next(row for row in names_page_rows if row["name"] == "direct")
@@ -414,6 +442,10 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert manifest["export"]["names_truncated"] is False
     assert manifest["export"]["download_artifacts_included"] is False
     assert "summary.json" in manifest_artifacts
+    assert "overview-pages.json" in manifest_artifacts
+    assert "overview-pages/resource_ips/page-1.json" in manifest_artifacts
+    assert "overview-pages/nameservers/page-1.json" in manifest_artifacts
+    assert "overview-pages/resolvers/page-1.json" in manifest_artifacts
     assert "faq_answers.json" not in manifest_artifacts
     assert "providers.json" not in manifest_artifacts
     assert "classes.json" not in manifest_artifacts
@@ -422,6 +454,8 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert "names-pages/all/page-1.json" in manifest_artifacts
     assert "ip-addresses/198.51.100.2.json" in manifest_artifacts
     assert "ip-addresses/198.51.100.2/page-1.json" in manifest_artifacts
+    assert "nameservers/ns1.delegated.json" in manifest_artifacts
+    assert "nameservers/ns1.delegated/page-1.json" in manifest_artifacts
     assert "ip-addresses/203.0.113.10.json" in manifest_artifacts
     assert "ip-addresses/203.0.113.10/page-1.json" in manifest_artifacts
     assert "ip-addresses/2001%3Adb8%3A%3A10.json" in manifest_artifacts
@@ -463,6 +497,12 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert direct_row["raw_size"] > 0
     assert direct_row["resource_hash"]
     assert direct_row["last_seen_height"] == 123456
+    assert overview_pages["collections"]["resource_ips"]["row_count"] == 4
+    assert overview_pages["collections"]["nameservers"]["row_count"] == 5
+    assert overview_pages["collections"]["resolvers"]["row_count"] == len(summary["known_hns_resolvers"])
+    assert any(row["ip"] == "198.51.100.2" for row in resource_ip_overview_page["rows"])
+    assert any(row["nameserver"] == "ns1.delegated" for row in nameserver_overview_page["rows"])
+    assert all("names_count" in row for row in resolver_overview_page["rows"])
     assert delegated_ip_index["ip"] == "198.51.100.2"
     assert delegated_ip_index["row_count"] == 1
     assert delegated_ip_index["page_count"] == 1
@@ -490,11 +530,18 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert direct_ipv6_page["row_encoding"] == "name"
     assert direct_ipv6_page["field_mask"] == 8
     assert direct_ipv6_page["rows"] == ["direct"]
+    assert nameserver_index["nameserver"] == "ns1.delegated"
+    assert nameserver_index["row_count"] == 1
+    assert nameserver_index["row_detail"] == "nameserver_matches"
+    assert nameserver_index["columns"] == ["name", "nameserver"]
+    assert nameserver_page["columns"] == ["name", "nameserver"]
+    assert nameserver_page["rows"] == [["delegated", "ns1.delegated"]]
     assert "classes" in summary
     assert "broken" not in summary
     assert "top_resource_ips" in summary
     assert "top_nameservers" in summary
     assert "known_hns_resolvers" in summary
+    assert all("names_count" in row for row in summary["known_hns_resolvers"])
     assert "next_actions" in summary
     assert {item["filter"] for item in summary["next_actions"]} <= set(names_pages["collections"])
     assert {item["key"] for item in summary["next_actions"]} == {

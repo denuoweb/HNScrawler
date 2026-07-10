@@ -205,6 +205,10 @@ main {
   margin-bottom: 12px;
 }
 
+.panel-heading h2 {
+  margin-bottom: 0;
+}
+
 .search-form {
   display: grid;
   gap: 8px;

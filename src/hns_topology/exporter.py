@@ -36,10 +36,12 @@ from .verification import build_verification_plan
 
 DATA_ARTIFACTS = (
     "summary.json",
+    "overview-pages.json",
     "names-pages.json",
 )
 
 PAGE_SIZE = 1000
+OVERVIEW_PAGE_SIZE = 25
 DETAILED_NAME_COLLECTION_ROW_LIMIT = 100_000
 EXPORTED_NAMES_ORDER_SQL = "n.name"
 PROVIDER_FILTER_PREFIX = "provider:"
@@ -273,10 +275,14 @@ def export_all(
     _log_export(f"export start out={out} names_limit={names_limit} effective_names_limit={effective_names_limit}")
     write_json(out / "summary.json", summary)
     _log_export("wrote summary.json")
+    write_json(out / "overview-pages.json", write_overview_pages(conn, out, page_size=OVERVIEW_PAGE_SIZE))
+    _log_export("wrote overview-pages.json")
     write_json(out / "names-pages.json", write_names_pages(conn, out, limit=effective_names_limit, page_size=PAGE_SIZE))
     _log_export("wrote names-pages.json")
     ip_address_count = write_ip_address_names(conn, out, limit=effective_names_limit)
     _log_export(f"wrote ip address files={ip_address_count}")
+    nameserver_count = write_nameserver_names(conn, out, limit=effective_names_limit)
+    _log_export(f"wrote nameserver files={nameserver_count}")
     evidence_count = write_dns_evidence(conn, out)
     _log_export(f"wrote dns evidence files={evidence_count}")
     if include_downloads:
@@ -416,7 +422,7 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
     summary["providers"] = build_providers(conn)
     summary["top_resource_ips"] = build_top_resource_ips(conn)
     summary["top_nameservers"] = build_top_nameservers(conn)
-    summary["known_hns_resolvers"] = [dict(item) for item in KNOWN_HNS_RESOLVERS]
+    summary["known_hns_resolvers"] = build_known_hns_resolvers(conn)
     summary["compliance_stages"] = build_compliance_stages(conn)
     summary["compliance_stage_counts"] = {
         item["stage"]: int(item["count"]) for item in summary["compliance_stages"]
@@ -539,17 +545,23 @@ def build_providers(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
 
 def build_top_resource_ips(conn: sqlite3.Connection, *, limit: int = 10) -> list[dict[str, Any]]:
+    return build_resource_ips(conn, limit=limit)
+
+
+def build_resource_ips(conn: sqlite3.Connection, *, limit: int | None = None) -> list[dict[str, Any]]:
+    limit_sql = "LIMIT ?" if limit is not None else ""
+    params: tuple[Any, ...] = (limit,) if limit is not None else ()
     rows = conn.execute(
-        """
+        f"""
         SELECT ri.ip, COUNT(DISTINCT ri.name) AS names_count
         FROM resource_ip ri
         JOIN names n ON n.name = ri.name
         WHERE COALESCE(n.expired, 0) = 0
         GROUP BY ri.ip
         ORDER BY names_count DESC, ri.ip
-        LIMIT ?
+        {limit_sql}
         """,
-        (limit,),
+        params,
     ).fetchall()
     result: list[dict[str, Any]] = []
     for row in rows:
@@ -563,34 +575,68 @@ def build_top_resource_ips(conn: sqlite3.Connection, *, limit: int = 10) -> list
                 "role": role["role"],
                 "label": role["label"],
                 "source": role["source"],
-                "filter_link": f"names.html?q={quote(ip)}",
+                "filter_link": f"names.html?q={quote(ip, safe='')}",
             }
         )
     return result
 
 
 def build_top_nameservers(conn: sqlite3.Connection, *, limit: int = 10) -> list[dict[str, Any]]:
+    return build_nameservers(conn, limit=limit)
+
+
+def build_nameservers(conn: sqlite3.Connection, *, limit: int | None = None) -> list[dict[str, Any]]:
+    limit_sql = "LIMIT ?" if limit is not None else ""
+    params: tuple[Any, ...] = (limit,) if limit is not None else ()
     return [
         {
             "nameserver": str(row["nameserver"]),
             "names_count": int(row["names_count"] or 0),
+            "filter_link": f"names.html?search=nameserver&q={quote(str(row['nameserver']), safe='')}",
         }
         for row in conn.execute(
-            """
-            SELECT ns.value AS nameserver, COUNT(*) AS names_count
+            f"""
+            SELECT LOWER(TRIM(ns.value, '.')) AS nameserver, COUNT(DISTINCT rs.name) AS names_count
             FROM resource_summary rs
             JOIN names n ON n.name = rs.name
             JOIN json_each(rs.ns_names) ns
             WHERE COALESCE(n.expired, 0) = 0
               AND ns.value IS NOT NULL
-              AND ns.value != ''
-            GROUP BY ns.value
+              AND LOWER(TRIM(ns.value, '.')) != ''
+            GROUP BY LOWER(TRIM(ns.value, '.'))
             ORDER BY names_count DESC, nameserver
-            LIMIT ?
+            {limit_sql}
             """,
-            (limit,),
+            params,
         )
     ]
+
+
+def build_known_hns_resolvers(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    return [
+        {
+            **dict(item),
+            "names_count": _active_resource_ip_count(conn, str(item["ip"])),
+            "filter_link": f"names.html?q={quote(str(item['ip']), safe='')}",
+        }
+        for item in KNOWN_HNS_RESOLVERS
+    ]
+
+
+def _active_resource_ip_count(conn: sqlite3.Connection, ip: str) -> int:
+    return int(
+        conn.execute(
+            """
+            SELECT COUNT(DISTINCT ri.name)
+            FROM resource_ip ri
+            JOIN names n ON n.name = ri.name
+            WHERE COALESCE(n.expired, 0) = 0
+              AND ri.ip = ?
+            """,
+            (ip,),
+        ).fetchone()[0]
+        or 0
+    )
 
 
 def _top_ip_field_counts(conn: sqlite3.Connection, ip: str) -> dict[str, int]:
@@ -691,6 +737,66 @@ def write_names_pages(
     return _write_names_pages_streamed(conn, out / "names-pages", limit=limit, page_size=page_size)
 
 
+def write_overview_pages(conn: sqlite3.Connection, out: Path, *, page_size: int) -> dict[str, Any]:
+    base_dir = out / "overview-pages"
+    _remove_tree(base_dir, missing_ok=True)
+    base_dir.mkdir(parents=True, exist_ok=True)
+    collections = {
+        "resource_ips": _write_overview_collection(
+            base_dir,
+            "resource_ips",
+            build_resource_ips(conn),
+            page_size=page_size,
+        ),
+        "nameservers": _write_overview_collection(
+            base_dir,
+            "nameservers",
+            build_nameservers(conn),
+            page_size=page_size,
+        ),
+        "resolvers": _write_overview_collection(
+            base_dir,
+            "resolvers",
+            build_known_hns_resolvers(conn),
+            page_size=page_size,
+        ),
+    }
+    return {
+        "page_size": page_size,
+        "collections": collections,
+    }
+
+
+def _write_overview_collection(
+    base_dir: Path,
+    key: str,
+    rows: list[dict[str, Any]],
+    *,
+    page_size: int,
+) -> dict[str, Any]:
+    collection_dir = base_dir / key
+    collection_dir.mkdir(parents=True, exist_ok=True)
+    row_count = len(rows)
+    page_count = math.ceil(row_count / page_size) if row_count else 0
+    for index in range(page_count):
+        page = index + 1
+        start = index * page_size
+        write_compact_json(
+            collection_dir / f"page-{page}.json",
+            {
+                "page": page,
+                "rows": rows[start:start + page_size],
+            },
+        )
+    return {
+        "row_count": row_count,
+        "page_size": page_size,
+        "page_count": page_count,
+        "path_template": f"{base_dir.name}/{key}/page-{{page}}.json",
+        "row_source": "rows",
+    }
+
+
 def write_dns_evidence(conn: sqlite3.Connection, out: Path) -> int:
     base_dir = out / "dns-evidence"
     _remove_tree(base_dir, missing_ok=True)
@@ -762,6 +868,51 @@ def write_ip_address_names(conn: sqlite3.Connection, out: Path, *, limit: int) -
     return file_count
 
 
+def write_nameserver_names(conn: sqlite3.Connection, out: Path, *, limit: int) -> int:
+    base_dir = out / "nameservers"
+    _remove_tree(base_dir, missing_ok=True)
+    if limit <= 0:
+        return 0
+    base_dir.mkdir(parents=True, exist_ok=True)
+    row_detail = "nameserver_matches"
+    output_keys = ["name", "nameserver"]
+    file_count = 0
+    total_names = table_count(conn, "SELECT COUNT(*) FROM names")
+    for item in _nameserver_counts(conn, limit=limit, total_names=total_names):
+        nameserver = str(item["nameserver"])
+        row_count = int(item["row_count"] or 0)
+        current_rows: list[dict[str, Any]] = []
+        current_page = 1
+        for row in _nameserver_rows(conn, nameserver, limit=limit, total_names=total_names):
+            current_rows.append(
+                {
+                    "name": row["name"],
+                    "nameserver": nameserver,
+                }
+            )
+            if len(current_rows) >= PAGE_SIZE:
+                _write_nameserver_page(
+                    base_dir,
+                    nameserver,
+                    current_page,
+                    current_rows,
+                    output_keys=output_keys,
+                )
+                current_rows = []
+                current_page += 1
+        _finish_nameserver_pages(
+            base_dir,
+            nameserver,
+            rows=current_rows,
+            row_count=row_count,
+            page=current_page,
+            row_detail=row_detail,
+            output_keys=output_keys,
+        )
+        file_count += 1
+    return file_count
+
+
 def _ip_address_counts(
     conn: sqlite3.Connection,
     *,
@@ -771,9 +922,11 @@ def _ip_address_counts(
     if limit >= total_names:
         return conn.execute(
             """
-            SELECT ip, COUNT(DISTINCT name) AS row_count
-            FROM resource_ip
-            GROUP BY ip
+            SELECT ri.ip, COUNT(DISTINCT ri.name) AS row_count
+            FROM resource_ip ri
+            JOIN names n ON n.name = ri.name
+            WHERE COALESCE(n.expired, 0) = 0
+            GROUP BY ri.ip
             ORDER BY ip
             """
         )
@@ -788,6 +941,8 @@ def _ip_address_counts(
         SELECT ri.ip, COUNT(DISTINCT ri.name) AS row_count
         FROM resource_ip ri
         JOIN exported_names en ON en.name = ri.name
+        JOIN names n ON n.name = ri.name
+        WHERE COALESCE(n.expired, 0) = 0
         GROUP BY ri.ip
         ORDER BY ri.ip
         """,
@@ -805,11 +960,13 @@ def _ip_address_field_counts(
     if limit >= total_names:
         rows = conn.execute(
             """
-            SELECT field, COUNT(DISTINCT name) AS row_count
-            FROM resource_ip
-            WHERE ip = ?
-            GROUP BY field
-            ORDER BY field
+            SELECT ri.field, COUNT(DISTINCT ri.name) AS row_count
+            FROM resource_ip ri
+            JOIN names n ON n.name = ri.name
+            WHERE COALESCE(n.expired, 0) = 0
+              AND ri.ip = ?
+            GROUP BY ri.field
+            ORDER BY ri.field
             """,
             (ip,),
         ).fetchall()
@@ -825,7 +982,9 @@ def _ip_address_field_counts(
             SELECT ri.field, COUNT(DISTINCT ri.name) AS row_count
             FROM resource_ip ri
             JOIN exported_names en ON en.name = ri.name
-            WHERE ri.ip = ?
+            JOIN names n ON n.name = ri.name
+            WHERE COALESCE(n.expired, 0) = 0
+              AND ri.ip = ?
             GROUP BY ri.field
             ORDER BY ri.field
             """,
@@ -844,11 +1003,13 @@ def _ip_address_rows(
     if limit >= total_names:
         return conn.execute(
             """
-            SELECT name, group_concat(field) AS fields
-            FROM resource_ip
-            WHERE ip = ?
-            GROUP BY name
-            ORDER BY name
+            SELECT ri.name, group_concat(ri.field) AS fields
+            FROM resource_ip ri
+            JOIN names n ON n.name = ri.name
+            WHERE COALESCE(n.expired, 0) = 0
+              AND ri.ip = ?
+            GROUP BY ri.name
+            ORDER BY ri.name
             """,
             (ip,),
         )
@@ -863,11 +1024,99 @@ def _ip_address_rows(
         SELECT ri.name, group_concat(ri.field) AS fields
         FROM resource_ip ri
         JOIN exported_names en ON en.name = ri.name
-        WHERE ri.ip = ?
+        JOIN names n ON n.name = ri.name
+        WHERE COALESCE(n.expired, 0) = 0
+          AND ri.ip = ?
         GROUP BY ri.name
         ORDER BY ri.name
         """,
         (limit, ip),
+    )
+
+
+def _nameserver_counts(
+    conn: sqlite3.Connection,
+    *,
+    limit: int,
+    total_names: int,
+) -> sqlite3.Cursor:
+    if limit >= total_names:
+        return conn.execute(
+            """
+            SELECT LOWER(TRIM(ns.value, '.')) AS nameserver, COUNT(DISTINCT rs.name) AS row_count
+            FROM resource_summary rs
+            JOIN names n ON n.name = rs.name
+            JOIN json_each(rs.ns_names) ns
+            WHERE COALESCE(n.expired, 0) = 0
+              AND ns.value IS NOT NULL
+              AND LOWER(TRIM(ns.value, '.')) != ''
+            GROUP BY LOWER(TRIM(ns.value, '.'))
+            ORDER BY nameserver
+            """
+        )
+    return conn.execute(
+        """
+        WITH exported_names AS (
+          SELECT name
+          FROM names
+          ORDER BY name
+          LIMIT ?
+        )
+        SELECT LOWER(TRIM(ns.value, '.')) AS nameserver, COUNT(DISTINCT rs.name) AS row_count
+        FROM resource_summary rs
+        JOIN exported_names en ON en.name = rs.name
+        JOIN names n ON n.name = rs.name
+        JOIN json_each(rs.ns_names) ns
+        WHERE COALESCE(n.expired, 0) = 0
+          AND ns.value IS NOT NULL
+          AND LOWER(TRIM(ns.value, '.')) != ''
+        GROUP BY LOWER(TRIM(ns.value, '.'))
+        ORDER BY nameserver
+        """,
+        (limit,),
+    )
+
+
+def _nameserver_rows(
+    conn: sqlite3.Connection,
+    nameserver: str,
+    *,
+    limit: int,
+    total_names: int,
+) -> sqlite3.Cursor:
+    if limit >= total_names:
+        return conn.execute(
+            """
+            SELECT rs.name
+            FROM resource_summary rs
+            JOIN names n ON n.name = rs.name
+            JOIN json_each(rs.ns_names) ns
+            WHERE COALESCE(n.expired, 0) = 0
+              AND LOWER(TRIM(ns.value, '.')) = ?
+            GROUP BY rs.name
+            ORDER BY rs.name
+            """,
+            (nameserver,),
+        )
+    return conn.execute(
+        """
+        WITH exported_names AS (
+          SELECT name
+          FROM names
+          ORDER BY name
+          LIMIT ?
+        )
+        SELECT rs.name
+        FROM resource_summary rs
+        JOIN exported_names en ON en.name = rs.name
+        JOIN names n ON n.name = rs.name
+        JOIN json_each(rs.ns_names) ns
+        WHERE COALESCE(n.expired, 0) = 0
+          AND LOWER(TRIM(ns.value, '.')) = ?
+        GROUP BY rs.name
+        ORDER BY rs.name
+        """,
+        (limit, nameserver),
     )
 
 
@@ -929,6 +1178,54 @@ def _write_ip_address_index(
     write_json(base_dir / _ip_address_filename(ip), payload)
 
 
+def _finish_nameserver_pages(
+    base_dir: Path,
+    nameserver: str,
+    *,
+    rows: list[dict[str, Any]],
+    row_count: int,
+    page: int,
+    row_detail: str,
+    output_keys: list[str],
+) -> None:
+    if rows:
+        _write_nameserver_page(
+            base_dir,
+            nameserver,
+            page,
+            rows,
+            output_keys=output_keys,
+        )
+    _write_nameserver_index(
+        base_dir,
+        nameserver,
+        row_count=row_count,
+        row_detail=row_detail,
+        output_keys=output_keys,
+    )
+
+
+def _write_nameserver_index(
+    base_dir: Path,
+    nameserver: str,
+    *,
+    row_count: int,
+    row_detail: str,
+    output_keys: list[str],
+) -> None:
+    page_count = math.ceil(row_count / PAGE_SIZE) if row_count else 0
+    payload = {
+        "nameserver": nameserver,
+        "row_count": row_count,
+        "page_size": PAGE_SIZE,
+        "page_count": page_count,
+        "path_template": f"nameservers/{_nameserver_basename(nameserver)}/page-{{page}}.json",
+        "row_detail": row_detail,
+        "columns": output_keys,
+    }
+    write_json(base_dir / _nameserver_filename(nameserver), payload)
+
+
 def _write_ip_address_page(
     base_dir: Path,
     ip: str,
@@ -957,6 +1254,26 @@ def _write_ip_address_page(
     write_compact_json(page_dir / f"page-{page}.json", payload)
 
 
+def _write_nameserver_page(
+    base_dir: Path,
+    nameserver: str,
+    page: int,
+    rows: list[dict[str, Any]],
+    *,
+    output_keys: list[str],
+) -> None:
+    page_dir = base_dir / _nameserver_basename(nameserver)
+    page_dir.mkdir(parents=True, exist_ok=True)
+    write_compact_json(
+        page_dir / f"page-{page}.json",
+        {
+            "page": page,
+            "columns": output_keys,
+            "rows": [[row.get(key) for key in output_keys] for row in rows],
+        },
+    )
+
+
 def _ip_field_mask(fields: str) -> int:
     mask = 0
     for field in fields.split(","):
@@ -979,6 +1296,18 @@ def _ip_address_basename(ip: str) -> str:
 
 def _ip_address_filename(ip: str) -> str:
     return f"{_ip_address_basename(ip)}.json"
+
+
+def _nameserver_basename(nameserver: str) -> str:
+    return quote(_normalize_nameserver(nameserver), safe="")
+
+
+def _nameserver_filename(nameserver: str) -> str:
+    return f"{_nameserver_basename(nameserver)}.json"
+
+
+def _normalize_nameserver(nameserver: str) -> str:
+    return str(nameserver).strip().lower().rstrip(".")
 
 
 def build_dns_evidence(conn: sqlite3.Connection, name: str) -> dict[str, Any]:
@@ -1699,7 +2028,7 @@ def _manifest_artifact_paths(out: Path, *, include_downloads: bool) -> list[str]
                 "topology.sqlite.gz",
             )
         )
-    for directory in ("names-pages", "ip-addresses", "dns-evidence"):
+    for directory in ("overview-pages", "names-pages", "ip-addresses", "nameservers", "dns-evidence"):
         paths.extend(
             path.relative_to(out).as_posix()
             for path in sorted((out / directory).glob("*/*.json"))

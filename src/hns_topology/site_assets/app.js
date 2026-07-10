@@ -16,6 +16,7 @@ let nextPageFetchAt = 0;
 const collectionRowsCache = new Map();
 const collectionPageRowsCache = new Map();
 const ipAddressLookupCache = new Map();
+const nameserverLookupCache = new Map();
 
 function sitePath(path) {
   if (/^(?:[a-z]+:)?\/\//i.test(path) || path.startsWith("/")) return path;
@@ -45,18 +46,16 @@ function pct(value, total) {
   return `${((value / total) * 100).toFixed(2)}%`;
 }
 
-function metric(label, value, sub = "", href = "") {
-  const content = `<span class="label">${escapeHtml(label)}</span><span class="value">${fmt.format(value ?? 0)}</span><span class="sub">${escapeHtml(sub)}</span>`;
-  if (href) return `<a class="metric metric-link" href="${escapeHtml(sitePath(href))}">${content}</a>`;
-  return `<article class="metric">${content}</article>`;
-}
-
 function activeFilter() {
   return new URLSearchParams(window.location.search).get("filter") || "";
 }
 
 function activePage() {
-  const page = Number.parseInt(new URLSearchParams(window.location.search).get("page") || "1", 10);
+  return pageFromParam("page");
+}
+
+function pageFromParam(paramName) {
+  const page = Number.parseInt(new URLSearchParams(window.location.search).get(paramName) || "1", 10);
   return Number.isFinite(page) && page > 0 ? page : 1;
 }
 
@@ -72,13 +71,18 @@ function textSearchOnly() {
   return activeSearchMode() === "text";
 }
 
+function nameserverSearchOnly() {
+  return activeSearchMode() === "nameserver";
+}
+
 function namesSearchHref(query, options = {}) {
   const text = String(query || "").trim();
   if (!text) return "";
   const params = new URLSearchParams();
   const filter = options.filter === undefined ? activeFilter() : options.filter;
   if (filter) params.set("filter", filter);
-  if (options.textSearch) params.set("search", "text");
+  if (options.searchMode) params.set("search", options.searchMode);
+  else if (options.textSearch) params.set("search", "text");
   params.set("q", text);
   return `names.html?${params.toString()}`;
 }
@@ -301,7 +305,7 @@ function nameserverCell(row) {
   const nameserver = String(row.nameserver || "").trim();
   return aggregateSearchLink(
     nameserver,
-    row.filter_link || namesSearchHref(nameserver, {filter: "delegated_names", textSearch: true})
+    row.filter_link || namesSearchHref(nameserver, {filter: "", searchMode: "nameserver"})
   );
 }
 
@@ -326,25 +330,78 @@ function resolverSoftwareCell(row) {
   return row.hnsdoh_software ? "HNSDoH" : "plain DNS";
 }
 
-function topologySignals(summary) {
-  const topIps = summary.top_resource_ips || [];
-  const topNameservers = summary.top_nameservers || [];
-  const resolvers = summary.known_hns_resolvers || [];
+function overviewPageLink(label, targetPage, disabled, pageParam) {
+  if (disabled) return `<span class="page-link disabled">${escapeHtml(label)}</span>`;
+  return `<a class="page-link" href="${escapeHtml(hrefWithPageParam(targetPage, pageParam))}">${escapeHtml(label)}</a>`;
+}
+
+function overviewPagination(state, pageParam, label) {
+  const collection = state?.collection || {};
+  const pageCount = Number(collection.page_count || 0);
+  if (pageCount <= 1) return "";
+  const safePage = Math.min(Math.max(1, state.page || 1), pageCount);
+  return `<nav class="pagination overview-pagination" aria-label="${escapeHtml(label)}">
+    ${overviewPageLink("Previous", safePage - 1, safePage <= 1, pageParam)}
+    <span class="page-status">${fmt.format(safePage)} / ${fmt.format(pageCount)}</span>
+    ${overviewPageLink("Next", safePage + 1, safePage >= pageCount, pageParam)}
+  </nav>`;
+}
+
+async function loadOverviewCollections(summary, index) {
+  const [resourceIps, nameservers, resolvers] = await Promise.all([
+    loadOverviewCollection(index, "resource_ips", "resource_ip_page", summary.top_resource_ips || []),
+    loadOverviewCollection(index, "nameservers", "nameserver_page", summary.top_nameservers || []),
+    loadOverviewCollection(index, "resolvers", "resolver_page", summary.known_hns_resolvers || [])
+  ]);
+  return {resourceIps, nameservers, resolvers};
+}
+
+async function loadOverviewCollection(index, key, pageParam, fallbackRows) {
+  const fallback = Array.isArray(fallbackRows) ? fallbackRows : [];
+  const collection = index?.collections?.[key];
+  if (!collection) {
+    return {
+      collection: {
+        row_count: fallback.length,
+        page_size: fallback.length || 1,
+        page_count: fallback.length ? 1 : 0
+      },
+      page: 1,
+      rows: fallback
+    };
+  }
+  const pageCount = Number(collection.page_count || 0);
+  const page = pageCount > 0 ? Math.min(pageFromParam(pageParam), pageCount) : 1;
+  const data = pageCount > 0
+    ? await loadPageJson(pagePath(collection.path_template, page))
+    : {rows: []};
+  return {
+    collection,
+    page,
+    rows: rowsFromPage(data, collection)
+  };
+}
+
+function topologySignals(summary, overview = {}) {
+  const topIps = overview.resourceIps?.rows || summary.top_resource_ips || [];
+  const topNameservers = overview.nameservers?.rows || summary.top_nameservers || [];
+  const resolvers = overview.resolvers?.rows || summary.known_hns_resolvers || [];
   return `
-    <article class="panel"><h2>Nameserver IP Evidence</h2>${table(topIps, [
+    <article class="panel"><div class="panel-heading"><h2>Nameserver IP Evidence</h2>${overviewPagination(overview.resourceIps, "resource_ip_page", "Nameserver IP Evidence pages")}</div>${table(topIps, [
       {key: "ip", label: "IP", render: topIpCell, width: "30%"},
       {key: "names_count", label: "Names", width: "18%"},
       {key: "field_counts", label: "Fields", render: ipFieldCountsCell, width: "27%"},
       {key: "role", label: "Role", render: ipRoleCell, width: "25%"}
     ], "No resource IPs in this snapshot.", {wrapClass: "compact-table-wrap"})}</article>
-    <article class="panel"><h2>Delegation Hosts</h2>${table(topNameservers, [
+    <article class="panel"><div class="panel-heading"><h2>Delegation Hosts</h2>${overviewPagination(overview.nameservers, "nameserver_page", "Delegation Host pages")}</div>${table(topNameservers, [
       {key: "nameserver", label: "Nameserver", render: nameserverCell, width: "70%"},
       {key: "names_count", label: "Names", width: "30%"}
     ], "No nameservers in this snapshot.", {wrapClass: "compact-table-wrap"})}</article>
-    <article class="panel"><h2>HNS Resolver Inventory</h2>${table(resolvers, [
-      {key: "ip", label: "IP", render: resolverIpCell, width: "30%"},
-      {key: "provider", label: "Provider", width: "40%"},
-      {key: "hnsdoh_software", label: "Software", render: resolverSoftwareCell, width: "30%"}
+    <article class="panel"><div class="panel-heading"><h2>HNS Resolver Inventory</h2>${overviewPagination(overview.resolvers, "resolver_page", "HNS Resolver Inventory pages")}</div>${table(resolvers, [
+      {key: "ip", label: "IP", render: resolverIpCell, width: "26%"},
+      {key: "names_count", label: "Names", width: "16%"},
+      {key: "provider", label: "Provider", width: "34%"},
+      {key: "hnsdoh_software", label: "Software", render: resolverSoftwareCell, width: "24%"}
     ], "No resolver inventory configured.", {wrapClass: "compact-table-wrap"})}</article>`;
 }
 
@@ -416,23 +473,6 @@ function actionCell(row) {
     return `<div class="action-cell"><a class="verified-badge" href="${escapeHtml(action.href)}">${escapeHtml(action.label)}</a><span>${escapeHtml(action.detail)}</span></div>`;
   }
   return `<div class="action-cell"><a class="action-link" href="${escapeHtml(action.href)}">${escapeHtml(action.label)}</a><span>${escapeHtml(action.detail)}</span></div>`;
-}
-
-function snapshot(summary) {
-  const stageCounts = summary.compliance_stage_counts || {};
-  const hasStageCounts = Boolean(summary.compliance_stage_counts);
-  const tlsaPresent = Number(summary.tlsa_present_names || 0);
-  const tlsaEvidence = Number(summary.tlsa_evidence_names || 0);
-  const tlsaGap = stageCounts.tlsa_gap ?? summary.needs_dane;
-  const stageBlockers = Number(stageCounts.missing_glue || 0);
-  const blockerQueue = hasStageCounts ? stageBlockers : summary.needs_fix;
-  return `<section class="snapshot">
-    ${metric("Active names", summary.active_names, `${fmt.format(summary.expired_names)} expired`, "names.html")}
-    ${metric("TLSA observed", tlsaPresent, `${fmt.format(tlsaEvidence)} roots have stored TLSA probes`, "names.html?filter=tlsa_present_names")}
-    ${metric("TLSA unobserved", tlsaGap, "verify before generator handoff", `names.html?filter=${COMPLIANCE_STAGE_FILTER_PREFIX}tlsa_gap`)}
-    ${metric("Compliance blockers", blockerQueue, "blocking verification")}
-    ${metric("Strict HNS ready", summary.strict_hns_ready, "bootstrap material present", "names.html?filter=strict_hns_ready")}
-  </section>`;
 }
 
 function collectionForFilter(index, filter) {
@@ -534,9 +574,13 @@ function pageRangeMeta(collection, page, rows) {
 }
 
 function hrefWithPage(page) {
+  return hrefWithPageParam(page, "page");
+}
+
+function hrefWithPageParam(page, paramName) {
   const params = new URLSearchParams(window.location.search);
-  if (page <= 1) params.delete("page");
-  else params.set("page", String(page));
+  if (page <= 1) params.delete(paramName);
+  else params.set(paramName, String(page));
   const query = params.toString();
   const path = currentPageName();
   return sitePath(query ? `${path}?${query}` : path);
@@ -676,8 +720,26 @@ function normalizeIpQuery(query) {
   return "";
 }
 
+function normalizeNameserverQuery(query) {
+  let value = query.trim().toLowerCase();
+  for (const prefix of ["hns://", "https://", "http://"]) {
+    if (value.startsWith(prefix)) {
+      value = value.slice(prefix.length);
+      break;
+    }
+  }
+  value = value.split("/", 1)[0].replace(/\.+$/, "");
+  if (!value || value.length > 253) return "";
+  if (!/^[a-z0-9-]+(?:\.[a-z0-9-]+)*$/.test(value)) return "";
+  return value;
+}
+
 function ipAddressLookupPath(ip) {
   return `data/ip-addresses/${escapePathPercents(encodeURIComponent(ip))}.json`;
+}
+
+function nameserverLookupPath(nameserver) {
+  return `data/nameservers/${escapePathPercents(encodeURIComponent(nameserver))}.json`;
 }
 
 function normalizeIpLookupResult(result, query, ip) {
@@ -695,6 +757,23 @@ function normalizeIpLookupResult(result, query, ip) {
     fieldCounts: result.field_counts || {},
     source: "static",
     rows: rows.map((row) => ({...row, matched_ip: row.matched_ip || ip}))
+  };
+}
+
+function normalizeNameserverLookupResult(result, query, nameserver) {
+  const rows = Array.isArray(result.rows) ? result.rows : [];
+  return {
+    found: result.found !== false,
+    query,
+    nameserver,
+    rowCount: Number(result.row_count || rows.length || 0),
+    pageCount: Number(result.page_count || 0),
+    pageSize: Number(result.page_size || 0) || 100,
+    page: Number(result.page || 1),
+    rowDetail: result.row_detail || "nameserver_matches",
+    columns: Array.isArray(result.columns) ? result.columns : null,
+    source: "static",
+    rows: rows.map((row) => ({...row, nameserver: row.nameserver || nameserver}))
   };
 }
 
@@ -744,6 +823,54 @@ async function lookupIpAddress(query, page) {
     },
     query,
     ip
+  );
+}
+
+async function lookupNameserver(query, page) {
+  const nameserver = normalizeNameserverQuery(query);
+  if (!nameserver) return null;
+  if (!nameserverLookupCache.has(nameserver)) {
+    const lookupPromise = loadJson(nameserverLookupPath(nameserver))
+      .catch(() => null);
+    nameserverLookupCache.set(nameserver, lookupPromise);
+  }
+  const data = await nameserverLookupCache.get(nameserver);
+  if (!data) {
+    return {
+      found: false,
+      query,
+      nameserver,
+      rowCount: 0,
+      pageCount: 0,
+      pageSize: 100,
+      page: 1,
+      rowDetail: "nameserver_matches",
+      columns: null,
+      source: "static",
+      rows: []
+    };
+  }
+  const embeddedRows = Array.isArray(data.rows) ? data.rows : null;
+  const rowCount = Number(data.row_count || embeddedRows?.length || 0);
+  const pageSize = Number(data.page_size || 0) || 100;
+  const pageCount = Number(data.page_count || 0) || (rowCount ? Math.ceil(rowCount / pageSize) : 0);
+  const safePage = pageCount > 0 ? Math.min(Math.max(1, page), pageCount) : 1;
+  const rows = embeddedRows
+    ? embeddedRows.slice((safePage - 1) * pageSize, safePage * pageSize)
+    : pageCount > 0 && data.path_template
+      ? await loadJson(pagePath(data.path_template, safePage))
+        .then((pageData) => rowsFromPage(pageData, data))
+        .catch(() => [])
+      : [];
+  return normalizeNameserverLookupResult(
+    {
+      ...data,
+      found: true,
+      page: safePage,
+      rows
+    },
+    query,
+    nameserver
   );
 }
 
@@ -812,6 +939,37 @@ async function lookupExactName(query, index) {
 
 async function applySearchToPageData(pageData, query) {
   if (!query) return {...pageData, search: null, lookup: null};
+  const nameserverLookup = nameserverSearchOnly() ? await lookupNameserver(query, activePage()) : null;
+  if (nameserverLookup) {
+    const allCollection = pageData.index?.collections?.all || pageData.collection;
+    const exportedCount = Number(allCollection.row_count || 0);
+    const totalCount = Number(allCollection.total_count || exportedCount);
+    const fullSnapshot = exportedCount === totalCount;
+    return {
+      ...pageData,
+      collection: {
+        ...pageData.collection,
+        row_count: nameserverLookup.rowCount,
+        page_size: nameserverLookup.pageSize,
+        page_count: nameserverLookup.pageCount,
+        row_detail: nameserverLookup.rowDetail,
+        columns: nameserverLookup.columns
+      },
+      page: nameserverLookup.page,
+      rows: nameserverLookup.rows,
+      search: {
+        query,
+        matchedCount: nameserverLookup.rowCount,
+        totalCount: "snapshot",
+        exact: false,
+        nameserver: true,
+        scoped: false,
+        fullSnapshot
+      },
+      lookup: null,
+      nameserverLookup
+    };
+  }
   const ipLookup = await lookupIpAddress(query, activePage());
   if (ipLookup) {
     const allCollection = pageData.index?.collections?.all || pageData.collection;
@@ -933,12 +1091,15 @@ function searchControls({id, label, placeholder, query, search}) {
     ? `<a class="search-clear" href="${escapeHtml(hrefWithoutParams(["q", "page", "search"]))}">Clear</a>`
     : "";
   const exactScope = search?.fullSnapshot === false ? "exported rows" : "full snapshot";
+  const activeScope = search?.fullSnapshot === false ? "exported active names" : "active full snapshot";
   const exactSource = search?.exactSource === "static" ? "static exact lookup" : "exact lookup";
   const searchMeta = search
       ? `<p class="meta search-meta">${search.exact
       ? `${exactSource[0].toUpperCase()}${exactSource.slice(1)} "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} ${exactScope} row.`
+      : search.nameserver
+        ? `Nameserver search "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} ${activeScope} ${search.matchedCount === 1 ? "name" : "names"}.`
       : search.ip
-        ? `IP search "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} ${exactScope} ${search.matchedCount === 1 ? "name" : "names"}.`
+        ? `IP search "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} ${activeScope} ${search.matchedCount === 1 ? "name" : "names"}.`
         : search.scoped
         ? `${search.textOnly ? "Text search" : "Search"} "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} of ${fmt.format(search.totalCount)} loaded rows.${search.textOnly ? "" : ` Exact name lookup still checks ${exactScope}.`}`
         : `${search.textOnly ? "Text search" : "Search"} "${escapeHtml(query)}" matched ${fmt.format(search.matchedCount)} of ${fmt.format(search.totalCount)} exported rows.`}</p>`
@@ -1098,14 +1259,17 @@ function namesActionContext(actions = [], filter = "") {
 }
 
 async function renderOverview(app) {
-  const summary = await loadJson("data/summary.json");
+  const [summary, overviewIndex] = await Promise.all([
+    loadJson("data/summary.json"),
+    loadJson("data/overview-pages.json").catch(() => null)
+  ]);
+  const overview = await loadOverviewCollections(summary, overviewIndex);
   const providers = summary.providers || [];
   const classes = summary.classes || [];
-  app.innerHTML = `${snapshot(summary)}
-    ${adoptionFunnel(summary)}
+  app.innerHTML = `${adoptionFunnel(summary)}
     <section class="grid">
       ${nextActionsPanel(summary.next_actions || [])}
-      ${topologySignals(summary)}
+      ${topologySignals(summary, overview)}
       <article class="panel"><h2>Provider Concentration</h2>${bars(providers, "provider_key", "names_count", 12, (value) => value, providerFilterHref)}</article>
       <article class="panel"><h2>Parent-Side State</h2>${bars(classes, "class", "count", 12, classLabel, (row) => classFilterHref(row.class))}</article>
       <article class="panel"><h2>Run Metadata</h2>
@@ -1522,6 +1686,13 @@ function namesColumns(rowDetail) {
       {key: "lookup", label: "Lookup", render: exactNameLookupCell, width: "20%"}
     ];
   }
+  if (rowDetail === "nameserver_matches") {
+    return [
+      {key: "name", label: "Name", render: nameCell, width: "45%"},
+      {key: "nameserver", label: "Nameserver", width: "35%"},
+      {key: "lookup", label: "Lookup", render: exactNameLookupCell, width: "20%"}
+    ];
+  }
   const compactColumns = [
     {key: "name", label: "Name", render: nameCell, width: "12%"},
     {key: "next_step", label: "Next step", render: actionCell, width: "20%"},
@@ -1558,7 +1729,8 @@ async function renderNames(app) {
   const query = activeSearch();
   const pageData = await applySearchToPageData(loadedPageData, query);
   const columns = namesColumns(pageData.collection.row_detail);
-  const detailRender = pageData.collection.row_detail === "ip_matches" ? null : nameDetailRow;
+  const lookupRow = ["ip_matches", "nameserver_matches"].includes(pageData.collection.row_detail);
+  const detailRender = lookupRow ? null : nameDetailRow;
   app.innerHTML = `${filterNotice(filter, pageData.index.collections.all.row_count, loadedPageData.collection.row_count)}
     <section class="names-layout">
       <div class="panel names-main">

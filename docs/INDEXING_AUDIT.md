@@ -32,7 +32,7 @@ IP page files no longer duplicate Names rows. For the common single-field case, 
 
 High-frequency marketplace/default glue IPs from the BNS collision study are provider-rule signals. They now match before the self-hosted rule, so an `ns1.<name>` plus shared default glue pattern does not get mislabeled as self-hosted. Known public HNS resolver IPs are also marked as resolver infrastructure if they appear in resource data. Both default parking and resolver infrastructure are excluded from actionable queues.
 
-The Overview top resource-IP and nameserver-host lists are small aggregates in `summary.json`. They intentionally do not create new Names posting collections; IP rows link into the existing `names.html?q=<ip>` static IP search.
+The Overview resource-IP, nameserver-host, and resolver inventory tables are paged under `overview-pages`. Resource IP rows link into the active-name static IP reverse lookup, and nameserver-host rows link into exact static nameserver reverse lookup pages instead of page-local text search.
 
 Bulk page JSON is written compactly instead of pretty-printed.
 

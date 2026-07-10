@@ -65,9 +65,11 @@ The exporter writes one sorted canonical row store under `names-pages/all`. Filt
 Default public data:
 
 - summary and manifest
+- paginated overview aggregate tables
 - paginated names row store
 - nonzero filter postings
 - IP drill-down indexes
+- nameserver drill-down indexes
 - DNS evidence sidecars
 
 Optional downloads:

@@ -47,12 +47,14 @@ REQUIRED_PUBLIC_FILES = (
     "data/summary.json",
     "data/manifest.json",
     "data/names-pages.json",
+    "data/overview-pages.json",
 )
 
 PUBLIC_JSON_FILES = tuple(path for path in REQUIRED_PUBLIC_FILES if path.endswith(".json"))
 FORBIDDEN_PUBLIC_SUFFIXES = (".key", ".pem")
 REQUIRED_MANIFEST_ARTIFACTS = (
     "summary.json",
+    "overview-pages.json",
     "names-pages.json",
 )
 OPTIONAL_MANIFEST_ARTIFACTS = (

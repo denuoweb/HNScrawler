@@ -41,8 +41,8 @@ function loadApp(search = "") {
 {
   const app = loadApp("");
   const html = app.nameserverCell({nameserver: "ns1.skyinclude."});
-  assert.equal(html.includes("search=text"), true);
-  assert.equal(html.includes("filter=delegated_names"), true);
+  assert.equal(html.includes("search=nameserver"), true);
+  assert.equal(html.includes("filter=delegated_names"), false);
   assert.equal(html.includes("q=ns1.skyinclude."), true);
 }
 
@@ -58,26 +58,24 @@ function loadApp(search = "") {
     app.pagePath("ip-addresses/2001%3Adb8%3A%3A10/page-{page}.json", 1),
     "data/ip-addresses/2001%253Adb8%253A%253A10/page-1.json"
   );
+  assert.equal(app.normalizeNameserverQuery("ns1.skyinclude."), "ns1.skyinclude");
+  assert.equal(
+    app.nameserverLookupPath("a.shakestation"),
+    "data/nameservers/a.shakestation.json"
+  );
 }
 
 {
   const app = loadApp("");
-  const html = app.snapshot({
+  const html = app.adoptionFunnel({
     active_names: 100,
-    expired_names: 5,
-    tlsa_present_names: 2,
-    tlsa_evidence_names: 33,
-    strict_hns_ready: 10,
-    compliance_stage_counts: {
-      tlsa_present: 0,
-      tlsa_gap: 7,
-      missing_glue: 3
-    }
+    compliance_stages: [
+      {stage: "tlsa_gap", count: 7, filter_link: "names.html?filter=stage:tlsa_gap"}
+    ]
   });
-  assert.equal(html.includes('<span class="label">TLSA observed</span><span class="value">2</span>'), true);
-  assert.equal(html.includes("33 roots have stored TLSA probes"), true);
-  assert.equal(html.includes("names.html?filter=tlsa_present_names"), true);
-  assert.equal(html.includes("stage%3Atlsa_present"), false);
+  assert.equal(html.includes("Static Compliance Pipeline"), true);
+  assert.equal(html.includes("Active names"), false);
+  assert.equal(html.includes("stage:tlsa_gap"), true);
 }
 
 {
