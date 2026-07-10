@@ -44,8 +44,6 @@ def test_init_db_migrates_previous_schema_and_backfills_resource_flags(tmp_path)
               provider_key TEXT PRIMARY KEY,
               names_count INTEGER,
               likely_website_count INTEGER,
-              working_count INTEGER,
-              dane_count INTEGER,
               updated_at TEXT
             );
 
@@ -102,17 +100,18 @@ def test_init_db_migrates_previous_schema_and_backfills_resource_flags(tmp_path)
             for table in (
                 "names",
                 "resource_summary",
-                "live_status",
-                "host_candidates",
-                "host_live_status",
                 "provider_summary",
                 "dns_evidence",
-                "browser_evidence",
+                "changed_name_rollbacks",
             )
+        }
+        table_names = {
+            row["name"]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
         flags = conn.execute(
             """
-            SELECT has_ds, has_ns, has_glue, has_synth, has_txt, authoritative_doh,
+            SELECT has_ds, has_ns, has_glue, has_synth, has_txt,
                    tlsa_records, tlsa_cert_not_valid_after, tlsa_cert_expired, resource_version
             FROM resource_summary
             WHERE name = 'previous'
@@ -126,7 +125,7 @@ def test_init_db_migrates_previous_schema_and_backfills_resource_flags(tmp_path)
         )
         provider = conn.execute(
             """
-            SELECT provider_type, ns_pattern, ip_pattern, names_count, working_count, dane_count
+            SELECT provider_type, ns_pattern, ip_pattern, names_count, likely_website_count
             FROM provider_summary
             WHERE provider_key = 'unknown/custom'
             """
@@ -139,72 +138,25 @@ def test_init_db_migrates_previous_schema_and_backfills_resource_flags(tmp_path)
         "has_glue",
         "has_synth",
         "has_txt",
-        "authoritative_doh",
         "tlsa_records",
         "tlsa_cert_not_valid_after",
         "tlsa_cert_expired",
         "resource_version",
     } <= tables["resource_summary"]
-    assert {
-        "dns_reachable",
-        "dnssec_status",
-        "tlsa_status",
-        "next_check_at",
-        "https_cert_sha256",
-        "https_spki_sha256",
-        "https_cert_not_valid_after",
-    } <= tables["live_status"]
-    assert {
-        "root_name",
-        "host",
-        "source",
-        "source_detail",
-        "confidence",
-        "first_seen_at",
-        "last_seen_at",
-        "next_check_at",
-        "suppressed",
-    } <= tables["host_candidates"]
-    assert {
-        "root_name",
-        "host",
-        "url",
-        "address_status",
-        "dns_reachable",
-        "dnssec_status",
-        "tlsa_status",
-        "dane_status",
-        "https_status",
-        "strict_hns_status",
-        "fallback_status",
-        "certificate_sha256",
-        "spki_sha256",
-        "certificate_not_valid_after",
-        "checked_at",
-        "next_check_at",
-    } <= tables["host_live_status"]
     assert {"provider_type", "ns_pattern", "ip_pattern"} <= tables["provider_summary"]
     assert {"server", "source", "source_id", "authority_json", "additional_json"} <= tables[
         "dns_evidence"
     ]
-    assert {
-        "host",
-        "browser_result",
-        "authoritative_udp",
-        "authoritative_doh",
-        "fallback_used",
-        "spki_sha256",
-        "certificate_not_valid_after",
-        "certificate_expired",
-        "raw_json",
-    } <= tables["browser_evidence"]
+    assert "previous_live_status" not in tables["changed_name_rollbacks"]
+    assert {"live_status", "host_candidates", "host_live_status", "browser_evidence"}.isdisjoint(
+        table_names
+    )
     assert dict(flags) == {
         "has_ds": 1,
         "has_ns": 1,
         "has_glue": 1,
         "has_synth": 0,
         "has_txt": 1,
-        "authoritative_doh": "[]",
         "tlsa_records": "[]",
         "tlsa_cert_not_valid_after": None,
         "tlsa_cert_expired": 0,
@@ -215,6 +167,5 @@ def test_init_db_migrates_previous_schema_and_backfills_resource_flags(tmp_path)
         "ns_pattern": "manual",
         "ip_pattern": "cidr:203.0.113.0/24",
         "names_count": 1,
-        "working_count": 1,
-        "dane_count": 1,
+        "likely_website_count": 1,
     }

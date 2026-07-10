@@ -38,15 +38,6 @@
 - `hns-topology validate-archive --manifest <manifest>` passes before moving archive artifacts to backup storage.
 - No HTTP bodies or arbitrary subdomain crawl data are exported.
 
-## Live Check Gate
-
-- Live-check concurrency and delay are set conservatively.
-- Timeouts are short.
-- Only promising names are queued.
-- Failure reasons use the stable taxonomy.
-- Live-check start and finish timestamps, rate-limit settings, resolver, candidate count, and checked count are present.
-- Production validation uses `--require-live-checks`.
-
 ## Website Gate
 
 - Website VM receives bounded static `public/` artifacts.

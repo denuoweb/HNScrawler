@@ -14,14 +14,6 @@ from typing import Any, NamedTuple
 from urllib.parse import quote
 
 from . import __version__
-from .browser_summary import (
-    BROWSER_EFFECT_COLUMNS,
-    BROWSER_SUMMARY_COLUMNS,
-    apply_browser_evidence_policy,
-    browser_summary_select_columns,
-    latest_browser_evidence_join,
-)
-from .browser_targets import BROWSER_TARGET_FIELDS, browser_target_row
 from .compliance import (
     COMPLIANCE_STAGE_DEFINITIONS,
     COMPLIANCE_STAGE_LABELS,
@@ -32,27 +24,24 @@ from .db import get_meta, parse_json_columns, require_resource_ip_index, rows_to
 from .fileutil import file_sha256
 from .infra import KNOWN_HNS_RESOLVERS, NON_ACTIONABLE_PROVIDER_TYPES, resource_ip_role
 from .jsonutil import dumps_json, dumps_pretty
-from .models import FAILURE_REASONS, ONCHAIN_CLASSES
+from .models import ONCHAIN_CLASSES
 from .ns_handoff import (
     NS_HANDOFF_COLUMNS,
     NS_HANDOFF_TABLE,
     drop_temp_ns_handoff_table,
     prepare_temp_ns_handoff_table,
 )
-from .site_directory import SITE_DIRECTORY_FIELDS, site_directory_row
 from .timeutil import utc_now
 from .verification import build_verification_plan
 
 DATA_ARTIFACTS = (
     "summary.json",
     "names-pages.json",
-    "host-directory.json",
 )
 
 PAGE_SIZE = 1000
 DETAILED_NAME_COLLECTION_ROW_LIMIT = 100_000
 EXPORTED_NAMES_ORDER_SQL = "n.name"
-FAILURE_REASON_FILTER_PREFIX = "failure_reason:"
 PROVIDER_FILTER_PREFIX = "provider:"
 COMPLIANCE_STAGE_FILTER_PREFIX = "stage:"
 IP_FIELD_BITS = {
@@ -66,70 +55,8 @@ ACTIONABLE_PROVIDER_SQL = (
     f"COALESCE(ps.provider_type, 'unknown') NOT IN ({NON_ACTIONABLE_PROVIDER_TYPES_SQL})"
 )
 ACTIONABLE_EXPORT_SQL = f"provider_type NOT IN ({NON_ACTIONABLE_PROVIDER_TYPES_SQL})"
-BROWSER_NETWORK_BLOCKS_53_SQL = (
-    "lbe.fallback_reason = 'network_blocks_53' OR "
-    "(lbe.authoritative_udp IN ('blocked', 'timeout', 'transport_error') "
-    "AND lbe.authoritative_tcp IN ('blocked', 'timeout', 'transport_error', 'not_attempted') "
-    "AND lbe.authoritative_doh = 'ok')"
-)
-BROWSER_CERTIFICATE_EXPIRED_SQL = (
-    "COALESCE(lbe.certificate_expired, 0) != 0 "
-    "OR lbe.browser_result = 'certificate_expired' "
-    "OR lbe.reason = 'certificate_expired'"
-)
-BROWSER_DANE_VERIFIED_SQL = "lbe.browser_result = 'dane_verified' OR lbe.dane_status = 'verified'"
 STATIC_TLSA_CERTIFICATE_EXPIRED_SQL = "COALESCE(rs.tlsa_cert_expired, 0) != 0"
-LIVE_SITE_SQL = (
-    "ls.dane_status = 'valid' "
-    "OR ls.https_status IN ('working', 'tls_unverified') "
-    f"OR {BROWSER_DANE_VERIFIED_SQL} "
-    "OR lbe.browser_result = 'loaded'"
-)
-BROWSER_TARGET_SQL = (
-    "lbe.id IS NOT NULL "
-    "OR ls.dane_status = 'valid' "
-    "OR ls.https_status IN ('working', 'tls_unverified') "
-    "OR ls.strict_hns_status = 'working' "
-    f"OR ({ACTIONABLE_PROVIDER_SQL} AND "
-    "(rs.has_synth = 1 OR rs.has_glue = 1 OR (rs.has_ds = 1 AND rs.has_ns = 1)))"
-)
-LIVE_SITE_ORDER_SQL = (
-    "CASE "
-    "WHEN ls.dane_status = 'valid' THEN 0 "
-    "WHEN ls.https_status IN ('working', 'tls_unverified') THEN 1 "
-    f"WHEN {BROWSER_DANE_VERIFIED_SQL} THEN 2 "
-    "WHEN lbe.browser_result = 'loaded' THEN 3 "
-    "ELSE 99 END"
-)
-BROWSER_NETWORK_BLOCKS_53_EXPORT_SQL = (
-    "browser_fallback_reason = 'network_blocks_53' OR "
-    "(browser_authoritative_udp IN ('blocked', 'timeout', 'transport_error') "
-    "AND browser_authoritative_tcp IN ('blocked', 'timeout', 'transport_error', 'not_attempted') "
-    "AND browser_authoritative_doh = 'ok')"
-)
-BROWSER_CERTIFICATE_EXPIRED_EXPORT_SQL = (
-    "COALESCE(browser_certificate_expired, 0) != 0 "
-    "OR browser_result = 'certificate_expired' "
-    "OR browser_reason = 'certificate_expired'"
-)
-BROWSER_DANE_VERIFIED_EXPORT_SQL = (
-    "browser_result = 'dane_verified' OR browser_dane_status = 'verified'"
-)
 STATIC_TLSA_CERTIFICATE_EXPIRED_EXPORT_SQL = "tlsa_cert_expired != 0"
-LIVE_SITE_EXPORT_SQL = (
-    "dane_status = 'valid' "
-    "OR https_status IN ('working', 'tls_unverified') "
-    f"OR {BROWSER_DANE_VERIFIED_EXPORT_SQL} "
-    "OR browser_result = 'loaded'"
-)
-BROWSER_TARGET_EXPORT_SQL = (
-    "browser_evidence_present = 1 "
-    "OR dane_status = 'valid' "
-    "OR https_status IN ('working', 'tls_unverified') "
-    "OR strict_hns_status = 'working' "
-    f"OR ({ACTIONABLE_EXPORT_SQL} AND "
-    "(has_synth = 1 OR has_glue = 1 OR (has_ds = 1 AND has_ns = 1)))"
-)
 
 
 class NextActionSpec(NamedTuple):
@@ -152,6 +79,7 @@ NAME_FILTERS = {
     "default_provider_names": "ps.provider_type = 'default_parking'",
     "ds_records": "rs.has_ds = 1",
     "dnssec_candidates": "rs.has_ds = 1 AND rs.has_ns = 1",
+    "tlsa_present_names": "rs.has_ds = 1 AND COALESCE(json_array_length(rs.tlsa_records), 0) > 0",
     "static_tlsa_certificate_expired_names": STATIC_TLSA_CERTIFICATE_EXPIRED_SQL,
     "strict_hns_ready": (
         f"{ACTIONABLE_PROVIDER_SQL} AND "
@@ -161,31 +89,12 @@ NAME_FILTERS = {
         f"{ACTIONABLE_PROVIDER_SQL} AND "
         "(rs.has_synth = 1 OR rs.has_glue = 1 OR (rs.has_ds = 1 AND rs.has_ns = 1))"
     ),
-    "strict_hns_working": "ls.strict_hns_status = 'working'",
-    "doh_fallback_required": "ls.doh_fallback_status IN ('required', 'doh_fallback_only')",
     "needs_dane": (
         f"{ACTIONABLE_PROVIDER_SQL} AND "
-        "(rs.has_ds = 1 OR ls.dnssec_status = 'valid') "
-        "AND COALESCE(ls.dane_status, '') != 'valid' "
-        "AND COALESCE(ls.tlsa_status, 'missing') IN ('missing', 'unknown', '')"
+        "rs.has_ds = 1 AND COALESCE(json_array_length(rs.tlsa_records), 0) = 0"
     ),
-    "dane_working": "ls.dane_status = 'valid'",
-    "needs_fix": (
-        "ls.failure_reason IS NOT NULL OR "
-        "(rs.has_ns = 1 AND rs.has_glue = 0 AND "
-        "COALESCE(ls.failure_reason, 'missing_glue') = 'missing_glue')"
-    ),
-    "missing_glue_only": (
-        "rs.has_ns = 1 AND rs.has_glue = 0 AND "
-        "COALESCE(ls.failure_reason, 'missing_glue') = 'missing_glue'"
-    ),
-    "stale_tlsa_only": "ls.failure_reason = 'stale_tlsa_spki_mismatch'",
-    "live_site_names": LIVE_SITE_SQL,
-    "browser_target_names": BROWSER_TARGET_SQL,
-    "browser_evidence_names": "lbe.id IS NOT NULL",
-    "browser_dane_verified_names": BROWSER_DANE_VERIFIED_SQL,
-    "browser_network_blocks_53_names": BROWSER_NETWORK_BLOCKS_53_SQL,
-    "browser_certificate_expired_names": BROWSER_CERTIFICATE_EXPIRED_SQL,
+    "needs_fix": "rs.has_ns = 1 AND rs.has_glue = 0",
+    "missing_glue_only": "rs.has_ns = 1 AND rs.has_glue = 0",
 }
 
 NEXT_ACTION_SPECS = (
@@ -194,7 +103,7 @@ NEXT_ACTION_SPECS = (
         label="Generate TLSA record",
         stage="tlsa_gap",
         generator_intent="generate_tlsa",
-        definition="DNSSEC is present or live-valid, but the indexer has not proven a matching HTTPS TLSA association.",
+        definition="Current HNS resource data has DS but no TLSA association.",
     ),
     NextActionSpec(
         key="fix_ns_glue",
@@ -202,20 +111,6 @@ NEXT_ACTION_SPECS = (
         stage="missing_glue",
         generator_intent="missing_glue",
         definition="Delegated names need parent-side nameserver bootstrap before HNS resolution can reach the signed TLSA zone.",
-    ),
-    NextActionSpec(
-        key="replace_tlsa",
-        label="Replace stale TLSA",
-        stage="stale_tlsa",
-        generator_intent="stale_tlsa",
-        definition="TLSA data did not match the current HTTPS certificate public key.",
-    ),
-    NextActionSpec(
-        key="repair_dnssec",
-        label="Repair DNSSEC chain",
-        stage="dnssec_broken",
-        generator_intent="dnssec_fix",
-        definition="Parent DS, delegated DNSKEY, or signatures need repair before TLSA can validate.",
     ),
     NextActionSpec(
         key="plan_dnssec_dane",
@@ -258,6 +153,12 @@ OVERVIEW_EXPLAINER_SPECS = (
         definition="Current HNS resource data contains DS plus delegated nameserver data.",
     ),
     OverviewExplainerSpec(
+        key="tlsa_present_names",
+        label="TLSA present",
+        count_key="tlsa_present_names",
+        definition="Current HNS resource data contains DS plus at least one TLSA association.",
+    ),
+    OverviewExplainerSpec(
         key="static_tlsa_certificate_expired_names",
         label="Static TLSA expired certificate",
         count_key="static_tlsa_certificate_expired_names",
@@ -267,7 +168,7 @@ OVERVIEW_EXPLAINER_SPECS = (
         key="likely_websites",
         label="Likely host roots",
         count_key="likely_websites",
-        definition="Active roots with resource data that can produce default host candidates.",
+        definition="Active roots with bootstrap or DNSSEC indicators that may be worth operator review.",
     ),
     OverviewExplainerSpec(
         key="strict_hns_ready",
@@ -276,82 +177,22 @@ OVERVIEW_EXPLAINER_SPECS = (
         definition="Active roots with SYNTH nameserver bootstrap or delegated nameserver data plus GLUE. This is readiness from HNS resource data, not proof any host currently loads.",
     ),
     OverviewExplainerSpec(
-        key="strict_hns_working",
-        label="Strict HNS working",
-        count_key="strict_hns_working",
-        definition="Latest live check marked strict_hns_status as working.",
-    ),
-    OverviewExplainerSpec(
-        key="doh_fallback_required",
-        label="Resolver fallback required",
-        count_key="doh_fallback_required",
-        definition="Latest live check could only find a host address through the configured fallback resolver, not through strict HNS bootstrap. This does not prove a specific DoH transport by itself.",
-    ),
-    OverviewExplainerSpec(
         key="needs_dane",
         label="Needs DANE",
         count_key="needs_dane",
-        definition="Names with DS or live-valid DNSSEC where matching HTTPS TLSA data is missing or still unproven.",
-    ),
-    OverviewExplainerSpec(
-        key="dane_working",
-        label="DANE verified",
-        count_key="dane_working",
-        definition="Latest indexer live check matched DNSSEC, exact TLSA, and HTTPS certificate/SPKI. This is not an Android/browser compatibility proof.",
+        definition="Actionable active names with DS but no static TLSA association.",
     ),
     OverviewExplainerSpec(
         key="needs_fix",
         label="Needs fix",
         count_key="needs_fix",
-        definition="Names with a live-check failure reason, plus delegated names that are missing GLUE before live checks can prove anything stronger.",
+        definition="Delegated names missing parent-side GLUE before strict HNS bootstrap can reach the zone.",
     ),
     OverviewExplainerSpec(
         key="missing_glue_only",
         label="Missing GLUE only",
         count_key="missing_glue_only",
-        definition="Delegated names with no GLUE4/GLUE6 and no stronger live-check failure.",
-    ),
-    OverviewExplainerSpec(
-        key="stale_tlsa_only",
-        label="Stale TLSA only",
-        count_key="stale_tlsa_only",
-        definition="Latest live check found TLSA data that does not match the current HTTPS certificate/SPKI.",
-    ),
-    OverviewExplainerSpec(
-        key="live_site_names",
-        label="Live host evidence",
-        count_key="live_site_names",
-        definition="Active roots with at least one live host proven by crawler HTTPS/DANE status or imported browser evidence.",
-    ),
-    OverviewExplainerSpec(
-        key="browser_target_names",
-        label="Browser targets",
-        count_key="browser_target_names",
-        definition="Active names selected for sister-browser testing from browser evidence, live crawler evidence, strict HNS status, or actionable HNS bootstrap/DNSSEC resources.",
-    ),
-    OverviewExplainerSpec(
-        key="browser_evidence_names",
-        label="Browser evidence",
-        count_key="browser_evidence_names",
-        definition="Names with imported HNS Browser resolver trace or gateway evidence.",
-    ),
-    OverviewExplainerSpec(
-        key="browser_dane_verified_names",
-        label="Browser DANE verified",
-        count_key="browser_dane_verified_names",
-        definition="Latest imported browser observation reported DANE verification for the name.",
-    ),
-    OverviewExplainerSpec(
-        key="browser_network_blocks_53_names",
-        label="Browser network blocks 53",
-        count_key="browser_network_blocks_53_names",
-        definition="Latest imported browser observation indicates the client network blocked or timed out direct authoritative DNS on port 53 while authoritative DoH worked.",
-    ),
-    OverviewExplainerSpec(
-        key="browser_certificate_expired_names",
-        label="Browser expired certificate",
-        count_key="browser_certificate_expired_names",
-        definition="Latest imported browser observation reported or computed an expired HTTPS certificate.",
+        definition="Delegated names with no GLUE4 or GLUE6.",
     ),
 )
 
@@ -361,22 +202,13 @@ EXPORTED_NAME_FILTERS = (
     "default_provider_names",
     "likely_websites",
     "strict_hns_ready",
-    "strict_hns_working",
     "needs_fix",
-    "doh_fallback_required",
     "ds_records",
     "dnssec_candidates",
+    "tlsa_present_names",
     "static_tlsa_certificate_expired_names",
     "needs_dane",
-    "dane_working",
-    "stale_tlsa_only",
     "missing_glue_only",
-    "live_site_names",
-    "browser_target_names",
-    "browser_evidence_names",
-    "browser_dane_verified_names",
-    "browser_network_blocks_53_names",
-    "browser_certificate_expired_names",
 )
 
 POSTING_NAME_FILTERS = {
@@ -385,6 +217,7 @@ POSTING_NAME_FILTERS = {
     "default_provider_names": "provider_type = 'default_parking'",
     "ds_records": "has_ds = 1",
     "dnssec_candidates": "has_ds = 1 AND has_ns = 1",
+    "tlsa_present_names": "has_ds = 1 AND has_tlsa = 1",
     "static_tlsa_certificate_expired_names": STATIC_TLSA_CERTIFICATE_EXPIRED_EXPORT_SQL,
     "strict_hns_ready": (
         f"{ACTIONABLE_EXPORT_SQL} AND "
@@ -394,31 +227,9 @@ POSTING_NAME_FILTERS = {
         f"{ACTIONABLE_EXPORT_SQL} AND "
         "(has_synth = 1 OR has_glue = 1 OR (has_ds = 1 AND has_ns = 1))"
     ),
-    "strict_hns_working": "strict_hns_status = 'working'",
-    "doh_fallback_required": "doh_fallback_status IN ('required', 'doh_fallback_only')",
-    "needs_dane": (
-        f"{ACTIONABLE_EXPORT_SQL} AND "
-        "(has_ds = 1 OR dnssec_status = 'valid') "
-        "AND COALESCE(dane_status, '') != 'valid' "
-        "AND COALESCE(tlsa_status, 'missing') IN ('missing', 'unknown', '')"
-    ),
-    "dane_working": "dane_status = 'valid'",
-    "needs_fix": (
-        "failure_reason IS NOT NULL OR "
-        "(has_ns = 1 AND has_glue = 0 AND "
-        "COALESCE(failure_reason, 'missing_glue') = 'missing_glue')"
-    ),
-    "missing_glue_only": (
-        "has_ns = 1 AND has_glue = 0 AND "
-        "COALESCE(failure_reason, 'missing_glue') = 'missing_glue'"
-    ),
-    "stale_tlsa_only": "failure_reason = 'stale_tlsa_spki_mismatch'",
-    "live_site_names": LIVE_SITE_EXPORT_SQL,
-    "browser_target_names": BROWSER_TARGET_EXPORT_SQL,
-    "browser_evidence_names": "browser_evidence_present = 1",
-    "browser_dane_verified_names": BROWSER_DANE_VERIFIED_EXPORT_SQL,
-    "browser_network_blocks_53_names": BROWSER_NETWORK_BLOCKS_53_EXPORT_SQL,
-    "browser_certificate_expired_names": BROWSER_CERTIFICATE_EXPIRED_EXPORT_SQL,
+    "needs_dane": f"{ACTIONABLE_EXPORT_SQL} AND has_ds = 1 AND has_tlsa = 0",
+    "needs_fix": "has_ns = 1 AND has_glue = 0",
+    "missing_glue_only": "has_ns = 1 AND has_glue = 0",
 }
 
 
@@ -430,11 +241,7 @@ def _name_compliance_stage_sql() -> str:
         has_ns="rs.has_ns",
         has_glue="rs.has_glue",
         has_synth="rs.has_synth",
-        dnssec_status="ls.dnssec_status",
-        tlsa_status="ls.tlsa_status",
-        dane_status="ls.dane_status",
-        doh_fallback_status="ls.doh_fallback_status",
-        failure_reason="ls.failure_reason",
+        has_tlsa="CASE WHEN COALESCE(json_array_length(rs.tlsa_records), 0) > 0 THEN 1 ELSE 0 END",
     )
 
 
@@ -446,11 +253,7 @@ def _export_compliance_stage_sql() -> str:
         has_ns="has_ns",
         has_glue="has_glue",
         has_synth="has_synth",
-        dnssec_status="dnssec_status",
-        tlsa_status="tlsa_status",
-        dane_status="dane_status",
-        doh_fallback_status="doh_fallback_status",
-        failure_reason="failure_reason",
+        has_tlsa="has_tlsa",
     )
 
 
@@ -472,14 +275,10 @@ def export_all(
     _log_export("wrote summary.json")
     write_json(out / "names-pages.json", write_names_pages(conn, out, limit=effective_names_limit, page_size=PAGE_SIZE))
     _log_export("wrote names-pages.json")
-    write_json(out / "host-directory.json", build_host_directory(conn, limit=effective_names_limit))
-    _log_export("wrote host-directory.json")
     ip_address_count = write_ip_address_names(conn, out, limit=effective_names_limit)
     _log_export(f"wrote ip address files={ip_address_count}")
     evidence_count = write_dns_evidence(conn, out)
     _log_export(f"wrote dns evidence files={evidence_count}")
-    browser_evidence_count = write_browser_evidence(conn, out)
-    _log_export(f"wrote browser evidence files={browser_evidence_count}")
     if include_downloads:
         write_json(out / "names.json", build_names(conn, limit=effective_names_limit))
         _log_export("wrote names.json")
@@ -487,10 +286,6 @@ def export_all(
         _log_export("wrote names.csv")
         write_verification_csv(conn, out / "verification.csv", limit=effective_names_limit)
         _log_export("wrote verification.csv")
-        write_site_directory_csv(conn, out / "site-directory.csv", limit=effective_names_limit)
-        _log_export("wrote site-directory.csv")
-        write_browser_targets_csv(conn, out / "browser-targets.csv", limit=effective_names_limit)
-        _log_export("wrote browser-targets.csv")
         gzip_sqlite(db_path, out / "topology.sqlite.gz")
         _log_export("wrote topology.sqlite.gz")
     else:
@@ -498,8 +293,6 @@ def export_all(
             "names.json",
             "names.csv",
             "verification.csv",
-            "site-directory.csv",
-            "browser-targets.csv",
             "topology.sqlite.gz",
         ):
             (out / relative).unlink(missing_ok=True)
@@ -539,6 +332,10 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
                     AND COALESCE(rs.has_ns, 0) = 1
                    THEN 1 ELSE 0 END) AS dnssec_candidates,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0
+                    AND COALESCE(rs.has_ds, 0) = 1
+                    AND COALESCE(json_array_length(rs.tlsa_records), 0) > 0
+                   THEN 1 ELSE 0 END) AS tlsa_present_names,
+          SUM(CASE WHEN COALESCE(n.expired, 0) = 0
                     AND COALESCE(rs.tlsa_cert_expired, 0) != 0
                    THEN 1 ELSE 0 END) AS static_tlsa_certificate_expired_names,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0
@@ -558,172 +355,22 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
                    THEN 1 ELSE 0 END) AS likely_websites,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0
                     AND {ACTIONABLE_PROVIDER_SQL}
-                    AND (COALESCE(rs.has_ds, 0) = 1 OR ls.dnssec_status = 'valid')
-                    AND COALESCE(ls.dane_status, '') != 'valid'
-                    AND COALESCE(ls.tlsa_status, 'missing') IN ('missing', 'unknown', '')
+                    AND COALESCE(rs.has_ds, 0) = 1
+                    AND COALESCE(json_array_length(rs.tlsa_records), 0) = 0
                    THEN 1 ELSE 0 END) AS needs_dane,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0 AND ps.provider_type = 'default_parking'
                    THEN 1 ELSE 0 END) AS default_provider_names,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0
-                    AND (
-                      ls.failure_reason IS NOT NULL
-                      OR (
-                        COALESCE(rs.has_ns, 0) = 1
-                        AND COALESCE(rs.has_glue, 0) = 0
-                        AND COALESCE(ls.failure_reason, 'missing_glue') = 'missing_glue'
-                      )
-                    )
+                    AND COALESCE(rs.has_ns, 0) = 1
+                    AND COALESCE(rs.has_glue, 0) = 0
                    THEN 1 ELSE 0 END) AS needs_fix,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0
                     AND COALESCE(rs.has_ns, 0) = 1
                     AND COALESCE(rs.has_glue, 0) = 0
-                    AND COALESCE(ls.failure_reason, 'missing_glue') = 'missing_glue'
                    THEN 1 ELSE 0 END) AS missing_glue_only
         FROM names n
         LEFT JOIN resource_summary rs ON rs.name = n.name
-        LEFT JOIN live_status ls ON ls.name = n.name
         LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
-        """
-    ).fetchone()
-    live_counts = conn.execute(
-        """
-        WITH live_rows AS (
-          SELECT
-            root_name,
-            host,
-            dnssec_status,
-            strict_hns_status,
-            fallback_status,
-            dane_status,
-            failure_reason
-          FROM host_live_status
-          UNION ALL
-          SELECT
-            name AS root_name,
-            name AS host,
-            dnssec_status,
-            strict_hns_status,
-            doh_fallback_status AS fallback_status,
-            dane_status,
-            failure_reason
-          FROM live_status ls
-          WHERE NOT EXISTS (
-            SELECT 1
-            FROM host_live_status hls
-            WHERE hls.root_name = ls.name AND hls.host = ls.name
-          )
-        )
-        SELECT
-          SUM(CASE WHEN dnssec_status = 'valid' THEN 1 ELSE 0 END) AS dnssec_valid,
-          SUM(CASE WHEN strict_hns_status = 'working' THEN 1 ELSE 0 END) AS strict_hns_working,
-          SUM(CASE WHEN fallback_status IN ('required', 'doh_fallback_only') THEN 1 ELSE 0 END) AS doh_fallback_required,
-          SUM(CASE WHEN dane_status = 'valid' THEN 1 ELSE 0 END) AS dane_working,
-          SUM(CASE WHEN failure_reason = 'stale_tlsa_spki_mismatch' THEN 1 ELSE 0 END) AS stale_tlsa_only
-        FROM live_rows
-        """
-    ).fetchone()
-    browser_counts = conn.execute(
-        """
-        WITH latest AS (
-          SELECT *
-          FROM browser_evidence be
-          WHERE be.id = (
-            SELECT be_latest.id
-            FROM browser_evidence be_latest
-            WHERE be_latest.name = be.name
-            ORDER BY be_latest.captured_at DESC, be_latest.id DESC
-            LIMIT 1
-          )
-        ),
-        active_latest AS (
-          SELECT latest.*
-          FROM latest
-          JOIN names n ON n.name = latest.name
-          WHERE COALESCE(n.expired, 0) = 0
-        )
-        SELECT
-          (SELECT COUNT(*) FROM browser_evidence) AS browser_evidence_observations,
-          COUNT(*) AS browser_evidence_names,
-          SUM(CASE WHEN fallback_reason = 'network_blocks_53'
-                    OR (
-                      authoritative_udp IN ('blocked', 'timeout', 'transport_error')
-                      AND authoritative_tcp IN ('blocked', 'timeout', 'transport_error', 'not_attempted')
-                      AND authoritative_doh = 'ok'
-                    )
-                   THEN 1 ELSE 0 END) AS browser_network_blocks_53_names,
-          SUM(CASE WHEN browser_result = 'dane_verified'
-                    OR dane_status = 'verified'
-                   THEN 1 ELSE 0 END) AS browser_dane_verified_names,
-          SUM(CASE WHEN COALESCE(certificate_expired, 0) != 0
-                    OR browser_result = 'certificate_expired'
-                    OR reason = 'certificate_expired'
-                   THEN 1 ELSE 0 END) AS browser_certificate_expired_names
-        FROM active_latest
-        """
-    ).fetchone()
-    live_site_counts = conn.execute(
-        """
-        WITH directory_hosts AS (
-          SELECT DISTINCT root_name, host
-          FROM host_candidates
-          WHERE COALESCE(suppressed, 0) = 0
-          UNION
-          SELECT DISTINCT root_name, host
-          FROM host_live_status
-          UNION
-          SELECT name AS root_name, name AS host
-          FROM live_status
-          UNION
-          SELECT name AS root_name, COALESCE(NULLIF(host, ''), name) AS host
-          FROM browser_evidence
-        )
-        SELECT COUNT(*) AS live_site_names
-        FROM directory_hosts dh
-        JOIN names n ON n.name = dh.root_name
-        LEFT JOIN host_live_status hls ON hls.root_name = dh.root_name AND hls.host = dh.host
-        LEFT JOIN live_status ls ON ls.name = dh.root_name AND dh.host = dh.root_name
-        LEFT JOIN browser_evidence lbe ON lbe.id = (
-          SELECT be_latest.id
-          FROM browser_evidence be_latest
-          WHERE be_latest.host = dh.host
-          ORDER BY be_latest.captured_at DESC, be_latest.id DESC
-          LIMIT 1
-        )
-        WHERE COALESCE(n.expired, 0) = 0
-          AND (
-            COALESCE(hls.dane_status, ls.dane_status) = 'valid'
-            OR COALESCE(hls.https_status, ls.https_status) IN ('working', 'tls_unverified')
-            OR lbe.browser_result = 'dane_verified'
-            OR lbe.dane_status = 'verified'
-            OR lbe.browser_result = 'loaded'
-          )
-        """
-    ).fetchone()
-    browser_target_counts = conn.execute(
-        """
-        SELECT COUNT(*) AS browser_target_names
-        FROM (
-          SELECT DISTINCT root_name, host
-          FROM host_candidates
-          WHERE COALESCE(suppressed, 0) = 0
-        ) hc
-        JOIN names n ON n.name = hc.root_name
-        LEFT JOIN host_live_status hls ON hls.root_name = hc.root_name AND hls.host = hc.host
-        LEFT JOIN browser_evidence lbe ON lbe.id = (
-          SELECT be_latest.id
-          FROM browser_evidence be_latest
-          WHERE be_latest.host = hc.host
-          ORDER BY be_latest.captured_at DESC, be_latest.id DESC
-          LIMIT 1
-        )
-        WHERE COALESCE(n.expired, 0) = 0
-          AND (
-            lbe.id IS NOT NULL
-            OR hls.dane_status = 'valid'
-            OR hls.https_status IN ('working', 'tls_unverified')
-            OR hls.strict_hns_status = 'working'
-            OR hc.host IS NOT NULL
-          )
         """
     ).fetchone()
     summary = {
@@ -751,47 +398,18 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
         "default_provider_names": _row_int(resource_counts, "default_provider_names"),
         "ds_records": _row_int(resource_counts, "ds_records"),
         "dnssec_candidates": _row_int(resource_counts, "dnssec_candidates"),
+        "tlsa_present_names": _row_int(resource_counts, "tlsa_present_names"),
         "static_tlsa_certificate_expired_names": _row_int(
             resource_counts, "static_tlsa_certificate_expired_names"
         ),
-        "dnssec_valid": _row_int(live_counts, "dnssec_valid"),
         "likely_websites": _row_int(resource_counts, "likely_websites"),
         "strict_hns_ready": _row_int(resource_counts, "strict_hns_ready"),
-        "strict_hns_working": _row_int(live_counts, "strict_hns_working"),
-        "doh_fallback_required": _row_int(live_counts, "doh_fallback_required"),
-        "resolver_fallback_required": _row_int(live_counts, "doh_fallback_required"),
         "needs_dane": _row_int(resource_counts, "needs_dane"),
-        "dane_working": _row_int(live_counts, "dane_working"),
         "needs_fix": _row_int(resource_counts, "needs_fix"),
         "missing_glue_only": _row_int(resource_counts, "missing_glue_only"),
-        "stale_tlsa_only": _row_int(live_counts, "stale_tlsa_only"),
-        "live_site_names": _row_int(live_site_counts, "live_site_names"),
-        "browser_target_names": _row_int(browser_target_counts, "browser_target_names"),
-        "host_candidates": table_count(conn, "SELECT COUNT(*) FROM host_candidates WHERE COALESCE(suppressed, 0) = 0"),
-        "browser_evidence_observations": _row_int(browser_counts, "browser_evidence_observations"),
-        "browser_evidence_names": _row_int(browser_counts, "browser_evidence_names"),
-        "browser_dane_verified_names": _row_int(browser_counts, "browser_dane_verified_names"),
-        "browser_network_blocks_53_names": _row_int(browser_counts, "browser_network_blocks_53_names"),
-        "browser_certificate_expired_names": _row_int(browser_counts, "browser_certificate_expired_names"),
-        "live_check_started_at": get_meta(conn, "live_check_started_at", ""),
-        "live_check_finished_at": get_meta(conn, "live_check_finished_at", ""),
-        "live_check_limit": get_meta(conn, "live_check_limit", ""),
-        "live_check_candidate_count": _meta_int(conn, "live_check_candidate_count"),
-        "live_check_checked_count": _meta_int(conn, "live_check_checked_count"),
-        "live_check_concurrency": _meta_int(conn, "live_check_concurrency"),
-        "live_check_min_delay_ms": _meta_int(conn, "live_check_min_delay_ms"),
-        "live_check_timeout_seconds": _meta_float(conn, "live_check_timeout_seconds"),
-        "live_check_recheck_seconds": _meta_int(conn, "live_check_recheck_seconds"),
-        "live_check_resolver": get_meta(conn, "live_check_resolver", ""),
-        "host_live_check_started_at": get_meta(conn, "host_live_check_started_at", ""),
-        "host_live_check_finished_at": get_meta(conn, "host_live_check_finished_at", ""),
-        "host_live_check_limit": get_meta(conn, "host_live_check_limit", ""),
-        "host_live_check_candidate_count": _meta_int(conn, "host_live_check_candidate_count"),
-        "host_live_check_checked_count": _meta_int(conn, "host_live_check_checked_count"),
     }
     summary["classes"] = build_classes(conn)
     summary["providers"] = build_providers(conn)
-    summary["broken"] = build_broken(conn)
     summary["top_resource_ips"] = build_top_resource_ips(conn)
     summary["top_nameservers"] = build_top_nameservers(conn)
     summary["known_hns_resolvers"] = [dict(item) for item in KNOWN_HNS_RESOLVERS]
@@ -824,7 +442,6 @@ def build_compliance_stages(conn: sqlite3.Connection) -> list[dict[str, Any]]:
               SELECT {stage_sql} AS compliance_stage
               FROM names n
               JOIN resource_summary rs ON rs.name = n.name
-              LEFT JOIN live_status ls ON ls.name = n.name
               LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
               WHERE COALESCE(n.expired, 0) = 0
             )
@@ -908,23 +525,12 @@ def build_providers(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             """
             SELECT
               provider_key, provider_type, ns_pattern, ip_pattern,
-              names_count, likely_website_count, working_count, dane_count, updated_at
+              names_count, likely_website_count, updated_at
             FROM provider_summary
             ORDER BY names_count DESC, provider_key
             """
         )
     )
-
-
-def build_broken(conn: sqlite3.Connection) -> dict[str, Any]:
-    reasons = [
-        {
-            "failure_reason": reason,
-            "count": table_count(conn, "SELECT COUNT(*) FROM live_status WHERE failure_reason = ?", (reason,)),
-        }
-        for reason in FAILURE_REASONS
-    ]
-    return {"reasons": reasons}
 
 
 def build_top_resource_ips(conn: sqlite3.Connection, *, limit: int = 10) -> list[dict[str, Any]]:
@@ -1015,7 +621,6 @@ def build_names(
         SELECT n.name
         FROM names n
         JOIN resource_summary rs ON rs.name = n.name
-        LEFT JOIN live_status ls ON ls.name = n.name
         LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
         WHERE {where}
         ORDER BY n.name
@@ -1031,17 +636,13 @@ def build_names(
               n.name, n.state, n.expired, n.onchain_class, n.provider_guess,
               COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types,
               rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6,
-              rs.ds_records, rs.authoritative_doh, rs.has_ds,
+              rs.ds_records, rs.tlsa_records,
+              rs.tlsa_cert_not_valid_after, COALESCE(rs.tlsa_cert_expired, 0) AS tlsa_cert_expired,
+              rs.has_ds,
               { _ns_handoff_select_columns() },
               rs.raw_size, rs.resource_version, rs.resource_hash, n.last_seen_height, n.updated_at,
               { _dns_evidence_path_sql() },
-              { _browser_evidence_path_sql() },
-              { browser_summary_select_columns() },
-              {compliance_stage_sql} AS compliance_stage,
-              ls.dns_reachable, ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.https_status,
-              ls.strict_hns_status, ls.doh_fallback_status, ls.failure_reason,
-              ls.https_cert_sha256, ls.https_spki_sha256, ls.https_cert_not_valid_after,
-              ls.checked_at
+              {compliance_stage_sql} AS compliance_stage
             {_name_rows_from_sql()}
             WHERE {where}
             ORDER BY n.name
@@ -1055,7 +656,16 @@ def build_names(
     return [
         _name_row(
             row,
-            ["record_types", "ns_names", "glue4", "glue6", "synth4", "synth6", "ds_records", "authoritative_doh"],
+            [
+                "record_types",
+                "ns_names",
+                "glue4",
+                "glue6",
+                "synth4",
+                "synth6",
+                "ds_records",
+                "tlsa_records",
+            ],
         )
         for row in rows
     ]
@@ -1089,27 +699,6 @@ def write_dns_evidence(conn: sqlite3.Connection, out: Path) -> int:
     base_dir.mkdir(parents=True, exist_ok=True)
     for name in names:
         write_json(base_dir / f"{name}.json", build_dns_evidence(conn, name))
-    return len(names)
-
-
-def write_browser_evidence(conn: sqlite3.Connection, out: Path) -> int:
-    base_dir = out / "browser-evidence"
-    _remove_tree(base_dir, missing_ok=True)
-    names = [
-        row["name"]
-        for row in conn.execute(
-            """
-            SELECT DISTINCT name
-            FROM browser_evidence
-            ORDER BY name
-            """
-        )
-    ]
-    if not names:
-        return 0
-    base_dir.mkdir(parents=True, exist_ok=True)
-    for name in names:
-        write_json(base_dir / f"{name}.json", build_browser_evidence(conn, name))
     return len(names)
 
 
@@ -1422,38 +1011,6 @@ def build_dns_evidence(conn: sqlite3.Connection, name: str) -> dict[str, Any]:
     }
 
 
-def build_browser_evidence(conn: sqlite3.Connection, name: str) -> dict[str, Any]:
-    rows = conn.execute(
-        """
-        SELECT *
-        FROM browser_evidence
-        WHERE name = ?
-        ORDER BY captured_at DESC, id DESC
-        """,
-        (name,),
-    ).fetchall()
-    seen: set[tuple[str, str, str, str, str, str]] = set()
-    observations: list[dict[str, Any]] = []
-    for row in rows:
-        key = (
-            row["host"] or "",
-            row["evidence_type"] or "",
-            row["source"] or "",
-            row["source_id"] or "",
-            row["captured_at"] or "",
-            row["browser_result"] or "",
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        observations.append(_browser_evidence_row(row))
-    return {
-        "name": name,
-        "observation_count": len(observations),
-        "observations": observations,
-    }
-
-
 def _write_names_pages_streamed(
     conn: sqlite3.Connection,
     base_dir: Path,
@@ -1531,23 +1088,8 @@ def _prepare_export_name_ordinals(conn: sqlite3.Connection, limit: int) -> None:
           has_ns INTEGER NOT NULL,
           has_glue INTEGER NOT NULL,
           has_synth INTEGER NOT NULL,
+          has_tlsa INTEGER NOT NULL,
           tlsa_cert_expired INTEGER NOT NULL,
-          dnssec_status TEXT,
-          tlsa_status TEXT,
-          dane_status TEXT,
-          https_status TEXT,
-          strict_hns_status TEXT,
-          doh_fallback_status TEXT,
-          failure_reason TEXT,
-          browser_evidence_present INTEGER NOT NULL,
-          browser_result TEXT,
-          browser_reason TEXT,
-          browser_dane_status TEXT,
-          browser_fallback_reason TEXT,
-          browser_authoritative_udp TEXT,
-          browser_authoritative_tcp TEXT,
-          browser_authoritative_doh TEXT,
-          browser_certificate_expired INTEGER,
           compliance_stage TEXT NOT NULL
         ) WITHOUT ROWID
         """
@@ -1558,21 +1100,11 @@ def _prepare_export_name_ordinals(conn: sqlite3.Connection, limit: int) -> None:
         f"""
         INSERT INTO export_name_ordinals(
           name, ordinal, expired, provider_guess, provider_type, has_ds, has_ns,
-          has_glue, has_synth, tlsa_cert_expired, dnssec_status, tlsa_status,
-          dane_status, https_status, strict_hns_status, doh_fallback_status,
-          failure_reason, browser_evidence_present, browser_result, browser_reason,
-          browser_dane_status, browser_fallback_reason, browser_authoritative_udp,
-          browser_authoritative_tcp, browser_authoritative_doh, browser_certificate_expired,
-          compliance_stage
+          has_glue, has_synth, has_tlsa, tlsa_cert_expired, compliance_stage
         )
         SELECT
           name, ordinal, expired, provider_guess, provider_type, has_ds, has_ns,
-          has_glue, has_synth, tlsa_cert_expired, dnssec_status, tlsa_status, dane_status, https_status,
-          strict_hns_status, doh_fallback_status, failure_reason,
-          browser_evidence_present, browser_result, browser_reason, browser_dane_status,
-          browser_fallback_reason, browser_authoritative_udp, browser_authoritative_tcp,
-          browser_authoritative_doh, browser_certificate_expired,
-          {_export_compliance_stage_sql()} AS compliance_stage
+          has_glue, has_synth, has_tlsa, tlsa_cert_expired, {_export_compliance_stage_sql()} AS compliance_stage
         FROM (
           SELECT
             n.name,
@@ -1584,28 +1116,11 @@ def _prepare_export_name_ordinals(conn: sqlite3.Connection, limit: int) -> None:
             COALESCE(rs.has_ns, 0) AS has_ns,
             COALESCE(rs.has_glue, 0) AS has_glue,
             COALESCE(rs.has_synth, 0) AS has_synth,
-            COALESCE(rs.tlsa_cert_expired, 0) AS tlsa_cert_expired,
-            ls.dnssec_status,
-            ls.tlsa_status,
-            ls.dane_status,
-            ls.https_status,
-            ls.strict_hns_status,
-            ls.doh_fallback_status,
-            ls.failure_reason,
-            CASE WHEN lbe.id IS NULL THEN 0 ELSE 1 END AS browser_evidence_present,
-            lbe.browser_result AS browser_result,
-            lbe.reason AS browser_reason,
-            lbe.dane_status AS browser_dane_status,
-            lbe.fallback_reason AS browser_fallback_reason,
-            lbe.authoritative_udp AS browser_authoritative_udp,
-            lbe.authoritative_tcp AS browser_authoritative_tcp,
-            lbe.authoritative_doh AS browser_authoritative_doh,
-            lbe.certificate_expired AS browser_certificate_expired
+            CASE WHEN COALESCE(json_array_length(rs.tlsa_records), 0) > 0 THEN 1 ELSE 0 END AS has_tlsa,
+            COALESCE(rs.tlsa_cert_expired, 0) AS tlsa_cert_expired
           FROM names n
           JOIN resource_summary rs ON rs.name = n.name
-          LEFT JOIN live_status ls ON ls.name = n.name
           LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
-          {latest_browser_evidence_join()}
           ORDER BY n.name
           LIMIT ?
         )
@@ -1620,9 +1135,6 @@ def _prepare_export_name_ordinals(conn: sqlite3.Connection, limit: int) -> None:
         "CREATE INDEX temp.idx_export_ordinals_provider_type ON export_name_ordinals(provider_type, ordinal)"
     )
     conn.execute(
-        "CREATE INDEX temp.idx_export_ordinals_failure ON export_name_ordinals(failure_reason, ordinal)"
-    )
-    conn.execute(
         "CREATE INDEX temp.idx_export_ordinals_ns ON export_name_ordinals(has_ns, ordinal)"
     )
     conn.execute(
@@ -1632,16 +1144,10 @@ def _prepare_export_name_ordinals(conn: sqlite3.Connection, limit: int) -> None:
         "CREATE INDEX temp.idx_export_ordinals_ds ON export_name_ordinals(has_ds, ordinal)"
     )
     conn.execute(
-        "CREATE INDEX temp.idx_export_ordinals_dane ON export_name_ordinals(dane_status, ordinal)"
+        "CREATE INDEX temp.idx_export_ordinals_tlsa ON export_name_ordinals(has_tlsa, ordinal)"
     )
     conn.execute(
         "CREATE INDEX temp.idx_export_ordinals_compliance ON export_name_ordinals(compliance_stage, ordinal)"
-    )
-    conn.execute(
-        "CREATE INDEX temp.idx_export_ordinals_browser ON export_name_ordinals(browser_evidence_present, ordinal)"
-    )
-    conn.execute(
-        "CREATE INDEX temp.idx_export_ordinals_browser_result ON export_name_ordinals(browser_result, ordinal)"
     )
 
 
@@ -1794,10 +1300,6 @@ def _base_collection_count(conn: sqlite3.Connection, key: str) -> int:
 
 
 def _posting_collection_where(key: str) -> tuple[str, tuple[Any, ...]]:
-    if key.startswith(FAILURE_REASON_FILTER_PREFIX):
-        return "expired = 0 AND failure_reason = ?", (
-            key.removeprefix(FAILURE_REASON_FILTER_PREFIX),
-        )
     if key.startswith(COMPLIANCE_STAGE_FILTER_PREFIX):
         return "expired = 0 AND compliance_stage = ?", (
             key.removeprefix(COMPLIANCE_STAGE_FILTER_PREFIX),
@@ -1818,19 +1320,6 @@ def _collection_dir_name(key: str) -> str:
 def _name_collection_keys(conn: sqlite3.Connection) -> list[str]:
     filter_keys = [
         key for key in EXPORTED_NAME_FILTERS if _collection_has_exported_rows(conn, key)
-    ]
-    failure_reasons = [
-        row["failure_reason"]
-        for row in conn.execute(
-            """
-            SELECT failure_reason
-            FROM export_name_ordinals
-            WHERE failure_reason IS NOT NULL
-            GROUP BY failure_reason
-            ORDER BY failure_reason
-            """
-        )
-        if row["failure_reason"]
     ]
     compliance_stages = [
         row["compliance_stage"]
@@ -1860,7 +1349,6 @@ def _name_collection_keys(conn: sqlite3.Connection) -> list[str]:
         "all",
         *filter_keys,
         *(f"{COMPLIANCE_STAGE_FILTER_PREFIX}{stage}" for stage in compliance_stages),
-        *(f"{FAILURE_REASON_FILTER_PREFIX}{reason}" for reason in failure_reasons),
         *(f"{PROVIDER_FILTER_PREFIX}{provider_key}" for provider_key in provider_keys),
     ]
 
@@ -1895,31 +1383,19 @@ def _name_row_columns(*, row_detail: str = "full") -> str:
           {_ns_handoff_select_columns()},
           rs.raw_size, rs.resource_version, rs.resource_hash, n.last_seen_height, n.updated_at,
           {_dns_evidence_path_sql()},
-          {_browser_evidence_path_sql()},
-          {browser_summary_select_columns()},
-          eno.compliance_stage AS compliance_stage,
-          ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.https_status,
-          ls.strict_hns_status, ls.doh_fallback_status, ls.failure_reason,
-          ls.https_cert_sha256, ls.https_spki_sha256, ls.https_cert_not_valid_after,
-          ls.checked_at
+          eno.compliance_stage AS compliance_stage
         """
     return f"""
           n.name, n.state, n.expired, n.onchain_class, n.provider_guess,
           COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types,
           rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6,
-          rs.ds_records, rs.authoritative_doh, rs.tlsa_records,
+          rs.ds_records, rs.tlsa_records,
           rs.tlsa_cert_not_valid_after, COALESCE(rs.tlsa_cert_expired, 0) AS tlsa_cert_expired,
           rs.has_ds,
           {_ns_handoff_select_columns()},
           rs.raw_size, rs.resource_version, rs.resource_hash, n.last_seen_height, n.updated_at,
           {_dns_evidence_path_sql()},
-          {_browser_evidence_path_sql()},
-          {browser_summary_select_columns()},
-          eno.compliance_stage AS compliance_stage,
-          ls.dns_reachable, ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.https_status,
-          ls.strict_hns_status, ls.doh_fallback_status, ls.failure_reason,
-          ls.https_cert_sha256, ls.https_spki_sha256, ls.https_cert_not_valid_after,
-          ls.checked_at
+          eno.compliance_stage AS compliance_stage
         """
 
 
@@ -1934,7 +1410,6 @@ def _name_json_columns(*, row_detail: str = "full") -> list[str]:
         "synth4",
         "synth6",
         "ds_records",
-        "authoritative_doh",
         "tlsa_records",
     ]
 
@@ -1963,21 +1438,7 @@ def _name_output_keys(*, row_detail: str = "full") -> list[str]:
             "last_seen_height",
             "updated_at",
             "dns_evidence_path",
-            "browser_evidence_path",
-            *BROWSER_SUMMARY_COLUMNS,
-            *BROWSER_EFFECT_COLUMNS,
             "compliance_stage",
-            "dnssec_status",
-            "tlsa_status",
-            "dane_status",
-            "https_status",
-            "strict_hns_status",
-            "doh_fallback_status",
-            "failure_reason",
-            "https_cert_sha256",
-            "https_spki_sha256",
-            "https_cert_not_valid_after",
-            "checked_at",
         ]
     return []
 
@@ -1986,10 +1447,8 @@ def _name_rows_from_sql() -> str:
     return f"""
       FROM names n
       JOIN resource_summary rs ON rs.name = n.name
-      LEFT JOIN live_status ls ON ls.name = n.name
       LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
       LEFT JOIN {NS_HANDOFF_TABLE} enh ON enh.name = n.name
-      {latest_browser_evidence_join()}
     """
 
 
@@ -2000,10 +1459,6 @@ def _ns_handoff_select_columns() -> str:
 def _name_collection_where(key: str) -> tuple[str, tuple[Any, ...]]:
     if key == "all":
         return "1=1", ()
-    if key.startswith(FAILURE_REASON_FILTER_PREFIX):
-        return "COALESCE(n.expired, 0) = 0 AND ls.failure_reason = ?", (
-            key.removeprefix(FAILURE_REASON_FILTER_PREFIX),
-        )
     if key.startswith(COMPLIANCE_STAGE_FILTER_PREFIX):
         return f"COALESCE(n.expired, 0) = 0 AND {_name_compliance_stage_sql()} = ?", (
             key.removeprefix(COMPLIANCE_STAGE_FILTER_PREFIX),
@@ -2033,7 +1488,9 @@ def write_names_csv(conn: sqlite3.Connection, path: Path, *, limit: int) -> None
         "synth4",
         "synth6",
         "ds_records",
-        "authoritative_doh",
+        "tlsa_records",
+        "tlsa_cert_not_valid_after",
+        "tlsa_cert_expired",
         "has_ds",
         *NS_HANDOFF_COLUMNS,
         "raw_size",
@@ -2042,22 +1499,7 @@ def write_names_csv(conn: sqlite3.Connection, path: Path, *, limit: int) -> None
         "last_seen_height",
         "updated_at",
         "dns_evidence_path",
-        "browser_evidence_path",
-        *BROWSER_SUMMARY_COLUMNS,
-        *BROWSER_EFFECT_COLUMNS,
         "compliance_stage",
-        "dns_reachable",
-        "dnssec_status",
-        "tlsa_status",
-        "dane_status",
-        "https_status",
-        "strict_hns_status",
-        "doh_fallback_status",
-        "failure_reason",
-        "https_cert_sha256",
-        "https_spki_sha256",
-        "https_cert_not_valid_after",
-        "checked_at",
     ]
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -2160,215 +1602,6 @@ def write_verification_csv(conn: sqlite3.Connection, path: Path, *, limit: int) 
             drop_temp_ns_handoff_table(conn)
 
 
-def build_host_directory(conn: sqlite3.Connection, *, limit: int) -> dict[str, Any]:
-    rows = [
-        row
-        for row in (
-            site_directory_row(_name_row(source_row, []))
-            for source_row in _host_directory_source_rows(conn, limit=limit)
-        )
-        if row is not None
-    ]
-    return {
-        "row_count": len(rows),
-        "columns": SITE_DIRECTORY_FIELDS,
-        "rows": rows,
-    }
-
-
-def _host_directory_source_rows(conn: sqlite3.Connection, *, limit: int) -> list[sqlite3.Row]:
-    compliance_stage_sql = _name_compliance_stage_sql()
-    return conn.execute(
-        f"""
-        WITH exported_roots AS (
-          SELECT n.name
-          FROM names n
-          ORDER BY n.name
-          LIMIT ?
-        ),
-        directory_hosts AS (
-          SELECT DISTINCT hc.root_name, hc.host
-          FROM host_candidates hc
-          JOIN exported_roots er ON er.name = hc.root_name
-          WHERE COALESCE(hc.suppressed, 0) = 0
-          UNION
-          SELECT DISTINCT hls.root_name, hls.host
-          FROM host_live_status hls
-          JOIN exported_roots er ON er.name = hls.root_name
-          UNION
-          SELECT ls.name AS root_name, ls.name AS host
-          FROM live_status ls
-          JOIN exported_roots er ON er.name = ls.name
-          UNION
-          SELECT be.name AS root_name, COALESCE(NULLIF(be.host, ''), be.name) AS host
-          FROM browser_evidence be
-          JOIN exported_roots er ON er.name = be.name
-        )
-        SELECT
-          n.name AS root_name,
-          dh.host,
-          COALESCE(hls.url, 'https://' || dh.host || '/') AS url,
-          n.expired,
-          n.provider_guess,
-          COALESCE(ps.provider_type, 'unknown') AS provider_type,
-          {browser_summary_select_columns()},
-          {compliance_stage_sql} AS compliance_stage,
-          COALESCE(hls.dnssec_status, ls.dnssec_status) AS dnssec_status,
-          COALESCE(hls.tlsa_status, ls.tlsa_status) AS tlsa_status,
-          COALESCE(hls.dane_status, ls.dane_status) AS dane_status,
-          COALESCE(hls.https_status, ls.https_status) AS https_status,
-          COALESCE(hls.strict_hns_status, ls.strict_hns_status) AS strict_hns_status,
-          COALESCE(hls.fallback_status, ls.doh_fallback_status) AS fallback_status,
-          COALESCE(hls.failure_reason, ls.failure_reason) AS failure_reason,
-          COALESCE(hls.certificate_sha256, ls.https_cert_sha256) AS certificate_sha256,
-          COALESCE(hls.spki_sha256, ls.https_spki_sha256) AS spki_sha256,
-          COALESCE(hls.certificate_not_valid_after, ls.https_cert_not_valid_after) AS certificate_not_valid_after,
-          COALESCE(hls.checked_at, ls.checked_at) AS checked_at
-        FROM directory_hosts dh
-        JOIN names n ON n.name = dh.root_name
-        JOIN resource_summary rs ON rs.name = n.name
-        LEFT JOIN live_status ls ON ls.name = n.name
-          AND dh.host = n.name
-        LEFT JOIN host_live_status hls ON hls.root_name = dh.root_name AND hls.host = dh.host
-        LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
-        LEFT JOIN browser_evidence lbe ON lbe.id = (
-          SELECT be_latest.id
-          FROM browser_evidence be_latest
-          WHERE be_latest.host = dh.host
-          ORDER BY be_latest.captured_at DESC, be_latest.id DESC
-          LIMIT 1
-        )
-        WHERE COALESCE(n.expired, 0) = 0
-          AND (
-            COALESCE(hls.dane_status, ls.dane_status) = 'valid'
-            OR COALESCE(hls.https_status, ls.https_status) IN ('working', 'tls_unverified')
-            OR lbe.browser_result = 'dane_verified'
-            OR lbe.dane_status = 'verified'
-            OR lbe.browser_result = 'loaded'
-          )
-        ORDER BY
-          CASE
-            WHEN COALESCE(hls.dane_status, ls.dane_status) = 'valid' THEN 0
-            WHEN COALESCE(hls.https_status, ls.https_status) IN ('working', 'tls_unverified') THEN 1
-            WHEN lbe.browser_result = 'dane_verified' OR lbe.dane_status = 'verified' THEN 2
-            WHEN lbe.browser_result = 'loaded' THEN 3
-            ELSE 99
-          END,
-          dh.host
-        """,
-        (limit,),
-    ).fetchall()
-
-
-def write_site_directory_csv(conn: sqlite3.Connection, path: Path, *, limit: int) -> None:
-    directory = build_host_directory(conn, limit=limit)
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=SITE_DIRECTORY_FIELDS)
-        writer.writeheader()
-        writer.writerows(directory["rows"])
-
-
-def write_browser_targets_csv(conn: sqlite3.Connection, path: Path, *, limit: int) -> None:
-    compliance_stage_sql = _name_compliance_stage_sql()
-    prepare_temp_ns_handoff_table(
-        conn,
-        """
-        SELECT n.name
-        FROM names n
-        ORDER BY n.name
-        LIMIT ?
-        """,
-        (limit,),
-    )
-    try:
-        cursor = conn.execute(
-            f"""
-            WITH exported_roots AS (
-              SELECT n.name
-              FROM names n
-              ORDER BY n.name
-              LIMIT ?
-            ),
-            target_hosts AS (
-              SELECT
-                hc.root_name,
-                hc.host,
-                MAX(hc.confidence) AS candidate_confidence,
-                GROUP_CONCAT(DISTINCT hc.source) AS candidate_sources
-              FROM host_candidates hc
-              JOIN exported_roots er ON er.name = hc.root_name
-              WHERE COALESCE(hc.suppressed, 0) = 0
-              GROUP BY hc.root_name, hc.host
-            )
-            SELECT
-              n.name AS root_name,
-              th.host,
-              hls.url,
-              n.expired,
-              n.provider_guess,
-              COALESCE(ps.provider_type, 'unknown') AS provider_type,
-              n.record_types,
-              COALESCE(rs.has_ds, 0) AS has_ds,
-              COALESCE(rs.has_ns, 0) AS has_ns,
-              COALESCE(rs.has_glue, 0) AS has_glue,
-              COALESCE(rs.has_synth, 0) AS has_synth,
-              json_extract(rs.ns_names, '$[0]') AS first_ns,
-              json_extract(rs.glue4, '$[0]') AS first_glue4,
-              json_extract(rs.glue6, '$[0]') AS first_glue6,
-              json_extract(rs.synth4, '$[0]') AS first_synth4,
-              json_extract(rs.synth6, '$[0]') AS first_synth6,
-              {_ns_handoff_select_columns()},
-              {browser_summary_select_columns()},
-              {compliance_stage_sql} AS compliance_stage,
-              hls.dnssec_status,
-              hls.tlsa_status,
-              hls.dane_status,
-              hls.https_status,
-              hls.strict_hns_status,
-              hls.fallback_status,
-              hls.failure_reason,
-              hls.checked_at
-            FROM target_hosts th
-            JOIN names n ON n.name = th.root_name
-            JOIN resource_summary rs ON rs.name = n.name
-            LEFT JOIN live_status ls ON ls.name = n.name
-            LEFT JOIN host_live_status hls ON hls.root_name = th.root_name AND hls.host = th.host
-            LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
-            LEFT JOIN {NS_HANDOFF_TABLE} enh ON enh.name = n.name
-            LEFT JOIN browser_evidence lbe ON lbe.id = (
-              SELECT be_latest.id
-              FROM browser_evidence be_latest
-              WHERE be_latest.host = th.host
-              ORDER BY be_latest.captured_at DESC, be_latest.id DESC
-              LIMIT 1
-            )
-            WHERE COALESCE(n.expired, 0) = 0
-              AND (
-                lbe.id IS NOT NULL
-                OR hls.dane_status = 'valid'
-                OR hls.https_status IN ('working', 'tls_unverified')
-                OR hls.strict_hns_status = 'working'
-                OR th.candidate_sources IS NOT NULL
-                OR enh.ns_handoff_bootstrap_ip IS NOT NULL
-              )
-            ORDER BY th.host
-            """,
-            (limit,),
-        )
-        targets = [
-            target
-            for row in cursor
-            if (target := browser_target_row(_name_row(row, ["record_types"]))) is not None
-        ]
-    finally:
-        drop_temp_ns_handoff_table(conn)
-    targets.sort(key=lambda item: (int(item["priority"]), item["host"]))
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=BROWSER_TARGET_FIELDS)
-        writer.writeheader()
-        writer.writerows(targets)
-
-
 def gzip_sqlite(db_path: str | Path, out_path: Path) -> None:
     source = Path(db_path)
     if not source.exists():
@@ -2441,12 +1674,10 @@ def _manifest_artifact_paths(out: Path, *, include_downloads: bool) -> list[str]
                 "names.json",
                 "names.csv",
                 "verification.csv",
-                "site-directory.csv",
-                "browser-targets.csv",
                 "topology.sqlite.gz",
             )
         )
-    for directory in ("names-pages", "ip-addresses", "dns-evidence", "browser-evidence"):
+    for directory in ("names-pages", "ip-addresses", "dns-evidence"):
         paths.extend(
             path.relative_to(out).as_posix()
             for path in sorted((out / directory).glob("*/*.json"))
@@ -2523,21 +1754,11 @@ def _dns_evidence_path_sql() -> str:
     """
 
 
-def _browser_evidence_path_sql() -> str:
-    return """
-      CASE WHEN EXISTS(
-        SELECT 1
-        FROM browser_evidence be
-        WHERE be.name = n.name
-      ) THEN 'browser-evidence/' || n.name || '.json' ELSE NULL END AS browser_evidence_path
-    """
-
-
 def _name_row(row: sqlite3.Row, json_columns: list[str]) -> dict[str, Any]:
     parsed = parse_json_columns(dict(row), json_columns)
     if "tlsa_cert_expired" in parsed:
         parsed["tlsa_cert_expired"] = bool(parsed["tlsa_cert_expired"])
-    return apply_browser_evidence_policy(parsed)
+    return parsed
 
 
 def _dns_evidence_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -2560,57 +1781,6 @@ def _dns_evidence_row(row: sqlite3.Row) -> dict[str, Any]:
     return {key: value for key, value in result.items() if value not in (None, "", [])}
 
 
-def _browser_evidence_row(row: sqlite3.Row) -> dict[str, Any]:
-    result = {
-        "host": row["host"],
-        "url": row["url"],
-        "source": row["source"],
-        "source_id": row["source_id"],
-        "evidence_type": row["evidence_type"],
-        "browser_result": row["browser_result"],
-        "status_code": row["status_code"],
-        "stage": row["stage"],
-        "reason": row["reason"],
-        "mode": row["mode"],
-        "hns_proof": row["hns_proof"],
-        "resolution_source": row["resolution_source"],
-        "authoritative_udp": row["authoritative_udp"],
-        "authoritative_tcp": row["authoritative_tcp"],
-        "authoritative_doh": row["authoritative_doh"],
-        "fallback_used": _row_bool(row["fallback_used"]),
-        "fallback_reason": row["fallback_reason"],
-        "dnssec_status": row["dnssec_status"],
-        "tlsa_owner": row["tlsa_owner"],
-        "tlsa_status": row["tlsa_status"],
-        "tlsa_source": row["tlsa_source"],
-        "dane_status": row["dane_status"],
-        "certificate_sha256": row["certificate_sha256"],
-        "spki_sha256": row["spki_sha256"],
-        "certificate_not_valid_after": row["certificate_not_valid_after"],
-        "certificate_expired": _row_bool(row["certificate_expired"]),
-        "final_error": row["final_error"],
-        "captured_at": row["captured_at"],
-        "raw": _loads_json_dict(row["raw_json"]),
-    }
-    return {key: value for key, value in result.items() if value not in (None, "", [], {})}
-
-
-def _row_bool(value: Any) -> bool | None:
-    if value is None:
-        return None
-    return bool(value)
-
-
-def _loads_json_dict(value: str | None) -> dict[str, Any]:
-    if not value:
-        return {}
-    try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
-
-
 def _loads_json_list(value: str | None) -> list[Any]:
     if not value:
         return []
@@ -2627,15 +1797,5 @@ def _meta_int(conn: sqlite3.Connection, key: str) -> int | None:
         return None
     try:
         return int(value)
-    except ValueError:
-        return None
-
-
-def _meta_float(conn: sqlite3.Connection, key: str) -> float | None:
-    value = get_meta(conn, key)
-    if value is None:
-        return None
-    try:
-        return float(value)
     except ValueError:
         return None

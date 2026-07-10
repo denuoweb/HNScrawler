@@ -57,7 +57,7 @@ def test_classifies_dnssec_candidate_before_plain_delegation():
     assert classify_onchain(summary, expired=False, provider_guess="self-hosted") == "DNSSEC_CANDIDATE"
 
 
-def test_hnsdns_txt_is_not_authoritative_doh_discovery():
+def test_hnsdns_txt_is_plain_txt_not_authoritative_doh_discovery():
     summary = summarize_resource(
         "dane",
         {
@@ -70,7 +70,7 @@ def test_hnsdns_txt_is_not_authoritative_doh_discovery():
     )
 
     assert summary.has_txt is True
-    assert summary.authoritative_doh == []
+    assert summary.record_types == ["GLUE4", "NS", "TXT"]
 
 
 def test_summarizes_static_embedded_tlsa_certificate_expiration():

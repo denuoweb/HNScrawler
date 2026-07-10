@@ -12,13 +12,10 @@ PUBLIC_DIR="${PUBLIC_DIR:-/mnt/hnscrawler/public}"
 PROVIDER_RULES="${PROVIDER_RULES:-/mnt/hnscrawler/HNScrawler/configs/provider_rules.json}"
 PIPELINE_MODE="${PIPELINE_MODE:-incremental}"
 CHECK_HSD_READY="${CHECK_HSD_READY:-1}"
-RUN_LIVE_CHECKS="${RUN_LIVE_CHECKS:-1}"
-REQUIRE_LIVE_CHECKS="${REQUIRE_LIVE_CHECKS:-$RUN_LIVE_CHECKS}"
 RUN_ARCHIVE="${RUN_ARCHIVE:-0}"
 ARCHIVE_DIR="${ARCHIVE_DIR:-/mnt/hnscrawler/archives}"
 ARCHIVE_KEEP="${ARCHIVE_KEEP:-10}"
 BACKUP_BUCKET_URI="${BACKUP_BUCKET_URI:-}"
-LIVE_LIMIT="${LIVE_LIMIT:-10}"
 NAMES_LIMIT="${NAMES_LIMIT:-0}"
 START_HSD_FOR_UPDATES="${START_HSD_FOR_UPDATES:-1}"
 STOP_HSD_AFTER_UPDATES="${STOP_HSD_AFTER_UPDATES:-1}"
@@ -67,11 +64,9 @@ export PUBLIC_DIR='$PUBLIC_DIR'
 export PROVIDER_RULES='$PROVIDER_RULES'
 export INDEXER_HSD_PREFIX='$INDEXER_HSD_PREFIX'
 export CHECK_HSD_READY='$CHECK_HSD_READY'
-export LIVE_LIMIT='$LIVE_LIMIT'
 export START_HSD_FOR_UPDATES='$START_HSD_FOR_UPDATES'
 export STOP_HSD_AFTER_UPDATES='$STOP_HSD_AFTER_UPDATES'
 export NAMES_LIMIT='$NAMES_LIMIT'
-export REQUIRE_LIVE_CHECKS='$REQUIRE_LIVE_CHECKS'
 export ARCHIVE_DIR='$ARCHIVE_DIR'
 export ARCHIVE_KEEP='$ARCHIVE_KEEP'
 export BACKUP_BUCKET_URI='$BACKUP_BUCKET_URI'
@@ -127,7 +122,7 @@ cleanup_hsd() {
   stop_hsd_after_update || true
 }
 trap cleanup_hsd EXIT
-log_step 'start mode=$PIPELINE_MODE live_checks=$RUN_LIVE_CHECKS names_limit=$NAMES_LIMIT'
+log_step 'start mode=$PIPELINE_MODE names_limit=$NAMES_LIMIT'
 start_hsd_for_update
 case '$PIPELINE_MODE' in
   bootstrap)
@@ -158,11 +153,6 @@ case '$PIPELINE_MODE' in
     ;;
 esac
 stop_hsd_after_update
-if [ '$RUN_LIVE_CHECKS' = '1' ]; then
-  log_step 'live checks start'
-  scripts/run-live-checks.sh
-  log_step 'live checks done'
-fi
 log_step 'generate site start'
 scripts/generate-site.sh
 log_step 'generate site done'

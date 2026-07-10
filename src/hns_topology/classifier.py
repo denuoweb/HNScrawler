@@ -69,7 +69,6 @@ def summarize_resource(name: str, resource: Any) -> ResourceSummary:
     synth4: set[str] = set()
     synth6: set[str] = set()
     ds_records: list[dict[str, Any]] = []
-    authoritative_doh: list[dict[str, Any]] = []
     tlsa_records: list[dict[str, Any]] = []
     record_types: set[str] = set()
     has_ds = False
@@ -119,7 +118,6 @@ def summarize_resource(name: str, resource: Any) -> ResourceSummary:
         synth4=sorted(synth4),
         synth6=sorted(synth6),
         ds_records=sorted(ds_records, key=lambda item: dumps_json(item)),
-        authoritative_doh=sorted(authoritative_doh, key=lambda item: dumps_json(item)),
         tlsa_records=sorted(tlsa_records, key=lambda item: dumps_json(item)),
         tlsa_cert_not_valid_after=tlsa_cert_not_valid_after,
         tlsa_cert_expired=tlsa_cert_expired,

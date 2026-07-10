@@ -4,11 +4,9 @@ import argparse
 import json
 import os
 import sys
-from dataclasses import replace
 from pathlib import Path
 
 from .archiver import archive_is_valid, archive_release, validate_archive_manifest
-from .browser_evidence import parse_browser_evidence_text
 from .classifier import normalize_name
 from .dane import (
     build_tlsa_records,
@@ -20,16 +18,11 @@ from .db import (
     connect,
     get_meta,
     init_db,
-    insert_browser_evidence_batch,
     insert_dns_evidence_batch,
     rebuild_resource_ip_index,
     recompute_provider_summary,
-    select_host_live_check_candidates,
-    select_known_roots,
-    set_meta,
 )
 from .exporter import export_all
-from .host_candidates import discover_host_candidates, root_from_host
 from .hsd_rpc import HsdRpcClient
 from .hsd_status import evaluate_hsd_readiness, hsd_is_ready
 from .indexer import (
@@ -42,12 +35,6 @@ from .indexer import (
     index_changed_names,
     reclassify_existing_names,
     rollback_reorg,
-)
-from .livecheck import (
-    LiveCheckConfig,
-    count_live_check_candidates,
-    run_host_live_checks,
-    run_live_checks,
 )
 from .lookup_api import run_server
 from .models import DnsEvidence
@@ -139,31 +126,6 @@ def build_parser() -> argparse.ArgumentParser:
     reorg.add_argument("--rollback", action="store_true")
     reorg.set_defaults(func=cmd_reorg_check)
 
-    live = sub.add_parser("live-check", help="Run rate-limited DNS/DANE/HTTPS checks.")
-    live.add_argument("--db", required=True)
-    live.add_argument("--rules", default=str(DEFAULT_RULES))
-    live.add_argument("--limit", type=int)
-    live.add_argument("--concurrency", type=int, default=4)
-    live.add_argument("--min-delay-ms", type=int, default=250)
-    live.add_argument("--timeout", type=float, default=5.0)
-    live.add_argument("--resolver")
-    live.add_argument("--priority-name", action="append", default=[])
-    live.set_defaults(func=cmd_live_check)
-
-    discover_hosts = sub.add_parser("discover-hosts", help="Discover host-level live-check candidates.")
-    discover_hosts.add_argument("--db", required=True)
-    discover_hosts.set_defaults(func=cmd_discover_hosts)
-
-    live_hosts = sub.add_parser("live-check-hosts", help="Run rate-limited checks against host candidates.")
-    live_hosts.add_argument("--db", required=True)
-    live_hosts.add_argument("--rules", default=str(DEFAULT_RULES))
-    live_hosts.add_argument("--limit", type=int)
-    live_hosts.add_argument("--concurrency", type=int, default=4)
-    live_hosts.add_argument("--min-delay-ms", type=int, default=250)
-    live_hosts.add_argument("--timeout", type=float, default=5.0)
-    live_hosts.add_argument("--resolver")
-    live_hosts.set_defaults(func=cmd_live_check_hosts)
-
     import_evidence = sub.add_parser(
         "import-dns-evidence",
         help="Import scanner or crowd-sourced DNS evidence JSON.",
@@ -173,21 +135,6 @@ def build_parser() -> argparse.ArgumentParser:
     import_evidence.add_argument("--source", default="crowd")
     import_evidence.add_argument("--source-id", default="")
     import_evidence.set_defaults(func=cmd_import_dns_evidence)
-
-    import_browser = sub.add_parser(
-        "import-browser-evidence",
-        help="Import HNS Browser resolver trace JSON or gateway event logs.",
-    )
-    import_browser.add_argument("--db", required=True)
-    import_browser.add_argument(
-        "--file",
-        required=True,
-        action="append",
-        help="Browser trace/log file. Repeat or pass a directory to import multiple files.",
-    )
-    import_browser.add_argument("--source", default="hns-browser")
-    import_browser.add_argument("--source-id", default="")
-    import_browser.set_defaults(func=cmd_import_browser_evidence)
 
     rebuild_ip = sub.add_parser(
         "rebuild-resource-ip", help="Rebuild the derived resource IP index."
@@ -229,13 +176,11 @@ def build_parser() -> argparse.ArgumentParser:
     validate = sub.add_parser("validate-release", help="Validate DB and static artifacts before publishing.")
     validate.add_argument("--db", required=True)
     validate.add_argument("--public-dir")
-    validate.add_argument("--require-live-checks", action="store_true")
     validate.add_argument("--min-indexed-height", type=int, default=0)
     validate.set_defaults(func=cmd_validate_release)
 
     validate_public = sub.add_parser("validate-public", help="Validate static public artifacts.")
     validate_public.add_argument("--public-dir", required=True)
-    validate_public.add_argument("--require-live-checks", action="store_true")
     validate_public.add_argument("--min-indexed-height", type=int, default=0)
     validate_public.set_defaults(func=cmd_validate_public)
 
@@ -551,82 +496,6 @@ def cmd_reorg_check(args: argparse.Namespace) -> int:
         return 0
 
 
-def cmd_live_check(args: argparse.Namespace) -> int:
-    config = LiveCheckConfig(
-        timeout=args.timeout,
-        concurrency=args.concurrency,
-        min_delay_ms=args.min_delay_ms,
-        resolver=args.resolver,
-    )
-    rules = ProviderRules.from_file(args.rules)
-    with connect(args.db) as conn:
-        init_db(conn)
-        candidate_count = count_live_check_candidates(conn)
-        started_at = utc_now()
-        set_meta(conn, "live_check_started_at", started_at)
-        set_meta(conn, "live_check_limit", str(args.limit) if args.limit is not None else "unlimited")
-        set_meta(conn, "live_check_candidate_count", str(candidate_count))
-        set_meta(conn, "live_check_concurrency", str(config.concurrency))
-        set_meta(conn, "live_check_min_delay_ms", str(config.min_delay_ms))
-        set_meta(conn, "live_check_timeout_seconds", str(config.timeout))
-        set_meta(conn, "live_check_recheck_seconds", str(config.recheck_seconds))
-        set_meta(conn, "live_check_resolver", config.resolver or "system")
-        count = run_live_checks(
-            conn,
-            limit=args.limit,
-            config=config,
-            priority_names=getattr(args, "priority_name", []),
-        )
-        finished_at = utc_now()
-        set_meta(conn, "live_check_checked_count", str(count))
-        set_meta(conn, "live_check_finished_at", finished_at)
-        recompute_provider_summary(conn, rules.provider_types, finished_at, rules.provider_patterns)
-        conn.commit()
-    print(f"checked {count} names")
-    return 0
-
-
-def cmd_discover_hosts(args: argparse.Namespace) -> int:
-    with connect(args.db) as conn:
-        init_db(conn)
-        with conn:
-            counts = discover_host_candidates(conn)
-    total = sum(counts.values())
-    counts_text = ", ".join(f"{source}={count}" for source, count in sorted(counts.items()))
-    print(f"discovered {total} host candidates" + (f" ({counts_text})" if counts_text else ""))
-    return 0
-
-
-def cmd_live_check_hosts(args: argparse.Namespace) -> int:
-    config = LiveCheckConfig(
-        timeout=args.timeout,
-        concurrency=args.concurrency,
-        min_delay_ms=args.min_delay_ms,
-        resolver=args.resolver,
-    )
-    rules = ProviderRules.from_file(args.rules)
-    with connect(args.db) as conn:
-        init_db(conn)
-        candidate_count = len(select_host_live_check_candidates(conn, limit=args.limit))
-        started_at = utc_now()
-        set_meta(conn, "host_live_check_started_at", started_at)
-        set_meta(conn, "host_live_check_limit", str(args.limit) if args.limit is not None else "unlimited")
-        set_meta(conn, "host_live_check_candidate_count", str(candidate_count))
-        set_meta(conn, "host_live_check_concurrency", str(config.concurrency))
-        set_meta(conn, "host_live_check_min_delay_ms", str(config.min_delay_ms))
-        set_meta(conn, "host_live_check_timeout_seconds", str(config.timeout))
-        set_meta(conn, "host_live_check_recheck_seconds", str(config.recheck_seconds))
-        set_meta(conn, "host_live_check_resolver", config.resolver or "system")
-        count = run_host_live_checks(conn, limit=args.limit, config=config)
-        finished_at = utc_now()
-        set_meta(conn, "host_live_check_checked_count", str(count))
-        set_meta(conn, "host_live_check_finished_at", finished_at)
-        recompute_provider_summary(conn, rules.provider_types, finished_at, rules.provider_patterns)
-        conn.commit()
-    print(f"checked {count} hosts")
-    return 0
-
-
 def cmd_import_dns_evidence(args: argparse.Namespace) -> int:
     payload = json.loads(Path(args.file).read_text(encoding="utf-8"))
     evidence = _dns_evidence_from_payload(
@@ -640,75 +509,6 @@ def cmd_import_dns_evidence(args: argparse.Namespace) -> int:
             insert_dns_evidence_batch(conn, evidence)
     print(f"imported {len(evidence)} DNS evidence observations")
     return 0
-
-
-def cmd_import_browser_evidence(args: argparse.Namespace) -> int:
-    evidence = []
-    paths = _browser_evidence_input_paths(args.file)
-    for path in paths:
-        text = path.read_text(encoding="utf-8")
-        evidence.extend(
-            parse_browser_evidence_text(
-                text,
-                source=args.source,
-                source_id=args.source_id,
-            )
-        )
-    with connect(args.db) as conn:
-        init_db(conn)
-        with conn:
-            known_evidence = _known_browser_evidence(conn, evidence)
-            insert_browser_evidence_batch(conn, known_evidence)
-            counts = discover_host_candidates(conn)
-    skipped = len(evidence) - len(known_evidence)
-    suffix = f"; skipped {skipped} observations for unknown names" if skipped else ""
-    host_suffix = f"; host candidates: {sum(counts.values())}"
-    print(
-        f"imported {len(known_evidence)} browser evidence observations from {len(paths)} files"
-        f"{suffix}{host_suffix}"
-    )
-    return 0
-
-
-def _known_browser_evidence(conn, evidence):
-    if not evidence:
-        return []
-    known_roots = select_known_roots(conn)
-    normalized = []
-    for item in evidence:
-        if item.name in known_roots:
-            normalized.append(item)
-            continue
-        root_name = root_from_host(item.host, known_roots)
-        if root_name is not None:
-            normalized.append(replace(item, name=root_name))
-    return normalized
-
-
-def _browser_evidence_input_paths(value: str | list[str]) -> list[Path]:
-    raw_paths = value if isinstance(value, list) else [value]
-    paths: list[Path] = []
-    for raw_path in raw_paths:
-        path = Path(raw_path)
-        if path.is_dir():
-            paths.extend(
-                child
-                for child in sorted(path.rglob("*"))
-                if child.is_file() and _is_browser_evidence_file(child)
-            )
-        else:
-            paths.append(path)
-    return paths
-
-
-def _is_browser_evidence_file(path: Path) -> bool:
-    return path.name == "gateway-events.log" or path.suffix.lower() in {
-        ".json",
-        ".jsonl",
-        ".log",
-        ".md",
-        ".txt",
-    }
 
 
 def cmd_rebuild_resource_ip(args: argparse.Namespace) -> int:
@@ -788,7 +588,6 @@ def cmd_validate_release(args: argparse.Namespace) -> int:
     checks = validate_release(
         db_path=args.db,
         public_dir=args.public_dir,
-        require_live_checks=args.require_live_checks,
         min_indexed_height=args.min_indexed_height,
     )
     for check in checks:
@@ -800,7 +599,6 @@ def cmd_validate_release(args: argparse.Namespace) -> int:
 def cmd_validate_public(args: argparse.Namespace) -> int:
     checks = validate_public_release(
         public_dir=args.public_dir,
-        require_live_checks=args.require_live_checks,
         min_indexed_height=args.min_indexed_height,
     )
     for check in checks:

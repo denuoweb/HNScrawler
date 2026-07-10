@@ -8,15 +8,10 @@ from typing import Any
 
 from .jsonutil import dumps_json, loads_json_list
 from .models import (
-    BrowserEvidence,
     DnsEvidence,
-    HostCandidate,
-    HostLiveStatus,
-    LiveStatus,
     NameRecord,
     ResourceSummary,
 )
-from .timeutil import utc_now
 
 RESOURCE_IP_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS resource_ip (
@@ -63,7 +58,6 @@ CREATE TABLE IF NOT EXISTS resource_summary (
   synth4 TEXT,
   synth6 TEXT,
   ds_records TEXT,
-  authoritative_doh TEXT,
   tlsa_records TEXT,
   tlsa_cert_not_valid_after TEXT,
   tlsa_cert_expired INTEGER DEFAULT 0,
@@ -80,63 +74,6 @@ CREATE TABLE IF NOT EXISTS resource_summary (
 
 {RESOURCE_IP_TABLE_SQL}
 
-CREATE TABLE IF NOT EXISTS live_status (
-  name TEXT PRIMARY KEY,
-  dns_reachable TEXT,
-  dnssec_status TEXT,
-  tlsa_status TEXT,
-  dane_status TEXT,
-  https_status TEXT,
-  strict_hns_status TEXT,
-  doh_fallback_status TEXT,
-  failure_reason TEXT,
-  https_cert_sha256 TEXT,
-  https_spki_sha256 TEXT,
-  https_cert_not_valid_after TEXT,
-  checked_at TEXT,
-  next_check_at TEXT,
-  FOREIGN KEY(name) REFERENCES names(name) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS host_candidates (
-  root_name TEXT NOT NULL,
-  host TEXT NOT NULL,
-  source TEXT NOT NULL,
-  source_detail TEXT NOT NULL DEFAULT '',
-  confidence INTEGER NOT NULL DEFAULT 0,
-  first_seen_at TEXT NOT NULL,
-  last_seen_at TEXT NOT NULL,
-  next_check_at TEXT,
-  suppressed INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY(root_name, host, source),
-  FOREIGN KEY(root_name) REFERENCES names(name) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS host_live_status (
-  root_name TEXT NOT NULL,
-  host TEXT NOT NULL,
-  url TEXT NOT NULL,
-  address_status TEXT,
-  dns_reachable TEXT,
-  dnssec_status TEXT,
-  tlsa_status TEXT,
-  dane_status TEXT,
-  https_status TEXT,
-  strict_hns_status TEXT,
-  authoritative_udp_status TEXT,
-  authoritative_tcp_status TEXT,
-  authoritative_doh_status TEXT,
-  fallback_status TEXT,
-  failure_reason TEXT,
-  certificate_sha256 TEXT,
-  spki_sha256 TEXT,
-  certificate_not_valid_after TEXT,
-  checked_at TEXT,
-  next_check_at TEXT,
-  PRIMARY KEY(root_name, host),
-  FOREIGN KEY(root_name) REFERENCES names(name) ON DELETE CASCADE
-);
-
 CREATE TABLE IF NOT EXISTS provider_summary (
   provider_key TEXT PRIMARY KEY,
   provider_type TEXT,
@@ -144,8 +81,6 @@ CREATE TABLE IF NOT EXISTS provider_summary (
   ip_pattern TEXT,
   names_count INTEGER,
   likely_website_count INTEGER,
-  working_count INTEGER,
-  dane_count INTEGER,
   updated_at TEXT
 );
 
@@ -169,41 +104,6 @@ CREATE TABLE IF NOT EXISTS dns_evidence (
   FOREIGN KEY(name) REFERENCES names(name) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS browser_evidence (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL,
-  host TEXT NOT NULL DEFAULT '',
-  url TEXT NOT NULL DEFAULT '',
-  source TEXT NOT NULL DEFAULT 'browser',
-  source_id TEXT NOT NULL DEFAULT '',
-  evidence_type TEXT NOT NULL,
-  browser_result TEXT NOT NULL DEFAULT 'observed',
-  status_code INTEGER,
-  stage TEXT,
-  reason TEXT,
-  mode TEXT,
-  hns_proof TEXT,
-  resolution_source TEXT,
-  authoritative_udp TEXT,
-  authoritative_tcp TEXT,
-  authoritative_doh TEXT,
-  fallback_used INTEGER,
-  fallback_reason TEXT,
-  dnssec_status TEXT,
-  tlsa_owner TEXT,
-  tlsa_status TEXT,
-  tlsa_source TEXT,
-  dane_status TEXT,
-  certificate_sha256 TEXT,
-  spki_sha256 TEXT,
-  certificate_not_valid_after TEXT,
-  certificate_expired INTEGER,
-  final_error TEXT,
-  raw_json TEXT NOT NULL DEFAULT '{{}}',
-  captured_at TEXT NOT NULL,
-  FOREIGN KEY(name) REFERENCES names(name) ON DELETE CASCADE
-);
-
 CREATE TABLE IF NOT EXISTS block_history (
   height INTEGER PRIMARY KEY,
   block_hash TEXT NOT NULL,
@@ -216,7 +116,6 @@ CREATE TABLE IF NOT EXISTS changed_name_rollbacks (
   name TEXT NOT NULL,
   previous_resource_hash TEXT,
   previous_classification TEXT,
-  previous_live_status TEXT,
   previous_name_row TEXT,
   previous_resource_summary TEXT,
   block_hash_at_height TEXT NOT NULL,
@@ -229,26 +128,8 @@ CORE_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_names_class ON names(onchain_class);
 CREATE INDEX IF NOT EXISTS idx_names_provider ON names(provider_guess);
 CREATE INDEX IF NOT EXISTS idx_names_expired ON names(expired);
-CREATE INDEX IF NOT EXISTS idx_live_failure ON live_status(failure_reason);
-CREATE INDEX IF NOT EXISTS idx_live_next_check ON live_status(next_check_at);
-CREATE INDEX IF NOT EXISTS idx_host_candidates_next_check
-  ON host_candidates(next_check_at, confidence DESC);
-CREATE INDEX IF NOT EXISTS idx_host_candidates_root_host
-  ON host_candidates(root_name, host);
-CREATE INDEX IF NOT EXISTS idx_host_candidates_host
-  ON host_candidates(host);
-CREATE INDEX IF NOT EXISTS idx_host_live_status_dane
-  ON host_live_status(dane_status, checked_at DESC);
-CREATE INDEX IF NOT EXISTS idx_host_live_status_https
-  ON host_live_status(https_status, checked_at DESC);
-CREATE INDEX IF NOT EXISTS idx_host_live_status_next_check
-  ON host_live_status(next_check_at);
-CREATE INDEX IF NOT EXISTS idx_host_live_status_host
-  ON host_live_status(host);
 CREATE INDEX IF NOT EXISTS idx_dns_evidence_name_captured ON dns_evidence(name, captured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_dns_evidence_query_captured ON dns_evidence(name, qname, rrtype, captured_at DESC);
-CREATE INDEX IF NOT EXISTS idx_browser_evidence_name_captured ON browser_evidence(name, captured_at DESC);
-CREATE INDEX IF NOT EXISTS idx_browser_evidence_result ON browser_evidence(browser_result, captured_at DESC);
 """
 
 NAMES_COLUMNS = (
@@ -273,7 +154,6 @@ RESOURCE_COLUMNS = (
     "synth4",
     "synth6",
     "ds_records",
-    "authoritative_doh",
     "tlsa_records",
     "tlsa_cert_not_valid_after",
     "tlsa_cert_expired",
@@ -297,58 +177,6 @@ RESOURCE_IP_FIELDS = (
 RESOURCE_IP_INDEX_META_KEY = "resource_ip_index_version"
 RESOURCE_IP_INDEX_VERSION = "2"
 
-LIVE_COLUMNS = (
-    "name",
-    "dns_reachable",
-    "dnssec_status",
-    "tlsa_status",
-    "dane_status",
-    "https_status",
-    "strict_hns_status",
-    "doh_fallback_status",
-    "failure_reason",
-    "https_cert_sha256",
-    "https_spki_sha256",
-    "https_cert_not_valid_after",
-    "checked_at",
-    "next_check_at",
-)
-
-HOST_CANDIDATE_COLUMNS = (
-    "root_name",
-    "host",
-    "source",
-    "source_detail",
-    "confidence",
-    "first_seen_at",
-    "last_seen_at",
-    "next_check_at",
-    "suppressed",
-)
-
-HOST_LIVE_COLUMNS = (
-    "root_name",
-    "host",
-    "url",
-    "address_status",
-    "dns_reachable",
-    "dnssec_status",
-    "tlsa_status",
-    "dane_status",
-    "https_status",
-    "strict_hns_status",
-    "authoritative_udp_status",
-    "authoritative_tcp_status",
-    "authoritative_doh_status",
-    "fallback_status",
-    "failure_reason",
-    "certificate_sha256",
-    "spki_sha256",
-    "certificate_not_valid_after",
-    "checked_at",
-    "next_check_at",
-)
-
 DNS_EVIDENCE_COLUMNS = (
     "name",
     "qname",
@@ -364,39 +192,6 @@ DNS_EVIDENCE_COLUMNS = (
     "additional_json",
     "elapsed_ms",
     "error",
-    "captured_at",
-)
-
-BROWSER_EVIDENCE_COLUMNS = (
-    "name",
-    "host",
-    "url",
-    "source",
-    "source_id",
-    "evidence_type",
-    "browser_result",
-    "status_code",
-    "stage",
-    "reason",
-    "mode",
-    "hns_proof",
-    "resolution_source",
-    "authoritative_udp",
-    "authoritative_tcp",
-    "authoritative_doh",
-    "fallback_used",
-    "fallback_reason",
-    "dnssec_status",
-    "tlsa_owner",
-    "tlsa_status",
-    "tlsa_source",
-    "dane_status",
-    "certificate_sha256",
-    "spki_sha256",
-    "certificate_not_valid_after",
-    "certificate_expired",
-    "final_error",
-    "raw_json",
     "captured_at",
 )
 
@@ -446,7 +241,6 @@ SCHEMA_COLUMN_MIGRATIONS = {
         "synth4": "TEXT",
         "synth6": "TEXT",
         "ds_records": "TEXT",
-        "authoritative_doh": "TEXT",
         "tlsa_records": "TEXT",
         "tlsa_cert_not_valid_after": "TEXT",
         "tlsa_cert_expired": "INTEGER DEFAULT 0",
@@ -459,62 +253,12 @@ SCHEMA_COLUMN_MIGRATIONS = {
         "resource_version": "INTEGER",
         "resource_hash": "TEXT",
     },
-    "live_status": {
-        "dns_reachable": "TEXT",
-        "dnssec_status": "TEXT",
-        "tlsa_status": "TEXT",
-        "dane_status": "TEXT",
-        "https_status": "TEXT",
-        "strict_hns_status": "TEXT",
-        "doh_fallback_status": "TEXT",
-        "failure_reason": "TEXT",
-        "https_cert_sha256": "TEXT",
-        "https_spki_sha256": "TEXT",
-        "https_cert_not_valid_after": "TEXT",
-        "checked_at": "TEXT",
-        "next_check_at": "TEXT",
-    },
-    "host_candidates": {
-        "root_name": "TEXT NOT NULL DEFAULT ''",
-        "host": "TEXT NOT NULL DEFAULT ''",
-        "source": "TEXT NOT NULL DEFAULT 'unknown'",
-        "source_detail": "TEXT NOT NULL DEFAULT ''",
-        "confidence": "INTEGER NOT NULL DEFAULT 0",
-        "first_seen_at": "TEXT NOT NULL DEFAULT ''",
-        "last_seen_at": "TEXT NOT NULL DEFAULT ''",
-        "next_check_at": "TEXT",
-        "suppressed": "INTEGER NOT NULL DEFAULT 0",
-    },
-    "host_live_status": {
-        "root_name": "TEXT NOT NULL DEFAULT ''",
-        "host": "TEXT NOT NULL DEFAULT ''",
-        "url": "TEXT NOT NULL DEFAULT ''",
-        "address_status": "TEXT",
-        "dns_reachable": "TEXT",
-        "dnssec_status": "TEXT",
-        "tlsa_status": "TEXT",
-        "dane_status": "TEXT",
-        "https_status": "TEXT",
-        "strict_hns_status": "TEXT",
-        "authoritative_udp_status": "TEXT",
-        "authoritative_tcp_status": "TEXT",
-        "authoritative_doh_status": "TEXT",
-        "fallback_status": "TEXT",
-        "failure_reason": "TEXT",
-        "certificate_sha256": "TEXT",
-        "spki_sha256": "TEXT",
-        "certificate_not_valid_after": "TEXT",
-        "checked_at": "TEXT",
-        "next_check_at": "TEXT",
-    },
     "provider_summary": {
         "provider_type": "TEXT",
         "ns_pattern": "TEXT",
         "ip_pattern": "TEXT",
         "names_count": "INTEGER",
         "likely_website_count": "INTEGER",
-        "working_count": "INTEGER",
-        "dane_count": "INTEGER",
         "updated_at": "TEXT",
     },
     "dns_evidence": {
@@ -533,41 +277,9 @@ SCHEMA_COLUMN_MIGRATIONS = {
         "error": "TEXT",
         "captured_at": "TEXT",
     },
-    "browser_evidence": {
-        "host": "TEXT NOT NULL DEFAULT ''",
-        "url": "TEXT NOT NULL DEFAULT ''",
-        "source": "TEXT NOT NULL DEFAULT 'browser'",
-        "source_id": "TEXT NOT NULL DEFAULT ''",
-        "evidence_type": "TEXT NOT NULL DEFAULT 'unknown'",
-        "browser_result": "TEXT NOT NULL DEFAULT 'observed'",
-        "status_code": "INTEGER",
-        "stage": "TEXT",
-        "reason": "TEXT",
-        "mode": "TEXT",
-        "hns_proof": "TEXT",
-        "resolution_source": "TEXT",
-        "authoritative_udp": "TEXT",
-        "authoritative_tcp": "TEXT",
-        "authoritative_doh": "TEXT",
-        "fallback_used": "INTEGER",
-        "fallback_reason": "TEXT",
-        "dnssec_status": "TEXT",
-        "tlsa_owner": "TEXT",
-        "tlsa_status": "TEXT",
-        "tlsa_source": "TEXT",
-        "dane_status": "TEXT",
-        "certificate_sha256": "TEXT",
-        "spki_sha256": "TEXT",
-        "certificate_not_valid_after": "TEXT",
-        "certificate_expired": "INTEGER",
-        "final_error": "TEXT",
-        "raw_json": "TEXT NOT NULL DEFAULT '{}'",
-        "captured_at": "TEXT",
-    },
     "changed_name_rollbacks": {
         "previous_resource_hash": "TEXT",
         "previous_classification": "TEXT",
-        "previous_live_status": "TEXT",
         "previous_name_row": "TEXT",
         "previous_resource_summary": "TEXT",
         "block_hash_at_height": "TEXT NOT NULL DEFAULT ''",
@@ -584,35 +296,25 @@ JSON_ARRAY_DEFAULT_COLUMNS = {
         "synth4",
         "synth6",
         "ds_records",
-        "authoritative_doh",
         "tlsa_records",
     ),
     "dns_evidence": ("answer_json", "authority_json", "additional_json"),
 }
 
+OBSOLETE_TABLES = (
+    "live_status",
+    "host_candidates",
+    "host_live_status",
+    "browser_evidence",
+)
+
+OBSOLETE_COLUMNS = {
+    "changed_name_rollbacks": ("previous_live_status",),
+}
+
 UPSERT_NAME_SQL = _upsert_sql("names", NAMES_COLUMNS)
 UPSERT_RESOURCE_SQL = _upsert_sql("resource_summary", RESOURCE_COLUMNS)
-UPSERT_LIVE_SQL = _upsert_sql("live_status", LIVE_COLUMNS)
-UPSERT_HOST_CANDIDATE_SQL = """
-INSERT INTO host_candidates(
-  root_name, host, source, source_detail, confidence, first_seen_at,
-  last_seen_at, next_check_at, suppressed
-) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(root_name, host, source) DO UPDATE SET
-  source_detail=excluded.source_detail,
-  confidence=MAX(host_candidates.confidence, excluded.confidence),
-  first_seen_at=MIN(host_candidates.first_seen_at, excluded.first_seen_at),
-  last_seen_at=MAX(host_candidates.last_seen_at, excluded.last_seen_at),
-  next_check_at=COALESCE(host_candidates.next_check_at, excluded.next_check_at),
-  suppressed=host_candidates.suppressed
-"""
-UPSERT_HOST_LIVE_SQL = _upsert_sql(
-    "host_live_status",
-    HOST_LIVE_COLUMNS,
-    conflict_column=("root_name", "host"),
-)
 INSERT_DNS_EVIDENCE_SQL = _insert_sql("dns_evidence", DNS_EVIDENCE_COLUMNS)
-INSERT_BROWSER_EVIDENCE_SQL = _insert_sql("browser_evidence", BROWSER_EVIDENCE_COLUMNS)
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:
@@ -628,6 +330,7 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
     _migrate_schema(conn)
+    _drop_obsolete_schema(conn)
     conn.executescript(CORE_INDEX_SQL)
     conn.commit()
 
@@ -681,150 +384,12 @@ def upsert_resource_rows(conn: sqlite3.Connection, rows: Iterable[tuple[Any, ...
     _replace_resource_ip_rows_batch(conn, row_list)
 
 
-def upsert_live_status(conn: sqlite3.Connection, status: LiveStatus) -> None:
-    conn.execute(UPSERT_LIVE_SQL, _live_status_params(status))
-
-
-def upsert_host_candidate(conn: sqlite3.Connection, candidate: HostCandidate) -> None:
-    conn.execute(UPSERT_HOST_CANDIDATE_SQL, _host_candidate_params(candidate))
-
-
-def upsert_host_candidates(conn: sqlite3.Connection, candidates: Iterable[HostCandidate]) -> None:
-    conn.executemany(
-        UPSERT_HOST_CANDIDATE_SQL,
-        (_host_candidate_params(candidate) for candidate in candidates),
-    )
-
-
-def upsert_host_live_status(conn: sqlite3.Connection, status: HostLiveStatus) -> None:
-    conn.execute(UPSERT_HOST_LIVE_SQL, _host_live_status_params(status))
-
-
-def select_known_roots(conn: sqlite3.Connection, *, active_only: bool = True) -> set[str]:
-    where = "WHERE COALESCE(expired, 0) = 0" if active_only else ""
-    return {
-        str(row["name"]).strip().lower().rstrip(".")
-        for row in conn.execute(f"SELECT name FROM names {where}")
-        if str(row["name"] or "").strip()
-    }
-
-
-def select_latest_browser_hosts(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    rows = conn.execute(
-        """
-        SELECT be.*
-        FROM browser_evidence be
-        WHERE be.id = (
-          SELECT be_latest.id
-          FROM browser_evidence be_latest
-          WHERE COALESCE(NULLIF(be_latest.host, ''), be_latest.url)
-                = COALESCE(NULLIF(be.host, ''), be.url)
-          ORDER BY be_latest.captured_at DESC, be_latest.id DESC
-          LIMIT 1
-        )
-        ORDER BY be.name, be.host, be.captured_at DESC, be.id DESC
-        """
-    ).fetchall()
-    return rows_to_dicts(rows)
-
-
-def select_host_live_check_candidates(
-    conn: sqlite3.Connection,
-    *,
-    limit: int | None,
-) -> list[dict[str, Any]]:
-    sql = """
-      WITH candidate_hosts AS (
-        SELECT
-          hc.root_name,
-          hc.host,
-          MAX(hc.confidence) AS confidence,
-          GROUP_CONCAT(DISTINCT hc.source) AS sources,
-          MIN(hc.next_check_at) AS candidate_next_check_at
-        FROM host_candidates hc
-        WHERE COALESCE(hc.suppressed, 0) = 0
-          AND (hc.next_check_at IS NULL OR hc.next_check_at <= ?)
-        GROUP BY hc.root_name, hc.host
-      )
-      SELECT
-        n.name, n.onchain_class, n.provider_guess,
-        rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6,
-        rs.ds_records, rs.authoritative_doh, rs.tlsa_records,
-        rs.has_ds, rs.has_ns, rs.has_glue, rs.has_synth,
-        ch.host, ch.confidence AS candidate_confidence, ch.sources AS candidate_sources,
-        hls.dane_status AS host_dane_status,
-        hls.https_status AS host_https_status,
-        hls.strict_hns_status AS host_strict_hns_status,
-        hls.next_check_at AS host_next_check_at,
-        lbe.browser_result AS browser_result,
-        lbe.dane_status AS browser_dane_status
-      FROM candidate_hosts ch
-      JOIN names n ON n.name = ch.root_name
-      JOIN resource_summary rs ON rs.name = n.name
-      LEFT JOIN host_live_status hls ON hls.root_name = ch.root_name AND hls.host = ch.host
-      LEFT JOIN browser_evidence lbe ON lbe.id = (
-        SELECT be_latest.id
-        FROM browser_evidence be_latest
-        WHERE be_latest.host = ch.host
-        ORDER BY be_latest.captured_at DESC, be_latest.id DESC
-        LIMIT 1
-      )
-      WHERE COALESCE(n.expired, 0) = 0
-        AND (hls.next_check_at IS NULL OR hls.next_check_at <= ?)
-      ORDER BY
-        CASE
-          WHEN hls.dane_status = 'valid' THEN 0
-          WHEN hls.https_status IN ('working', 'tls_unverified') THEN 1
-          WHEN lbe.browser_result = 'dane_verified' OR lbe.dane_status = 'verified' THEN 2
-          WHEN lbe.browser_result = 'loaded' THEN 3
-          WHEN instr(',' || ch.sources || ',', ',resource_tlsa_owner,') > 0
-            OR instr(',' || ch.sources || ',', ',dns_evidence_tlsa_owner,') > 0 THEN 4
-          WHEN (ch.host = ch.root_name OR ch.host = 'www.' || ch.root_name)
-            AND rs.has_ds = 1 AND (rs.has_glue = 1 OR rs.has_synth = 1) THEN 5
-          WHEN (ch.host = ch.root_name OR ch.host = 'www.' || ch.root_name)
-            AND (rs.has_glue = 1 OR rs.has_synth = 1) THEN 6
-          WHEN instr(',' || ch.sources || ',', ',previous_live_host,') > 0 THEN 7
-          ELSE 8
-        END,
-        ch.confidence DESC,
-        ch.host
-    """
-    params: list[Any] = [utc_now(), utc_now()]
-    if limit is not None:
-        sql += " LIMIT ?"
-        params.append(max(0, limit))
-    rows = conn.execute(sql, params).fetchall()
-    return [
-        parse_json_columns(
-            dict(row),
-            [
-                "ns_names",
-                "glue4",
-                "glue6",
-                "synth4",
-                "synth6",
-                "ds_records",
-                "authoritative_doh",
-                "tlsa_records",
-            ],
-        )
-        for row in rows
-    ]
-
-
 def insert_dns_evidence(conn: sqlite3.Connection, evidence: DnsEvidence) -> None:
     conn.execute(INSERT_DNS_EVIDENCE_SQL, _dns_evidence_params(evidence))
 
 
 def insert_dns_evidence_batch(conn: sqlite3.Connection, evidence: Iterable[DnsEvidence]) -> None:
     conn.executemany(INSERT_DNS_EVIDENCE_SQL, (_dns_evidence_params(item) for item in evidence))
-
-
-def insert_browser_evidence_batch(conn: sqlite3.Connection, evidence: Iterable[BrowserEvidence]) -> None:
-    conn.executemany(
-        INSERT_BROWSER_EVIDENCE_SQL,
-        (_browser_evidence_params(item) for item in evidence),
-    )
 
 
 def capture_rollback(
@@ -839,29 +404,25 @@ def capture_rollback(
     resource_row = _row_dict(
         conn.execute("SELECT * FROM resource_summary WHERE name = ?", (name,)).fetchone()
     )
-    live_row = _row_dict(conn.execute("SELECT * FROM live_status WHERE name = ?", (name,)).fetchone())
     if name_row is None:
-        previous_live = None
         previous_resource_hash = None
         previous_classification = None
     else:
         previous_resource_hash = name_row["resource_hash"]
         previous_classification = name_row["onchain_class"]
-        previous_live = live_row
     conn.execute(
         """
         INSERT OR REPLACE INTO changed_name_rollbacks(
           height, name, previous_resource_hash, previous_classification,
-          previous_live_status, previous_name_row, previous_resource_summary,
+          previous_name_row, previous_resource_summary,
           block_hash_at_height, captured_at
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             height,
             name,
             previous_resource_hash,
             previous_classification,
-            dumps_json(previous_live) if previous_live is not None else None,
             dumps_json(name_row) if name_row is not None else None,
             dumps_json(resource_row) if resource_row is not None else None,
             block_hash,
@@ -914,7 +475,6 @@ def rollback_to_height(
         name = row["name"]
         previous_name = _loads_optional_dict(row["previous_name_row"])
         previous_resource = _loads_optional_dict(row["previous_resource_summary"])
-        previous_live = _loads_optional_dict(row["previous_live_status"])
 
         if previous_name is None:
             conn.execute("DELETE FROM names WHERE name = ?", (name,))
@@ -926,12 +486,6 @@ def rollback_to_height(
         else:
             _upsert_raw_row(conn, "resource_summary", RESOURCE_COLUMNS, previous_resource)
             _replace_resource_ip_rows_from_mapping(conn, previous_resource)
-
-        if previous_live is None:
-            conn.execute("DELETE FROM live_status WHERE name = ?", (name,))
-        else:
-            previous_live.setdefault("name", name)
-            _upsert_raw_row(conn, "live_status", LIVE_COLUMNS, previous_live)
 
     conn.execute("DELETE FROM block_history WHERE height >= ?", (rollback_height,))
     conn.execute("DELETE FROM changed_name_rollbacks WHERE height >= ?", (rollback_height,))
@@ -974,12 +528,9 @@ def recompute_provider_summary(
               rs.has_glue = 1 OR
               rs.has_ds = 1
             ) THEN 1 ELSE 0 END
-          ) AS likely_website_count,
-          SUM(CASE WHEN ls.strict_hns_status = 'working' THEN 1 ELSE 0 END) AS working_count,
-          SUM(CASE WHEN ls.dane_status = 'valid' THEN 1 ELSE 0 END) AS dane_count
+          ) AS likely_website_count
         FROM names n
         LEFT JOIN resource_summary rs ON rs.name = n.name
-        LEFT JOIN live_status ls ON ls.name = n.name
         GROUP BY n.provider_guess
         ORDER BY names_count DESC
         """
@@ -991,8 +542,8 @@ def recompute_provider_summary(
             """
             INSERT INTO provider_summary(
               provider_key, provider_type, ns_pattern, ip_pattern, names_count,
-              likely_website_count, working_count, dane_count, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+              likely_website_count, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 provider_key,
@@ -1001,8 +552,6 @@ def recompute_provider_summary(
                 patterns.get("ip_pattern", ""),
                 int(row["names_count"] or 0),
                 int(row["likely_website_count"] or 0),
-                int(row["working_count"] or 0),
-                int(row["dane_count"] or 0),
                 updated_at,
             ),
         )
@@ -1168,6 +717,16 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     backfill_resource_flags(conn)
 
 
+def _drop_obsolete_schema(conn: sqlite3.Connection) -> None:
+    for table in OBSOLETE_TABLES:
+        conn.execute(f"DROP TABLE IF EXISTS {table}")
+    for table, columns in OBSOLETE_COLUMNS.items():
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for column in columns:
+            if column in existing:
+                conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+
+
 def _dns_evidence_params(evidence: DnsEvidence) -> tuple[Any, ...]:
     return (
         evidence.name,
@@ -1186,105 +745,6 @@ def _dns_evidence_params(evidence: DnsEvidence) -> tuple[Any, ...]:
         evidence.error,
         evidence.captured_at,
     )
-
-
-def _live_status_params(status: LiveStatus) -> tuple[Any, ...]:
-    return (
-        status.name,
-        status.dns_reachable,
-        status.dnssec_status,
-        status.tlsa_status,
-        status.dane_status,
-        status.https_status,
-        status.strict_hns_status,
-        status.doh_fallback_status,
-        status.failure_reason,
-        status.https_cert_sha256,
-        status.https_spki_sha256,
-        status.https_cert_not_valid_after,
-        status.checked_at,
-        status.next_check_at,
-    )
-
-
-def _host_candidate_params(candidate: HostCandidate) -> tuple[Any, ...]:
-    return (
-        candidate.root_name,
-        candidate.host,
-        candidate.source,
-        candidate.source_detail,
-        candidate.confidence,
-        candidate.first_seen_at,
-        candidate.last_seen_at,
-        candidate.next_check_at,
-        int(candidate.suppressed),
-    )
-
-
-def _host_live_status_params(status: HostLiveStatus) -> tuple[Any, ...]:
-    return (
-        status.root_name,
-        status.host,
-        status.url,
-        status.address_status,
-        status.dns_reachable,
-        status.dnssec_status,
-        status.tlsa_status,
-        status.dane_status,
-        status.https_status,
-        status.strict_hns_status,
-        status.authoritative_udp_status,
-        status.authoritative_tcp_status,
-        status.authoritative_doh_status,
-        status.fallback_status,
-        status.failure_reason,
-        status.certificate_sha256,
-        status.spki_sha256,
-        status.certificate_not_valid_after,
-        status.checked_at,
-        status.next_check_at,
-    )
-
-
-def _browser_evidence_params(evidence: BrowserEvidence) -> tuple[Any, ...]:
-    return (
-        evidence.name,
-        evidence.host,
-        evidence.url,
-        evidence.source,
-        evidence.source_id,
-        evidence.evidence_type,
-        evidence.browser_result,
-        evidence.status_code,
-        evidence.stage,
-        evidence.reason,
-        evidence.mode,
-        evidence.hns_proof,
-        evidence.resolution_source,
-        evidence.authoritative_udp,
-        evidence.authoritative_tcp,
-        evidence.authoritative_doh,
-        _optional_bool_int(evidence.fallback_used),
-        evidence.fallback_reason,
-        evidence.dnssec_status,
-        evidence.tlsa_owner,
-        evidence.tlsa_status,
-        evidence.tlsa_source,
-        evidence.dane_status,
-        evidence.certificate_sha256,
-        evidence.spki_sha256,
-        evidence.certificate_not_valid_after,
-        _optional_bool_int(evidence.certificate_expired),
-        evidence.final_error,
-        dumps_json(evidence.raw_json),
-        evidence.captured_at,
-    )
-
-
-def _optional_bool_int(value: bool | None) -> int | None:
-    if value is None:
-        return None
-    return 1 if value else 0
 
 
 def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
@@ -1319,7 +779,6 @@ def _resource_params(summary: ResourceSummary) -> tuple[Any, ...]:
         dumps_json(summary.synth4),
         dumps_json(summary.synth6),
         dumps_json(summary.ds_records),
-        dumps_json(summary.authoritative_doh),
         dumps_json(summary.tlsa_records),
         summary.tlsa_cert_not_valid_after,
         int(summary.tlsa_cert_expired),

@@ -9,11 +9,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from .browser_summary import (
-    apply_browser_evidence_policy,
-    browser_summary_select_columns,
-    latest_browser_evidence_join,
-)
 from .compliance import compliance_stage_case
 from .db import parse_json_columns
 from .ns_handoff import (
@@ -32,7 +27,6 @@ JSON_COLUMNS = (
     "synth4",
     "synth6",
     "ds_records",
-    "authoritative_doh",
     "tlsa_records",
 )
 
@@ -44,16 +38,6 @@ def _dns_evidence_path_sql() -> str:
         FROM dns_evidence de
         WHERE de.name = n.name
       ) THEN 'dns-evidence/' || n.name || '.json' ELSE NULL END AS dns_evidence_path
-    """
-
-
-def _browser_evidence_path_sql() -> str:
-    return """
-      CASE WHEN EXISTS(
-        SELECT 1
-        FROM browser_evidence be
-        WHERE be.name = n.name
-      ) THEN 'browser-evidence/' || n.name || '.json' ELSE NULL END AS browser_evidence_path
     """
 
 
@@ -83,11 +67,7 @@ def lookup_name(db_path: str | Path, name: str) -> dict:
             has_ns="rs.has_ns",
             has_glue="rs.has_glue",
             has_synth="rs.has_synth",
-            dnssec_status="ls.dnssec_status",
-            tlsa_status="ls.tlsa_status",
-            dane_status="ls.dane_status",
-            doh_fallback_status="ls.doh_fallback_status",
-            failure_reason="ls.failure_reason",
+            has_tlsa="CASE WHEN COALESCE(json_array_length(rs.tlsa_records), 0) > 0 THEN 1 ELSE 0 END",
         )
         try:
             row = conn.execute(
@@ -96,25 +76,17 @@ def lookup_name(db_path: str | Path, name: str) -> dict:
                   n.name, n.state, n.expired, n.onchain_class, n.provider_guess,
                   COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types,
                   rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6,
-                  rs.ds_records, rs.authoritative_doh, rs.tlsa_records,
+                  rs.ds_records, rs.tlsa_records,
                   rs.tlsa_cert_not_valid_after, COALESCE(rs.tlsa_cert_expired, 0) AS tlsa_cert_expired,
                   rs.has_ds,
                   {_ns_handoff_select_columns()},
                   rs.raw_size, rs.resource_version, rs.resource_hash, n.last_seen_height, n.updated_at,
                   {_dns_evidence_path_sql()},
-                  {_browser_evidence_path_sql()},
-                  {browser_summary_select_columns()},
-                  {compliance_stage_sql} AS compliance_stage,
-                  ls.dns_reachable, ls.dnssec_status, ls.tlsa_status, ls.dane_status, ls.https_status,
-                  ls.strict_hns_status, ls.doh_fallback_status, ls.failure_reason,
-                  ls.https_cert_sha256, ls.https_spki_sha256, ls.https_cert_not_valid_after,
-                  ls.checked_at
+                  {compliance_stage_sql} AS compliance_stage
                 FROM names n
                 JOIN resource_summary rs ON rs.name = n.name
-                LEFT JOIN live_status ls ON ls.name = n.name
                 LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
                 LEFT JOIN {NS_HANDOFF_TABLE} enh ON enh.name = n.name
-                {latest_browser_evidence_join()}
                 WHERE n.name = ?
                 LIMIT 1
                 """,
@@ -153,7 +125,7 @@ def _lookup_row(row: sqlite3.Row) -> dict:
     parsed = parse_json_columns(dict(row), JSON_COLUMNS)
     if "tlsa_cert_expired" in parsed:
         parsed["tlsa_cert_expired"] = bool(parsed["tlsa_cert_expired"])
-    return apply_browser_evidence_policy(parsed)
+    return parsed
 
 
 def _ns_handoff_select_columns() -> str:

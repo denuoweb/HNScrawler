@@ -98,7 +98,7 @@ sudo chown \"\$REMOTE_USER:\$REMOTE_USER\" '$REMOTE_TMP' '$REMOTE_ARCHIVE_DIR'"
     "$ARCHIVE_PATH" \
     "$DENUO_WEB_VM:$REMOTE_ARCHIVE"
 
-  log "extracting archive and syncing live site"
+  log "extracting archive and syncing published site"
   gcloud_compute_ssh "$DENUO_WEB_VM" \
     --project "$GCP_PROJECT" \
     --zone "$GCP_ZONE" \

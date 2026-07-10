@@ -30,7 +30,7 @@ IP lookup is now built from a normalized `resource_ip` table into compact static
 
 IP page files no longer duplicate Names rows. For the common single-field case, such as provider-scale `GLUE4` addresses, page files store only a JSON array of names plus a field mask in metadata. Mixed-field pages store `[name, field_mask]` pairs.
 
-High-frequency marketplace/default glue IPs from the BNS collision study are provider-rule signals. They now match before the self-hosted rule, so an `ns1.<name>` plus shared default glue pattern does not get mislabeled as self-hosted. Known public HNS resolver IPs are also marked as resolver infrastructure if they appear in resource data. Both default parking and resolver infrastructure are excluded from automatic live-check candidate selection and from actionable website queues.
+High-frequency marketplace/default glue IPs from the BNS collision study are provider-rule signals. They now match before the self-hosted rule, so an `ns1.<name>` plus shared default glue pattern does not get mislabeled as self-hosted. Known public HNS resolver IPs are also marked as resolver infrastructure if they appear in resource data. Both default parking and resolver infrastructure are excluded from actionable queues.
 
 The Overview top resource-IP and nameserver-host lists are small aggregates in `summary.json`. They intentionally do not create new Names posting collections; IP rows link into the existing `names.html?q=<ip>` static IP search.
 
@@ -45,9 +45,9 @@ Site generation now writes a complete release tree into a staging directory and 
 - Use one canonical sorted Names row store, with nonzero filter/provider/status postings into that store.
 - Keep high-cardinality UI views paginated and decode only the current page in the browser.
 
-Names filters now use that row-store pattern: `names-pages/all` is the canonical sorted row store, while nonzero visible filters, provider queues, failure collections, and `stage:<compliance_stage>` collections are ordinal postings into that store. The browser resolves only the active postings page back to canonical rows. Hidden filters, zero-row filters, and provider-type queues are not exported.
+Names filters now use that row-store pattern: `names-pages/all` is the canonical sorted row store, while nonzero visible filters, provider queues, and `stage:<compliance_stage>` collections are ordinal postings into that store. The browser resolves only the active postings page back to canonical rows. Hidden filters, zero-row filters, and provider-type queues are not exported.
 
-During export, the generator builds a temporary `export_name_ordinals` table with ordinal, provider, provider type, resource flags, live-status fields, and the derived `compliance_stage` for the exported name set. Nonzero posting collections are counted and streamed from that temporary export index, avoiding repeated joins across the production `names`, `resource_summary`, `live_status`, and `provider_summary` tables.
+During export, the generator builds a temporary `export_name_ordinals` table with ordinal, provider, provider type, resource flags, TLSA presence, static TLSA certificate-expiry state, and the derived `compliance_stage` for the exported name set. Nonzero posting collections are counted and streamed from that temporary export index, avoiding repeated joins across the production `names`, `resource_summary`, and `provider_summary` tables.
 
 If detailed diagnostics must show every resource record at production scale, store full resource detail once per canonical name row or in sharded on-demand detail files, not once per filter.
 

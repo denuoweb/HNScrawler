@@ -44,7 +44,7 @@ def test_archive_release_writes_manifest_site_tarball_and_sqlite_backup(tmp_path
         names = set(archive.getnames())
     assert "public/index.html" in names
     assert "public/data/summary.json" in names
-    assert "public/data/host-directory.json" in names
+    assert "public/data/names-pages.json" in names
 
     sqlite_path = tmp_path / "restored.sqlite"
     with gzip.open(result.sqlite_backup_path, "rb") as src, sqlite_path.open("wb") as dst:

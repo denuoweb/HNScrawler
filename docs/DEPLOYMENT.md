@@ -54,7 +54,6 @@ gcloud compute ssh "$INDEXER_VM" --zone "$GCP_ZONE" --project "$GCP_PROJECT" --c
 scripts/indexer-status.sh
 scripts/check-hsd-ready.sh
 BOOTSTRAP_LIMIT=100 scripts/run-bootstrap.sh
-scripts/run-live-checks.sh
 scripts/generate-site.sh
 scripts/verify-release.sh
 scripts/archive-release.sh
@@ -64,7 +63,7 @@ scripts/gcloud-stop-indexer.sh
 
 Keep the persistent indexer disk until production recovery has been proven. Stop or delete the compute VM to avoid ongoing compute cost.
 
-The indexer disk is for HSD, the compact working database, live-check state, and generated artifacts while building. The production artifact disk on `denuoweb-vm` is for serving the finished static site and downloads. Do not use the production artifact disk as the live HSD datadir.
+The indexer disk is for HSD, the compact working database, and generated artifacts while building. The production artifact disk on `denuoweb-vm` is for serving the finished static site and downloads. Do not use the production artifact disk as the HSD datadir.
 
 `scripts/gcloud-create-indexer.sh` is idempotent for interrupted cycles: it creates the persistent disk if missing, creates the VM if missing, reattaches the indexer disk if the VM exists without it, refuses to attach a disk already mounted on a different VM, and only starts the VM when it is not already running.
 
@@ -78,7 +77,7 @@ CONFIRM_PRODUCTION_RUN=1 PIPELINE_MODE=bootstrap BOOTSTRAP_LIMIT=100 RUN_PUBLISH
 
 `scripts/gcloud-production-cycle.sh` runs preflight, provisions or starts the indexer VM, mounts the indexer disk, syncs code, installs dependencies, starts HSD, optionally waits for HSD readiness, runs the pipeline, publishes the generated site, and then applies `INDEXER_FINAL_ACTION`. The default final and failure action is `stop`, not delete. Set `INDEXER_FINAL_ACTION=delete-vm` only when you intentionally want to remove the ephemeral compute VM after the run. The persistent indexer disk is not deleted by this wrapper.
 
-Operational note: production cycles are long-running and must be launched from the local user systemd scheduler, not from an interactive polling session. The weekly scheduler is `hns-topology-production.timer`, which triggers `hns-topology-production.service`; the service runs `/home/den/HNScrawler/scripts/run-production-cycle-logged.sh weekly` and writes progress to `logs/production-cycle/latest.log`. For a manual run, use `systemctl --user start --no-block hns-topology-production.service` and check status with `systemctl --user status hns-topology-production.service --no-pager`. Do not rely on a foreground terminal or Codex tool session to remain attached through live checks, generation, publish, and cleanup.
+Operational note: production cycles are long-running and must be launched from the local user systemd scheduler, not from an interactive polling session. The weekly scheduler is `hns-topology-production.timer`, which triggers `hns-topology-production.service`; the service runs `/home/den/HNScrawler/scripts/run-production-cycle-logged.sh weekly` and writes progress to `logs/production-cycle/latest.log`. For a manual run, use `systemctl --user start --no-block hns-topology-production.service` and check status with `systemctl --user status hns-topology-production.service --no-pager`. Do not rely on a foreground terminal or Codex tool session to remain attached through generation, publish, and cleanup.
 
 To resume HSD sync without running or publishing a report, use:
 
@@ -162,13 +161,13 @@ Incremental mode reads `last_indexed_height` from the compact DB, scans detailed
 
 For a limited HSD RPC smoke report, use `PIPELINE_MODE=bootstrap BOOTSTRAP_LIMIT=100 scripts/gcloud-run-indexer-pipeline.sh` after HSD is synced. For the initial full report, use `PIPELINE_MODE=extract-jsonl EXPORT_FORMAT=compact JSONL_PATH=/mnt/hnscrawler/data/extracted_names.jsonl scripts/gcloud-run-indexer-pipeline.sh`. If a JSONL file has already been produced, use `PIPELINE_MODE=jsonl JSONL_PATH=/mnt/hnscrawler/data/extracted_names.jsonl scripts/gcloud-run-indexer-pipeline.sh`. If you intentionally accept the risk of HSD's unpaginated `getnames` for a full RPC bootstrap, set `ALLOW_UNPAGINATED_GETNAMES=1 PIPELINE_MODE=bootstrap`.
 
-`scripts/gcloud-run-indexer-pipeline.sh` runs `scripts/verify-release.sh` after static site generation. By default, `REQUIRE_LIVE_CHECKS` follows `RUN_LIVE_CHECKS`, so production runs that request live checks fail before publishing if the database lacks live-check rows or live-check timestamps. The GCE pipeline also defaults `MIN_INDEXED_HEIGHT` to `HSD_MIN_BLOCK_HEIGHT`, so a structurally valid but shallow snapshot cannot pass production release validation or publish validation.
+`scripts/gcloud-run-indexer-pipeline.sh` runs `scripts/verify-release.sh` after static site generation. The GCE pipeline defaults `MIN_INDEXED_HEIGHT` to `HSD_MIN_BLOCK_HEIGHT`, so a structurally valid but shallow snapshot cannot pass production release validation or publish validation.
 
 When `RUN_ARCHIVE=1`, the pipeline runs `scripts/archive-release.sh` after validation and before publishing. It writes a generated-site tarball, a consistent `topology.sqlite.gz` database backup, and a JSON manifest with SHA-256 hashes under `ARCHIVE_DIR`, pruning to `ARCHIVE_KEEP` manifests. Use `hns-topology validate-archive --manifest <manifest>` to verify artifact hashes, tarball contents, and SQLite backup integrity before moving archive artifacts to backup storage. Set `BACKUP_BUCKET_URI=gs://bucket/prefix` to copy those compressed release artifacts to bucket storage. Do not point archive tooling at the live HSD datadir.
 
 Single-block `SCAN_BLOCK_HEIGHT` mode requests detailed HSD block JSON and resolves covenant name hashes with `getnamebyhash`. It refuses empty scans and unresolved name hashes by default. Set `ALLOW_EMPTY_BLOCK_SCAN=1` only for a known-empty block, and set `ALLOW_UNRESOLVED_NAME_HASHES=1` only for a deliberate best-effort run.
 
-`scripts/full-nightly-job.sh` is the local wrapper for the same sequence on an already-prepared indexer host: start HSD for the update phase, HSD readiness, reorg check, bounded incremental catch-up, stop HSD, optional live checks, site generation, release validation, archive creation, and optional publishing. It uses `START_HSD_FOR_UPDATES=1` and `STOP_HSD_AFTER_UPDATES=1` by default so HSD is not left running outside update work. The GCE wrapper remains preferred because it also handles VM lifecycle and attached-disk setup.
+`scripts/full-nightly-job.sh` is the local wrapper for the same sequence on an already-prepared indexer host: start HSD for the update phase, HSD readiness, reorg check, bounded incremental catch-up, stop HSD, site generation, release validation, archive creation, and optional publishing. It uses `START_HSD_FOR_UPDATES=1` and `STOP_HSD_AFTER_UPDATES=1` by default so HSD is not left running outside update work. The GCE wrapper remains preferred because it also handles VM lifecycle and attached-disk setup.
 
 ## Storage Rules
 
@@ -177,7 +176,7 @@ Single-block `SCAN_BLOCK_HEIGHT` mode requests detailed HSD block JSON and resol
 - Website VM receives only `public/`.
 - Full mainnet bootstrap should stream JSONL from the indexer HSD state with `scripts/export-hsd-jsonl.sh`, not through unpaginated `getnames`.
 - Optional buckets store compressed exports, generated artifact tarballs, and database backups.
-- Do not place the live HSD datadir on the website VM.
+- Do not place the HSD datadir on the website VM.
 
 ## Public Repository
 

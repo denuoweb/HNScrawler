@@ -4,7 +4,6 @@ set -euo pipefail
 TOPOLOGY_DB="${TOPOLOGY_DB:-data/topology.sqlite}"
 INDEXER_MOUNT="${INDEXER_MOUNT:-/mnt/hnscrawler}"
 CHECK_HSD_READY="${CHECK_HSD_READY:-1}"
-RUN_LIVE_CHECKS="${RUN_LIVE_CHECKS:-1}"
 RUN_ARCHIVE="${RUN_ARCHIVE:-0}"
 RUN_PUBLISH="${RUN_PUBLISH:-1}"
 START_HSD_FOR_UPDATES="${START_HSD_FOR_UPDATES:-1}"
@@ -36,7 +35,7 @@ start_hsd_for_update() {
 
 stop_hsd_after_update() {
   if [ "$STOP_HSD_AFTER_UPDATES" = "1" ] && { [ "$hsd_started_for_update" = "1" ] || hsd_is_active; }; then
-    echo "[full-nightly] $(date -u +%Y-%m-%dT%H:%M:%SZ) stopping hsd before live checks/site generation" >&2
+    echo "[full-nightly] $(date -u +%Y-%m-%dT%H:%M:%SZ) stopping hsd before site generation" >&2
     sudo systemctl stop hsd
     hsd_started_for_update=0
   fi
@@ -55,9 +54,6 @@ hns-topology reorg-check --db "$TOPOLOGY_DB" --rollback
 
 scripts/run-incremental.sh
 stop_hsd_after_update
-if [ "$RUN_LIVE_CHECKS" = "1" ]; then
-  scripts/run-live-checks.sh
-fi
 scripts/generate-site.sh
 scripts/verify-release.sh
 if [ "$RUN_ARCHIVE" = "1" ]; then

@@ -32,6 +32,6 @@ Sources:
 
 ## Current Implementation Limits
 
-- DNSSEC validation checks HNS DS records against delegated DNSKEY records and validates the DNSKEY RRset signature when an RRSIG is present. The live checker does not store full delegated chains, denial-of-existence proofs, or arbitrary zone contents.
+- Static analysis records HNS DS and TLSA material from resource data. It does not store full delegated chains, denial-of-existence proofs, arbitrary zone contents, or HTTPS certificate observations.
 - Incremental catch-up reads `last_indexed_height`, scans detailed HSD block JSON through the target height, records empty blocks for reorg safety, and refuses ranges above `INCREMENTAL_MAX_BLOCKS`. Single-block scans decode plaintext names when covenant items include them and resolve name hashes with HSD `getnamebyhash`. Empty single-block scans and unresolved name hashes fail by default; use `ALLOW_EMPTY_BLOCK_SCAN=1` only for known-empty blocks and `ALLOW_UNRESOLVED_NAME_HASHES=1` only for deliberate best-effort runs.
 - The JSONL exporter depends on HSD internal module paths and serialized `NameState` / `Resource` formats. Re-run an `EXPORT_LIMIT` smoke export after HSD upgrades before a full production export. Use `EXPORT_FORMAT=full` only when debugging an HSD format mismatch.

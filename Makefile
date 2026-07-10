@@ -13,7 +13,6 @@ lint:
 fixture-site:
 	rm -rf data public
 	. .venv/bin/activate && hns-topology bootstrap-fixture --fixture tests/fixtures/sample_hsd_names.json --db data/topology.sqlite
-	. .venv/bin/activate && hns-topology discover-hosts --db data/topology.sqlite
 	. .venv/bin/activate && hns-topology generate-site --db data/topology.sqlite --out public
 
 verify-release:

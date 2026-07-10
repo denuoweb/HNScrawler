@@ -8,11 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .browser_targets import HNS_BROWSER_ACTIVITY, HNS_BROWSER_LOAD_URL_EXTRA, browser_target_row
 from .db import connect, get_meta, table_count
 from .exporter import build_summary
 from .fileutil import file_sha256
-from .models import FAILURE_REASONS
 from .verification import build_verification_plan
 
 REQUIRED_TABLES = {
@@ -20,12 +18,8 @@ REQUIRED_TABLES = {
     "names",
     "resource_summary",
     "resource_ip",
-    "live_status",
-    "host_candidates",
-    "host_live_status",
     "provider_summary",
     "dns_evidence",
-    "browser_evidence",
     "block_history",
     "changed_name_rollbacks",
 }
@@ -52,7 +46,6 @@ REQUIRED_PUBLIC_FILES = (
     "data/summary.json",
     "data/manifest.json",
     "data/names-pages.json",
-    "data/host-directory.json",
 )
 
 PUBLIC_JSON_FILES = tuple(path for path in REQUIRED_PUBLIC_FILES if path.endswith(".json"))
@@ -60,14 +53,11 @@ FORBIDDEN_PUBLIC_SUFFIXES = (".key", ".pem")
 REQUIRED_MANIFEST_ARTIFACTS = (
     "summary.json",
     "names-pages.json",
-    "host-directory.json",
 )
 OPTIONAL_MANIFEST_ARTIFACTS = (
     "names.json",
     "names.csv",
     "verification.csv",
-    "site-directory.csv",
-    "browser-targets.csv",
     "topology.sqlite.gz",
 )
 
@@ -83,7 +73,6 @@ def validate_release(
     *,
     db_path: str | Path,
     public_dir: str | Path | None = None,
-    require_live_checks: bool = False,
     min_indexed_height: int = 0,
 ) -> list[ReleaseCheck]:
     checks: list[ReleaseCheck] = []
@@ -96,7 +85,6 @@ def validate_release(
             _validate_database(
                 conn,
                 checks,
-                require_live_checks=require_live_checks,
                 min_indexed_height=min_indexed_height,
             )
             summary = build_summary(conn)
@@ -111,7 +99,6 @@ def validate_release(
 def validate_public_release(
     *,
     public_dir: str | Path,
-    require_live_checks: bool = False,
     min_indexed_height: int = 0,
 ) -> list[ReleaseCheck]:
     checks: list[ReleaseCheck] = []
@@ -125,7 +112,6 @@ def validate_public_release(
         _validate_public_summary_metadata(
             summary,
             checks,
-            require_live_checks=require_live_checks,
             min_indexed_height=min_indexed_height,
         )
 
@@ -155,7 +141,6 @@ def _validate_public_summary_metadata(
     summary: dict[str, Any],
     checks: list[ReleaseCheck],
     *,
-    require_live_checks: bool,
     min_indexed_height: int,
 ) -> None:
     missing = [key for key in REQUIRED_META_KEYS if not summary.get(key)]
@@ -198,72 +183,11 @@ def _validate_public_summary_metadata(
         )
     )
 
-    if require_live_checks:
-        live_started = bool(summary.get("host_live_check_started_at") or summary.get("live_check_started_at"))
-        live_finished = bool(summary.get("host_live_check_finished_at") or summary.get("live_check_finished_at"))
-        checked_count = summary.get("host_live_check_checked_count") or summary.get("live_check_checked_count")
-        checks.append(
-            ReleaseCheck(
-                "live_status_present",
-                _is_nonnegative_int_value(checked_count) and int(checked_count) > 0,
-                f"{checked_count or 0} rows",
-            )
-        )
-        checks.append(
-            ReleaseCheck(
-                "live_check_timestamps",
-                live_started and live_finished,
-                f"started={live_started} finished={live_finished}",
-            )
-        )
-        _validate_public_live_check_metadata(summary, checks)
-
-
-def _validate_public_live_check_metadata(summary: dict[str, Any], checks: list[ReleaseCheck]) -> None:
-    concurrency = summary.get("host_live_check_concurrency") or summary.get("live_check_concurrency")
-    min_delay = summary.get("host_live_check_min_delay_ms") or summary.get("live_check_min_delay_ms")
-    timeout = summary.get("host_live_check_timeout_seconds") or summary.get("live_check_timeout_seconds")
-    recheck = summary.get("host_live_check_recheck_seconds") or summary.get("live_check_recheck_seconds")
-    resolver = str(summary.get("host_live_check_resolver") or summary.get("live_check_resolver") or "")
-    limit = summary.get("host_live_check_limit") or summary.get("live_check_limit")
-    candidate_count = summary.get("host_live_check_candidate_count") or summary.get("live_check_candidate_count")
-    checked_count = summary.get("host_live_check_checked_count") or summary.get("live_check_checked_count")
-
-    config_ok = (
-        _is_positive_int_value(concurrency)
-        and _is_positive_int_value(min_delay)
-        and _is_positive_number_value(timeout)
-        and _is_positive_int_value(recheck)
-        and bool(resolver)
-        and (limit == "unlimited" or _is_nonnegative_int_value(limit))
-    )
-    checks.append(
-        ReleaseCheck(
-            "live_check_config",
-            config_ok,
-            (
-                f"limit={limit or 'missing'} concurrency={concurrency or 'missing'} "
-                f"min_delay_ms={min_delay or 'missing'} timeout={timeout or 'missing'} "
-                f"recheck={recheck or 'missing'} resolver={resolver or 'missing'}"
-            ),
-        )
-    )
-
-    counts_ok = _is_nonnegative_int_value(candidate_count) and _is_nonnegative_int_value(checked_count)
-    checks.append(
-        ReleaseCheck(
-            "live_check_counts",
-            counts_ok,
-            f"candidates={candidate_count or 'missing'} checked={checked_count or 'missing'}",
-        )
-    )
-
 
 def _validate_database(
     conn: sqlite3.Connection,
     checks: list[ReleaseCheck],
     *,
-    require_live_checks: bool,
     min_indexed_height: int,
 ) -> None:
     integrity = conn.execute("PRAGMA quick_check").fetchone()[0]
@@ -316,45 +240,7 @@ def _validate_database(
     provider_rows = table_count(conn, "SELECT COUNT(*) FROM provider_summary")
     checks.append(ReleaseCheck("provider_summary_present", provider_rows > 0, f"{provider_rows} rows"))
 
-    invalid_failures = table_count(
-        conn,
-        f"""
-        SELECT COUNT(*)
-        FROM live_status
-        WHERE failure_reason IS NOT NULL
-          AND failure_reason NOT IN ({",".join("?" for _ in FAILURE_REASONS)})
-        """,
-        tuple(FAILURE_REASONS),
-    )
-    checks.append(
-        ReleaseCheck(
-            "failure_taxonomy",
-            invalid_failures == 0,
-            f"{invalid_failures} invalid failure_reason rows",
-        )
-    )
-
     _validate_metadata(conn, checks, min_indexed_height=min_indexed_height)
-
-    if require_live_checks:
-        live_rows = table_count(conn, "SELECT COUNT(*) FROM live_status")
-        host_live_rows = table_count(conn, "SELECT COUNT(*) FROM host_live_status")
-        live_started = bool(
-            get_meta(conn, "host_live_check_started_at", "") or get_meta(conn, "live_check_started_at", "")
-        )
-        live_finished = bool(
-            get_meta(conn, "host_live_check_finished_at", "") or get_meta(conn, "live_check_finished_at", "")
-        )
-        total_live_rows = live_rows + host_live_rows
-        checks.append(ReleaseCheck("live_status_present", total_live_rows > 0, f"{total_live_rows} rows"))
-        checks.append(
-            ReleaseCheck(
-                "live_check_timestamps",
-                live_started and live_finished,
-                f"started={live_started} finished={live_finished}",
-            )
-        )
-        _validate_live_check_metadata(conn, checks)
 
 
 def _validate_metadata(
@@ -401,54 +287,6 @@ def _validate_metadata(
             _is_nonnegative_int(rules_version),
             str(rules_version),
         )
-    )
-
-
-def _validate_live_check_metadata(conn: sqlite3.Connection, checks: list[ReleaseCheck]) -> None:
-    concurrency = _live_check_meta(conn, "concurrency")
-    min_delay = _live_check_meta(conn, "min_delay_ms")
-    timeout = _live_check_meta(conn, "timeout_seconds")
-    recheck = _live_check_meta(conn, "recheck_seconds")
-    resolver = _live_check_meta(conn, "resolver")
-    limit = _live_check_meta(conn, "limit")
-    candidate_count = _live_check_meta(conn, "candidate_count")
-    checked_count = _live_check_meta(conn, "checked_count")
-
-    config_ok = (
-        _is_positive_int(concurrency)
-        and _is_positive_int(min_delay)
-        and _is_positive_number(timeout)
-        and _is_positive_int(recheck)
-        and bool(resolver)
-        and (limit == "unlimited" or _is_nonnegative_int(limit))
-    )
-    checks.append(
-        ReleaseCheck(
-            "live_check_config",
-            config_ok,
-            (
-                f"limit={limit or 'missing'} concurrency={concurrency or 'missing'} "
-                f"min_delay_ms={min_delay or 'missing'} timeout={timeout or 'missing'} "
-                f"recheck={recheck or 'missing'} resolver={resolver or 'missing'}"
-            ),
-        )
-    )
-
-    counts_ok = _is_nonnegative_int(candidate_count) and _is_nonnegative_int(checked_count)
-    checks.append(
-        ReleaseCheck(
-            "live_check_counts",
-            counts_ok,
-            f"candidates={candidate_count or 'missing'} checked={checked_count or 'missing'}",
-        )
-    )
-
-
-def _live_check_meta(conn: sqlite3.Connection, suffix: str) -> str:
-    return get_meta(conn, f"host_live_check_{suffix}", "") or get_meta(
-        conn,
-        f"live_check_{suffix}",
-        "",
     )
 
 
@@ -682,14 +520,10 @@ def _validate_export_counts(
         names_pages = json.loads(names_pages_path.read_text(encoding="utf-8"))
         names_all = names_pages["collections"]["all"]
         page_rows = _count_paginated_rows(manifest_path.parent, names_all)
-        site_directory_expected_rows = _names_collection_row_count(names_pages, "live_site_names")
         verification_expected_rows = _expected_verification_csv_rows(manifest_path.parent, names_all)
-        browser_targets_expected_rows = _expected_browser_target_rows(manifest_path.parent, names_all)
     except Exception as exc:
         row_mismatches.append(f"names-pages.json: {type(exc).__name__}")
-        site_directory_expected_rows = None
         verification_expected_rows = None
-        browser_targets_expected_rows = None
     else:
         if names_all.get("row_count") != expected_exported:
             row_mismatches.append(f"names-pages row_count={names_all.get('row_count')}!={expected_exported}")
@@ -710,8 +544,6 @@ def _validate_export_counts(
             manifest_path,
             expected_exported,
             verification_expected_rows,
-            site_directory_expected_rows,
-            browser_targets_expected_rows,
             checks,
         )
 
@@ -720,15 +552,11 @@ def _validate_download_export_counts(
     manifest_path: Path,
     expected_exported: int,
     verification_expected_rows: int | None,
-    site_directory_expected_rows: int | None,
-    browser_targets_expected_rows: int | None,
     checks: list[ReleaseCheck],
 ) -> None:
     names_json_path = manifest_path.parent / "names.json"
     names_csv_path = manifest_path.parent / "names.csv"
     verification_csv_path = manifest_path.parent / "verification.csv"
-    site_directory_csv_path = manifest_path.parent / "site-directory.csv"
-    browser_targets_csv_path = manifest_path.parent / "browser-targets.csv"
     row_mismatches: list[str] = []
     try:
         names_json = json.loads(names_json_path.read_text(encoding="utf-8"))
@@ -775,74 +603,6 @@ def _validate_download_export_counts(
                 f"verification.csv rows={verification_rows}!={verification_expected_rows}"
             )
 
-    try:
-        with site_directory_csv_path.open(newline="", encoding="utf-8") as handle:
-            reader = csv.DictReader(handle)
-            required_columns = {
-                "root_name",
-                "host",
-                "url",
-                "directory_status",
-                "evidence_source",
-                "evidence_confidence",
-                "transport_note",
-                "diagnostic_path",
-            }
-            missing_columns = required_columns - set(reader.fieldnames or [])
-            site_directory_roots = {row.get("root_name") for row in reader if row.get("root_name")}
-    except Exception as exc:
-        row_mismatches.append(f"site-directory.csv: {type(exc).__name__}")
-    else:
-        if missing_columns:
-            row_mismatches.append(f"site-directory.csv missing columns={','.join(sorted(missing_columns))}")
-        if (
-            site_directory_expected_rows is not None
-            and len(site_directory_roots) != site_directory_expected_rows
-        ):
-            row_mismatches.append(
-                f"site-directory.csv roots={len(site_directory_roots)}!={site_directory_expected_rows}"
-            )
-
-    try:
-        with browser_targets_csv_path.open(newline="", encoding="utf-8") as handle:
-            reader = csv.DictReader(handle)
-            required_columns = {
-                "root_name",
-                "host",
-                "url",
-                "priority",
-                "category",
-                "reason",
-                "adb_command",
-                "diagnostic_path",
-            }
-            missing_columns = required_columns - set(reader.fieldnames or [])
-            browser_target_roots = set()
-            invalid_adb_commands = 0
-            for row in reader:
-                if row.get("root_name"):
-                    browser_target_roots.add(row["root_name"])
-                command = row.get("adb_command") or ""
-                if (
-                    f"-n {HNS_BROWSER_ACTIVITY}" not in command
-                    or f"--es {HNS_BROWSER_LOAD_URL_EXTRA}" not in command
-                ):
-                    invalid_adb_commands += 1
-    except Exception as exc:
-        row_mismatches.append(f"browser-targets.csv: {type(exc).__name__}")
-    else:
-        if missing_columns:
-            row_mismatches.append(f"browser-targets.csv missing columns={','.join(sorted(missing_columns))}")
-        if invalid_adb_commands:
-            row_mismatches.append(f"browser-targets.csv invalid adb_command rows={invalid_adb_commands}")
-        if (
-            browser_targets_expected_rows is not None
-            and len(browser_target_roots) != browser_targets_expected_rows
-        ):
-            row_mismatches.append(
-                f"browser-targets.csv roots={len(browser_target_roots)}!={browser_targets_expected_rows}"
-            )
-
     checks.append(
         ReleaseCheck(
             "download_export_rows",
@@ -852,15 +612,6 @@ def _validate_download_export_counts(
     )
 
 
-def _names_collection_row_count(names_pages: dict[str, Any], key: str) -> int:
-    collections = names_pages.get("collections") if isinstance(names_pages, dict) else {}
-    collection = collections.get(key) if isinstance(collections, dict) else None
-    if not isinstance(collection, dict):
-        return 0
-    value = collection.get("row_count")
-    return int(value) if isinstance(value, int) else 0
-
-
 def _expected_verification_csv_rows(data_dir: Path, collection: dict[str, Any]) -> int:
     total = 0
     for row in _iter_paginated_rows(data_dir, collection):
@@ -868,14 +619,6 @@ def _expected_verification_csv_rows(data_dir: Path, collection: dict[str, Any]) 
         if plan is not None:
             total += len(plan["commands"])
     return total
-
-
-def _expected_browser_target_rows(data_dir: Path, collection: dict[str, Any]) -> int:
-    return sum(
-        1
-        for row in _iter_paginated_rows(data_dir, collection)
-        if browser_target_row(row) is not None
-    )
 
 
 def _validate_row_evidence_paths(
@@ -890,7 +633,6 @@ def _validate_row_evidence_paths(
             row_name = str(row.get("name") or "")
             for column, prefix in (
                 ("dns_evidence_path", "dns-evidence/"),
-                ("browser_evidence_path", "browser-evidence/"),
             ):
                 value = row.get(column)
                 if not value:
@@ -979,46 +721,10 @@ def _is_nonnegative_int(value: str | None) -> bool:
         return False
 
 
-def _is_positive_int(value: str | None) -> bool:
-    if value is None:
-        return False
-    try:
-        return int(value) > 0
-    except ValueError:
-        return False
-
-
-def _is_positive_number(value: str | None) -> bool:
-    if value is None:
-        return False
-    try:
-        return float(value) > 0
-    except ValueError:
-        return False
-
-
 def _is_nonnegative_int_value(value: Any) -> bool:
     if value is None:
         return False
     try:
         return int(value) >= 0
-    except (TypeError, ValueError):
-        return False
-
-
-def _is_positive_int_value(value: Any) -> bool:
-    if value is None:
-        return False
-    try:
-        return int(value) > 0
-    except (TypeError, ValueError):
-        return False
-
-
-def _is_positive_number_value(value: Any) -> bool:
-    if value is None:
-        return False
-    try:
-        return float(value) > 0
     except (TypeError, ValueError):
         return False

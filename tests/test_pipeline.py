@@ -16,12 +16,9 @@ from hns_topology.db import (
     RESOURCE_IP_INDEX_VERSION,
     connect,
     get_meta,
-    insert_browser_evidence_batch,
-    set_meta,
-    upsert_live_status,
+    insert_dns_evidence_batch,
 )
 from hns_topology.exporter import build_names, build_summary
-from hns_topology.host_candidates import discover_host_candidates
 from hns_topology.indexer import (
     UnpaginatedGetNamesError,
     bootstrap_from_fixture,
@@ -33,7 +30,7 @@ from hns_topology.indexer import (
     reclassify_existing_names,
     rollback_reorg,
 )
-from hns_topology.models import FAILURE_REASONS, BrowserEvidence, LiveStatus
+from hns_topology.models import DnsEvidence
 from hns_topology.provider_rules import ProviderRules
 from hns_topology.site_generator import generate_site
 from hns_topology.validator import release_is_valid, validate_public_release, validate_release
@@ -122,26 +119,16 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     assert summary["default_provider_names"] == 1
     assert summary["ds_records"] == 1
     assert summary["strict_hns_ready"] == 3
+    assert summary["tlsa_present_names"] == 0
     assert summary["static_tlsa_certificate_expired_names"] == 0
     assert summary["needs_dane"] == 1
     assert summary["needs_fix"] == 2
-    assert summary["live_site_names"] == 0
-    assert summary["browser_target_names"] == 0
-    assert summary["host_candidates"] == 0
-    assert summary["browser_evidence_names"] == 0
-    assert summary["browser_dane_verified_names"] == 0
-    assert summary["browser_network_blocks_53_names"] == 0
-    assert summary["browser_certificate_expired_names"] == 0
     assert [item["stage"] for item in summary["compliance_stages"]] == list(COMPLIANCE_STAGES)
     assert summary["compliance_stage_counts"] == {
-        "dane_verified": 0,
+        "tlsa_present": 0,
         "tlsa_gap": 1,
-        "stale_tlsa": 0,
-        "dnssec_broken": 0,
         "missing_glue": 1,
         "bootstrap_ready": 2,
-        "resolver_fallback": 0,
-        "service_blocked": 0,
         "non_actionable": 4,
     }
     compliance_stages = {item["stage"]: item for item in summary["compliance_stages"]}
@@ -167,12 +154,9 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     explainers = {item["key"]: item for item in summary["overview_explainers"]}
     assert explainers["direct_ip_records"]["filter_link"] == "names.html?filter=direct_ip_records"
     assert explainers["needs_dane"]["count"] == 1
-    assert "matching HTTPS TLSA" in explainers["needs_dane"]["definition"]
+    assert "static TLSA" in explainers["needs_dane"]["definition"]
     assert explainers["needs_fix"]["count"] == 2
-    assert explainers["browser_target_names"]["count"] == 0
     assert explainers["static_tlsa_certificate_expired_names"]["count"] == 0
-    assert "examples" not in summary["broken"]
-    assert {item["failure_reason"] for item in summary["broken"]["reasons"]} == set(FAILURE_REASONS)
     assert {item["ip"] for item in summary["top_resource_ips"]} >= {
         "198.51.100.2",
         "198.51.100.3",
@@ -279,7 +263,6 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
         "data/summary.json",
         "data/manifest.json",
         "data/names-pages.json",
-        "data/host-directory.json",
         "data/ip-addresses/198.51.100.2.json",
         "data/ip-addresses/203.0.113.10.json",
         "data/ip-addresses/2001%3Adb8%3A%3A10.json",
@@ -298,8 +281,6 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
         "data/names.json",
         "data/names.csv",
         "data/verification.csv",
-        "data/site-directory.csv",
-        "data/browser-targets.csv",
         "data/topology.sqlite.gz",
         "data/dane.json",
         "data/dane-pages.json",
@@ -353,7 +334,6 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert "classes.json" not in manifest_artifacts
     assert "broken.json" not in manifest_artifacts
     assert "names-pages.json" in manifest_artifacts
-    assert "host-directory.json" in manifest_artifacts
     assert "names-pages/all/page-1.json" in manifest_artifacts
     assert "ip-addresses/198.51.100.2.json" in manifest_artifacts
     assert "ip-addresses/198.51.100.2/page-1.json" in manifest_artifacts
@@ -365,7 +345,6 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert "names.json" not in manifest_artifacts
     assert "names.csv" not in manifest_artifacts
     assert "verification.csv" not in manifest_artifacts
-    assert "site-directory.csv" not in manifest_artifacts
     assert "topology.sqlite.gz" not in manifest_artifacts
     assert names_pages["collections"]["all"]["row_count"] == 9
     assert names_pages["collections"]["all"]["page_count"] == 1
@@ -374,21 +353,13 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert names_page_names == sorted(names_page_names)
     assert "dane_rows" not in names_pages["collections"]
     assert "missing_glue" not in names_pages["collections"]
-    assert "stale_tlsa" not in names_pages["collections"]
-    assert "dane_working" not in names_pages["collections"]
     assert "static_tlsa_certificate_expired_names" not in names_pages["collections"]
-    assert "doh_fallback_required" not in names_pages["collections"]
-    assert "live_site_names" not in names_pages["collections"]
-    assert "browser_evidence_names" not in names_pages["collections"]
-    assert "browser_dane_verified_names" not in names_pages["collections"]
-    assert "browser_network_blocks_53_names" not in names_pages["collections"]
-    assert "browser_certificate_expired_names" not in names_pages["collections"]
     assert "provider_type:self_hosted" not in names_pages["collections"]
     assert names_pages["collections"]["ds_records"]["row_count"] == 1
     assert names_pages["collections"]["strict_hns_ready"]["row_count"] == 3
-    assert names_pages["collections"]["browser_target_names"]["row_count"] == 3
     assert names_pages["collections"]["needs_dane"]["row_count"] == 1
     assert names_pages["collections"]["needs_fix"]["row_count"] == 2
+    assert "tlsa_present_names" not in names_pages["collections"]
     assert names_pages["collections"]["stage:tlsa_gap"]["row_count"] == 1
     assert names_pages["collections"]["stage:missing_glue"]["row_count"] == 1
     assert names_pages["collections"]["stage:bootstrap_ready"]["row_count"] == 2
@@ -400,10 +371,8 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert provider_postings_page["rows"] == [6]
     assert "namebase__slash__default" in names_pages["collections"]["provider:namebase/default"]["path_template"]
     assert (out / "data" / names_pages["collections"]["provider:namebase/default"]["path_template"].replace("{page}", "1")).exists()
-    assert "tlsa_status" in names_page_rows[0]
     assert "compliance_stage" in names_page_rows[0]
     assert "provider_type" in names_page_rows[0]
-    assert "checked_at" in names_page_rows[0]
     assert direct_row["compliance_stage"] == "bootstrap_ready"
     assert direct_row["resource_version"] == 0
     assert direct_row["raw_size"] > 0
@@ -437,11 +406,10 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert direct_ipv6_page["field_mask"] == 8
     assert direct_ipv6_page["rows"] == ["direct"]
     assert "classes" in summary
-    assert "broken" in summary
+    assert "broken" not in summary
     assert "top_resource_ips" in summary
     assert "top_nameservers" in summary
     assert "known_hns_resolvers" in summary
-    assert "examples" not in summary["broken"]
     assert "next_actions" in summary
     assert {item["filter"] for item in summary["next_actions"]} <= set(names_pages["collections"])
     assert {item["key"] for item in summary["next_actions"]} == {
@@ -456,44 +424,6 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
 
     public_checks = validate_public_release(public_dir=out)
     assert release_is_valid(public_checks), [check for check in public_checks if not check.ok]
-
-
-def test_certificate_expired_stage_overrides_tlsa_gap(tmp_path):
-    db_path = tmp_path / "topology.sqlite"
-    out = tmp_path / "public"
-    rules = ProviderRules.from_file("configs/provider_rules.json")
-    with connect(db_path) as conn:
-        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
-        upsert_live_status(
-            conn,
-            LiveStatus(
-                name="secure",
-                dns_reachable="reachable",
-                dnssec_status="unknown",
-                tlsa_status="missing",
-                dane_status="unknown",
-                https_status="tls_unverified",
-                strict_hns_status="fallback_only",
-                doh_fallback_status="required",
-                failure_reason="certificate_expired",
-                checked_at="2026-07-06T00:00:00Z",
-                next_check_at="2026-07-13T00:00:00Z",
-                https_cert_sha256="ab" * 32,
-                https_spki_sha256="cd" * 32,
-                https_cert_not_valid_after="2026-07-01T00:00:00Z",
-            ),
-        )
-        generate_site(conn, db_path=db_path, out_dir=out)
-
-    summary = json.loads((out / "data/summary.json").read_text(encoding="utf-8"))
-    rows = json.loads((out / "data/names-pages/all/page-1.json").read_text(encoding="utf-8"))["rows"]
-    secure = next(row for row in rows if row["name"] == "secure")
-
-    assert secure["failure_reason"] == "certificate_expired"
-    assert secure["compliance_stage"] == "service_blocked"
-    assert secure["https_cert_not_valid_after"] == "2026-07-01T00:00:00Z"
-    assert secure["https_spki_sha256"] == "cd" * 32
-    assert summary["compliance_stage_counts"]["service_blocked"] == 1
 
 
 def test_generate_site_requires_current_resource_ip_index_and_preserves_existing_output(tmp_path):
@@ -521,7 +451,6 @@ def test_generate_site_can_include_download_artifacts(tmp_path):
     rules = ProviderRules.from_file("configs/provider_rules.json")
     with connect(db_path) as conn:
         bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
-        discover_host_candidates(conn)
         generate_site(conn, db_path=db_path, out_dir=out, include_downloads=True)
 
     manifest = json.loads((out / "data/manifest.json").read_text(encoding="utf-8"))
@@ -531,16 +460,10 @@ def test_generate_site_can_include_download_artifacts(tmp_path):
     assert (out / "data/names.json").exists()
     assert (out / "data/names.csv").exists()
     assert (out / "data/verification.csv").exists()
-    assert (out / "data/host-directory.json").exists()
-    assert (out / "data/site-directory.csv").exists()
-    assert (out / "data/browser-targets.csv").exists()
     assert (out / "data/topology.sqlite.gz").exists()
     assert "names.json" in manifest_artifacts
     assert "names.csv" in manifest_artifacts
     assert "verification.csv" in manifest_artifacts
-    assert "host-directory.json" in manifest_artifacts
-    assert "site-directory.csv" in manifest_artifacts
-    assert "browser-targets.csv" in manifest_artifacts
     assert "topology.sqlite.gz" in manifest_artifacts
     with (out / "data/verification.csv").open(newline="", encoding="utf-8") as handle:
         verification_rows = list(csv.DictReader(handle))
@@ -549,119 +472,9 @@ def test_generate_site_can_include_download_artifacts(tmp_path):
         "dig @198.51.100.2 delegated. A +norecurse +dnssec",
         "dig @198.51.100.3 secure. DNSKEY +norecurse +dnssec",
     } <= {row["command"] for row in verification_rows}
-    with (out / "data/site-directory.csv").open(newline="", encoding="utf-8") as handle:
-        site_reader = csv.DictReader(handle)
-        list(site_reader)
-    assert {"root_name", "host", "url", "directory_status", "evidence_source", "diagnostic_path"} <= set(
-        site_reader.fieldnames or []
-    )
-    with (out / "data/browser-targets.csv").open(newline="", encoding="utf-8") as handle:
-        target_rows = list(csv.DictReader(handle))
-    assert {"root_name", "host", "url", "priority", "category", "adb_command"} <= set(
-        target_rows[0]
-    )
-    assert "com.denuoweb.hnsdane.LOAD_URL" in target_rows[0]["adb_command"]
 
     checks = validate_release(db_path=db_path, public_dir=out)
     assert release_is_valid(checks), [check for check in checks if not check.ok]
-
-
-def test_site_directory_csv_exports_live_site_rows(tmp_path):
-    db_path = tmp_path / "topology.sqlite"
-    out = tmp_path / "public"
-    rules = ProviderRules.from_file("configs/provider_rules.json")
-    with connect(db_path) as conn:
-        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
-        upsert_live_status(
-            conn,
-            LiveStatus(
-                name="direct",
-                dns_reachable="reachable",
-                dnssec_status="valid",
-                tlsa_status="present",
-                dane_status="valid",
-                https_status="tls_unverified",
-                strict_hns_status="working",
-                doh_fallback_status="not_required",
-                failure_reason=None,
-                checked_at="2026-07-06T00:00:00Z",
-                next_check_at="2026-07-13T00:00:00Z",
-                https_cert_sha256="aa" * 32,
-                https_spki_sha256="bb" * 32,
-                https_cert_not_valid_after="2026-08-01T00:00:00Z",
-            ),
-        )
-        generate_site(conn, db_path=db_path, out_dir=out, include_downloads=True)
-
-    summary = json.loads((out / "data/summary.json").read_text(encoding="utf-8"))
-    names_pages = json.loads((out / "data/names-pages.json").read_text(encoding="utf-8"))
-    live_site_page = json.loads(
-        (
-            out
-            / "data"
-            / names_pages["collections"]["live_site_names"]["path_template"].replace("{page}", "1")
-        ).read_text(encoding="utf-8")
-    )
-    with (out / "data/site-directory.csv").open(newline="", encoding="utf-8") as handle:
-        rows = list(csv.DictReader(handle))
-    host_directory = json.loads((out / "data/host-directory.json").read_text(encoding="utf-8"))
-
-    assert summary["live_site_names"] == 1
-    assert names_pages["collections"]["live_site_names"]["row_count"] == 1
-    assert names_pages["collections"]["live_site_names"]["row_source"] == "postings"
-    assert len(live_site_page["rows"]) == 1
-    assert len(rows) == 1
-    assert host_directory["row_count"] == 1
-    assert host_directory["rows"][0]["root_name"] == "direct"
-    assert host_directory["rows"][0]["host"] == "direct"
-    assert host_directory["rows"][0]["directory_status"] == "dane_verified"
-    assert host_directory["rows"][0]["evidence_source"] == "host_live_dane"
-    assert rows[0]["root_name"] == "direct"
-    assert rows[0]["host"] == "direct"
-    assert rows[0]["url"] == "https://direct/"
-    assert rows[0]["directory_status"] == "dane_verified"
-    assert rows[0]["evidence_source"] == "host_live_dane"
-    assert rows[0]["evidence_confidence"] == "dane_verified"
-    assert rows[0]["transport_note"] == "strict_hns"
-    assert rows[0]["certificate_not_valid_after"] == "2026-08-01T00:00:00Z"
-    assert rows[0]["spki_sha256"] == "bb" * 32
-    assert rows[0]["diagnostic_path"] == "names.html?q=direct&host=direct"
-
-
-def test_release_validator_catches_site_directory_count_mismatch(tmp_path):
-    db_path = tmp_path / "topology.sqlite"
-    out = tmp_path / "public"
-    rules = ProviderRules.from_file("configs/provider_rules.json")
-    with connect(db_path) as conn:
-        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
-        upsert_live_status(
-            conn,
-            LiveStatus(
-                name="direct",
-                dns_reachable="reachable",
-                dnssec_status="valid",
-                tlsa_status="present",
-                dane_status="valid",
-                https_status="tls_unverified",
-                strict_hns_status="working",
-                doh_fallback_status="not_required",
-                failure_reason=None,
-                checked_at="2026-07-06T00:00:00Z",
-                next_check_at="2026-07-13T00:00:00Z",
-            ),
-        )
-        generate_site(conn, db_path=db_path, out_dir=out, include_downloads=True)
-
-    site_directory_path = out / "data/site-directory.csv"
-    header = site_directory_path.read_text(encoding="utf-8").splitlines()[0]
-    site_directory_path.write_text(f"{header}\n", encoding="utf-8")
-
-    checks = validate_release(db_path=db_path, public_dir=out)
-
-    assert not release_is_valid(checks)
-    failed = {check.name: check.detail for check in checks if not check.ok}
-    assert "download_export_rows" in failed
-    assert "site-directory.csv roots=0!=1" in failed["download_export_rows"]
 
 
 def test_release_validator_catches_verification_count_mismatch(tmp_path):
@@ -684,33 +497,12 @@ def test_release_validator_catches_verification_count_mismatch(tmp_path):
     assert "verification.csv rows=0!=" in failed["download_export_rows"]
 
 
-def test_release_validator_catches_browser_targets_count_mismatch(tmp_path):
-    db_path = tmp_path / "topology.sqlite"
-    out = tmp_path / "public"
-    rules = ProviderRules.from_file("configs/provider_rules.json")
-    with connect(db_path) as conn:
-        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
-        generate_site(conn, db_path=db_path, out_dir=out, include_downloads=True)
-
-    targets_path = out / "data/browser-targets.csv"
-    header = targets_path.read_text(encoding="utf-8").splitlines()[0]
-    targets_path.write_text(f"{header}\n", encoding="utf-8")
-
-    checks = validate_release(db_path=db_path, public_dir=out)
-
-    assert not release_is_valid(checks)
-    failed = {check.name: check.detail for check in checks if not check.ok}
-    assert "download_export_rows" in failed
-    assert "browser-targets.csv roots=0!=" in failed["download_export_rows"]
-
-
 def test_include_downloads_uses_canonical_limited_name_set(tmp_path):
     db_path = tmp_path / "topology.sqlite"
     out = tmp_path / "public"
     rules = ProviderRules.from_file("configs/provider_rules.json")
     with connect(db_path) as conn:
         bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
-        discover_host_candidates(conn)
         generate_site(conn, db_path=db_path, out_dir=out, names_limit=3, include_downloads=True)
 
     names_pages = json.loads((out / "data/names-pages.json").read_text(encoding="utf-8"))
@@ -720,21 +512,12 @@ def test_include_downloads_uses_canonical_limited_name_set(tmp_path):
         names_csv_rows = list(csv.DictReader(handle))
     with (out / "data/verification.csv").open(newline="", encoding="utf-8") as handle:
         verification_rows = list(csv.DictReader(handle))
-    with (out / "data/browser-targets.csv").open(newline="", encoding="utf-8") as handle:
-        browser_target_rows = list(csv.DictReader(handle))
 
     names_page_names = [row["name"] for row in names_page_rows]
     assert names_page_names == ["delegated", "direct", "empty"]
     assert [row["name"] for row in names_json_rows] == names_page_names
     assert [row["name"] for row in names_csv_rows] == names_page_names
     assert {row["name"] for row in verification_rows} == {"delegated", "direct"}
-    assert {row["root_name"] for row in browser_target_rows} == {"delegated", "direct"}
-    assert {row["host"] for row in browser_target_rows} == {
-        "delegated",
-        "www.delegated",
-        "direct",
-        "www.direct",
-    }
     assert names_pages["collections"]["all"]["row_count"] == 3
 
     checks = validate_release(db_path=db_path, public_dir=out)
@@ -761,9 +544,7 @@ def test_generate_site_records_limited_names_export_counts(tmp_path):
     assert len(names_page_rows) == 3
     assert not (out / "data/names.json").exists()
     assert not (out / "data/names.csv").exists()
-    assert (out / "data/host-directory.json").exists()
-    assert not (out / "data/site-directory.csv").exists()
-    assert not (out / "data/browser-targets.csv").exists()
+    assert not (out / "data/topology.sqlite.gz").exists()
 
     checks = validate_release(db_path=db_path, public_dir=out)
     assert release_is_valid(checks), [check for check in checks if not check.ok]
@@ -796,32 +577,11 @@ def test_compact_names_pages_include_generator_handoff_fields(tmp_path, monkeypa
         "tlsa_cert_not_valid_after",
         "tlsa_cert_expired",
         "compliance_stage",
-        "https_status",
-        "strict_hns_status",
-        "doh_fallback_status",
-        "https_cert_sha256",
-        "https_spki_sha256",
-        "https_cert_not_valid_after",
         "raw_size",
         "resource_version",
         "resource_hash",
         "last_seen_height",
         "updated_at",
-        "browser_evidence_path",
-        "browser_result",
-        "browser_fallback_used",
-        "browser_fallback_reason",
-        "browser_authoritative_udp",
-        "browser_authoritative_tcp",
-        "browser_authoritative_doh",
-        "browser_certificate_expired",
-        "browser_certificate_not_valid_after",
-        "browser_evidence_effect",
-        "browser_evidence_severity",
-        "browser_action",
-        "browser_action_label",
-        "browser_action_detail",
-        "checked_at",
     ):
         assert key in columns
     assert delegated["first_ns"] == "ns1.delegated"
@@ -949,56 +709,41 @@ def test_release_validator_catches_missing_row_evidence_artifact(tmp_path):
     rules = ProviderRules.from_file("configs/provider_rules.json")
     with connect(db_path) as conn:
         bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
-        insert_browser_evidence_batch(
+        insert_dns_evidence_batch(
             conn,
             [
-                BrowserEvidence(
+                DnsEvidence(
                     name="secure",
-                    host="secure",
-                    url="https://secure/",
-                    source="hns-browser",
-                    source_id="pixel9",
-                    evidence_type="resolver_trace",
-                    browser_result="dane_verified",
-                    status_code=None,
-                    stage=None,
-                    reason=None,
-                    mode="hns_compatibility",
-                    hns_proof="verified",
-                    resolution_source="authoritative_doh",
-                    authoritative_udp="blocked",
-                    authoritative_tcp="blocked",
-                    authoritative_doh="ok",
-                    fallback_used=True,
-                    fallback_reason="network_blocks_53",
-                    dnssec_status="secure",
-                    tlsa_owner="_443._tcp.secure",
-                    tlsa_status="present",
-                    tlsa_source="native_tlsa",
-                    dane_status="verified",
-                    certificate_sha256="aa" * 32,
-                    spki_sha256="bb" * 32,
-                    final_error=None,
-                    raw_json={"host": "secure"},
+                    qname="secure.",
+                    rrtype="DNSKEY",
+                    server="198.51.100.3",
+                    source="crowd",
+                    source_id="worker-1",
+                    status="ok",
+                    rcode="NOERROR",
+                    flags="QR AA",
+                    answer=["secure. 300 IN DNSKEY 257 3 13 abc"],
+                    authority=[],
+                    additional=[],
+                    elapsed_ms=12,
+                    error=None,
                     captured_at="2026-07-06T00:00:00Z",
                 )
             ],
         )
         generate_site(conn, db_path=db_path, out_dir=out)
 
-    summary = json.loads((out / "data/summary.json").read_text(encoding="utf-8"))
-    names_pages = json.loads((out / "data/names-pages.json").read_text(encoding="utf-8"))
-    assert summary["live_site_names"] == 1
-    assert names_pages["collections"]["live_site_names"]["row_count"] == 1
-    assert names_pages["collections"]["live_site_names"]["row_source"] == "postings"
+    rows = json.loads((out / "data/names-pages/all/page-1.json").read_text(encoding="utf-8"))["rows"]
+    secure = next(row for row in rows if row["name"] == "secure")
+    assert secure["dns_evidence_path"] == "dns-evidence/secure.json"
 
-    (out / "data/browser-evidence/secure.json").unlink()
+    (out / "data/dns-evidence/secure.json").unlink()
     checks = validate_release(db_path=db_path, public_dir=out)
 
     assert not release_is_valid(checks)
     failed = {check.name: check.detail for check in checks if not check.ok}
     assert "row_evidence_paths" in failed
-    assert "browser-evidence/secure.json" in failed["row_evidence_paths"]
+    assert "dns-evidence/secure.json" in failed["row_evidence_paths"]
 
 
 def test_release_validator_catches_manifest_export_count_mismatch(tmp_path):
@@ -1040,57 +785,6 @@ def test_public_validator_uses_summary_metadata(tmp_path):
     failed = {check.name: check.detail for check in checks if not check.ok}
     assert "manifest_artifacts" in failed
     assert "manifest_snapshot" in failed
-
-
-def test_release_validator_enforces_live_check_gate(tmp_path):
-    db_path = tmp_path / "topology.sqlite"
-    out = tmp_path / "public"
-    rules = ProviderRules.from_file("configs/provider_rules.json")
-    with connect(db_path) as conn:
-        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
-        generate_site(conn, db_path=db_path, out_dir=out)
-
-    checks = validate_release(db_path=db_path, public_dir=out, require_live_checks=True)
-
-    assert not release_is_valid(checks)
-    failed = {check.name: check.detail for check in checks if not check.ok}
-    assert "live_status_present" in failed
-    assert "live_check_timestamps" in failed
-
-
-def test_release_validator_requires_live_check_run_metadata(tmp_path):
-    db_path = tmp_path / "topology.sqlite"
-    out = tmp_path / "public"
-    rules = ProviderRules.from_file("configs/provider_rules.json")
-    with connect(db_path) as conn:
-        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
-        upsert_live_status(
-            conn,
-            LiveStatus(
-                name="direct",
-                dns_reachable="reachable",
-                dnssec_status="not_delegated",
-                tlsa_status="missing",
-                dane_status="unknown",
-                https_status="working",
-                strict_hns_status="working",
-                doh_fallback_status="not_required",
-                failure_reason=None,
-                checked_at="2026-01-01T00:00:00Z",
-                next_check_at="2026-01-08T00:00:00Z",
-            ),
-        )
-        set_meta(conn, "live_check_started_at", "2026-01-01T00:00:00Z")
-        set_meta(conn, "live_check_finished_at", "2026-01-01T00:01:00Z")
-        conn.commit()
-        generate_site(conn, db_path=db_path, out_dir=out)
-
-    checks = validate_release(db_path=db_path, public_dir=out, require_live_checks=True)
-
-    assert not release_is_valid(checks)
-    failed = {check.name: check.detail for check in checks if not check.ok}
-    assert "live_check_config" in failed
-    assert "live_check_counts" in failed
 
 
 def test_release_validators_enforce_min_indexed_height(tmp_path):

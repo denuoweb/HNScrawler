@@ -12,10 +12,8 @@ from hns_topology.db import (
     set_meta,
 )
 from hns_topology.indexer import bootstrap_from_fixture
-from hns_topology.models import LiveStatus
 from hns_topology.provider_rules import ProviderRules
 from hns_topology.site_generator import generate_site
-from hns_topology.validator import release_is_valid, validate_release
 
 FIXTURE = Path("tests/fixtures/sample_hsd_names.json")
 
@@ -57,56 +55,12 @@ def incremental_args(db_path, **overrides):
     return argparse.Namespace(**values)
 
 
-def live_check_args(db_path, **overrides):
-    values = {
-        "db": str(db_path),
-        "rules": "configs/provider_rules.json",
-        "limit": 2,
-        "concurrency": 1,
-        "min_delay_ms": 1,
-        "timeout": 0.1,
-        "resolver": "192.0.2.53",
-        "priority_name": [],
-    }
-    values.update(overrides)
-    return argparse.Namespace(**values)
-
-
-def discover_hosts_args(db_path):
-    return argparse.Namespace(db=str(db_path))
-
-
-def live_check_hosts_args(db_path, **overrides):
-    values = {
-        "db": str(db_path),
-        "rules": "configs/provider_rules.json",
-        "limit": 2,
-        "concurrency": 1,
-        "min_delay_ms": 1,
-        "timeout": 0.1,
-        "resolver": "192.0.2.53",
-    }
-    values.update(overrides)
-    return argparse.Namespace(**values)
-
-
 def import_dns_evidence_args(db_path, evidence_path, **overrides):
     values = {
         "db": str(db_path),
         "file": str(evidence_path),
         "source": "crowd",
         "source_id": "worker-1",
-    }
-    values.update(overrides)
-    return argparse.Namespace(**values)
-
-
-def import_browser_evidence_args(db_path, evidence_path, **overrides):
-    values = {
-        "db": str(db_path),
-        "file": str(evidence_path),
-        "source": "hns-browser",
-        "source_id": "pixel9",
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -266,75 +220,6 @@ def test_incremental_catch_up_refuses_large_ranges(tmp_path, monkeypatch):
     assert result == 5
 
 
-def test_live_check_records_rate_limit_metadata(tmp_path, monkeypatch):
-    db_path = tmp_path / "topology.sqlite"
-    public_dir = tmp_path / "public"
-    rules = ProviderRules.from_file("configs/provider_rules.json")
-    with connect(db_path) as conn:
-        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
-
-    def fake_check_name(row, config, limiter):
-        limiter.wait()
-        return LiveStatus(
-            name=row["name"],
-            dns_reachable="reachable",
-            dnssec_status="not_delegated",
-            tlsa_status="missing",
-            dane_status="unknown",
-            https_status="working",
-            strict_hns_status="working",
-            doh_fallback_status="not_required",
-            failure_reason=None,
-            checked_at="2026-01-01T00:00:00Z",
-            next_check_at="2026-01-08T00:00:00Z",
-        )
-
-    monkeypatch.setattr("hns_topology.livecheck.check_name", fake_check_name)
-    monkeypatch.setattr("hns_topology.livecheck.collect_dns_evidence", lambda *args, **kwargs: [])
-
-    result = cli.cmd_live_check(live_check_args(db_path))
-
-    with connect(db_path) as conn:
-        assert result == 0
-        assert get_meta(conn, "live_check_limit") == "2"
-        assert get_meta(conn, "live_check_concurrency") == "1"
-        assert get_meta(conn, "live_check_min_delay_ms") == "1"
-        assert get_meta(conn, "live_check_timeout_seconds") == "0.1"
-        assert get_meta(conn, "live_check_recheck_seconds") == str(7 * 24 * 60 * 60)
-        assert get_meta(conn, "live_check_resolver") == "192.0.2.53"
-        assert int(get_meta(conn, "live_check_candidate_count")) >= 2
-        assert get_meta(conn, "live_check_checked_count") == "2"
-        generate_site(conn, db_path=db_path, out_dir=public_dir)
-
-    checks = validate_release(db_path=db_path, public_dir=public_dir, require_live_checks=True)
-    assert release_is_valid(checks), [check for check in checks if not check.ok]
-
-
-def test_discover_and_live_check_hosts_record_host_metadata(tmp_path, monkeypatch):
-    db_path = tmp_path / "topology.sqlite"
-    rules = ProviderRules.from_file("configs/provider_rules.json")
-    with connect(db_path) as conn:
-        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
-
-    assert cli.cmd_discover_hosts(discover_hosts_args(db_path)) == 0
-
-    def fake_run_host_live_checks(conn, *, limit, config):
-        assert limit == 2
-        assert config.resolver == "192.0.2.53"
-        return 2
-
-    monkeypatch.setattr(cli, "run_host_live_checks", fake_run_host_live_checks)
-
-    result = cli.cmd_live_check_hosts(live_check_hosts_args(db_path))
-
-    with connect(db_path) as conn:
-        assert result == 0
-        assert conn.execute("SELECT COUNT(*) FROM host_candidates").fetchone()[0] == 6
-        assert get_meta(conn, "host_live_check_limit") == "2"
-        assert get_meta(conn, "host_live_check_concurrency") == "1"
-        assert get_meta(conn, "host_live_check_checked_count") == "2"
-
-
 def test_import_dns_evidence_exports_static_observations(tmp_path):
     db_path = tmp_path / "topology.sqlite"
     public_dir = tmp_path / "public"
@@ -381,156 +266,6 @@ def test_import_dns_evidence_exports_static_observations(tmp_path):
     assert evidence["observations"][0]["source"] == "crowd"
     assert evidence["observations"][0]["source_id"] == "worker-1"
     assert evidence["observations"][0]["answer"] == ["secure. 300 IN DNSKEY 257 3 13 abc"]
-
-
-def test_import_browser_evidence_exports_static_observations(tmp_path):
-    db_path = tmp_path / "topology.sqlite"
-    public_dir = tmp_path / "public"
-    evidence_path = tmp_path / "browser-trace.json"
-    evidence_path.write_text(
-        json.dumps(
-            {
-                "host": "secure",
-                "root": "secure",
-                "mode": "hns_compatibility",
-                "hnsProof": "verified",
-                "resolutionSource": "authoritative_doh",
-                "authoritativeDns": {"udp53": "blocked", "tcp53": "blocked", "doh": "ok"},
-                "fallback": {"used": True, "reason": "network_blocks_53"},
-                "dnssec": "secure",
-                "originAddress": "198.51.100.3",
-                "tls": {
-                    "tlsaOwner": "_443._tcp.secure",
-                    "tlsaStatus": "present",
-                    "tlsaSource": "native_tlsa",
-                    "certificate": {
-                        "endEntitySha256": "aa" * 32,
-                        "spkiSha256": "bb" * 32,
-                        "notValidAfter": "2026-08-01T00:00:00Z",
-                    },
-                    "dane": {"decision": "verified"},
-                },
-                "captured_at": "2026-07-06T00:00:00Z",
-            }
-        ),
-        encoding="utf-8",
-    )
-    rules = ProviderRules.from_file("configs/provider_rules.json")
-    with connect(db_path) as conn:
-        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
-
-    result = cli.cmd_import_browser_evidence(import_browser_evidence_args(db_path, evidence_path))
-
-    with connect(db_path) as conn:
-        assert result == 0
-        generate_site(conn, db_path=db_path, out_dir=public_dir)
-
-    names_rows = json.loads(
-        (public_dir / "data/names-pages/all/page-1.json").read_text(encoding="utf-8")
-    )["rows"]
-    summary = json.loads((public_dir / "data/summary.json").read_text(encoding="utf-8"))
-    secure = next(row for row in names_rows if row["name"] == "secure")
-    evidence = json.loads(
-        (public_dir / "data" / secure["browser_evidence_path"]).read_text(encoding="utf-8")
-    )
-
-    assert secure["browser_evidence_path"] == "browser-evidence/secure.json"
-    observation = evidence["observations"][0]
-    assert observation["browser_result"] == "dane_verified"
-    assert observation["fallback_used"] is True
-    assert observation["fallback_reason"] == "network_blocks_53"
-    assert observation["authoritative_udp"] == "blocked"
-    assert observation["authoritative_doh"] == "ok"
-    assert observation["spki_sha256"] == "bb" * 32
-    assert observation["certificate_not_valid_after"] == "2026-08-01T00:00:00Z"
-    assert observation["certificate_expired"] is False
-    assert secure["browser_result"] == "dane_verified"
-    assert secure["browser_fallback_used"] is True
-    assert secure["browser_fallback_reason"] == "network_blocks_53"
-    assert secure["browser_authoritative_udp"] == "blocked"
-    assert secure["browser_authoritative_doh"] == "ok"
-    assert secure["browser_certificate_expired"] is False
-    assert secure["browser_evidence_effect"] == "positive_browser_dane"
-    assert secure["browser_evidence_severity"] == "review"
-    assert secure["browser_action"] == "compare_browser_dane"
-    assert secure["compliance_stage"] != "resolver_fallback"
-    assert summary["browser_evidence_names"] == 1
-    assert summary["browser_dane_verified_names"] == 1
-    assert summary["browser_network_blocks_53_names"] == 1
-    assert summary["browser_certificate_expired_names"] == 0
-    names_pages = json.loads((public_dir / "data/names-pages.json").read_text(encoding="utf-8"))
-    assert names_pages["collections"]["browser_evidence_names"]["row_count"] == 1
-    assert names_pages["collections"]["browser_dane_verified_names"]["row_count"] == 1
-    assert names_pages["collections"]["browser_network_blocks_53_names"]["row_count"] == 1
-    assert "browser_certificate_expired_names" not in names_pages["collections"]
-
-
-def test_import_browser_evidence_accepts_directory(tmp_path):
-    db_path = tmp_path / "topology.sqlite"
-    evidence_dir = tmp_path / "browser-evidence"
-    evidence_dir.mkdir()
-    (evidence_dir / "resolver-trace.json").write_text(
-        json.dumps(
-            {
-                "host": "secure",
-                "root": "secure",
-                "mode": "hns_compatibility",
-                "hnsProof": "verified",
-                "resolutionSource": "authoritative_doh",
-                "authoritativeDns": {"udp53": "blocked", "tcp53": "blocked", "doh": "ok"},
-                "fallback": {"used": True, "reason": "network_blocks_53"},
-                "dnssec": "secure",
-                "originAddress": "198.51.100.3",
-                "tls": {
-                    "tlsaOwner": "_443._tcp.secure",
-                    "tlsaStatus": "present",
-                    "tlsaSource": "native_tlsa",
-                    "certificate": {"spkiSha256": "bb" * 32},
-                    "dane": {"decision": "verified"},
-                },
-                "captured_at": "2026-07-06T00:00:00Z",
-            }
-        ),
-        encoding="utf-8",
-    )
-    (evidence_dir / "gateway-events.log").write_text(
-        "1783324451000\twebview_native_response\tdirect\t200\tOK\n",
-        encoding="utf-8",
-    )
-    (evidence_dir / "diagnostic-bundle.md").write_text(
-        """
-# HNS DANE Browser Diagnostic Bundle
-
-## Recent Gateway Events
-```
-1783324452000 webview_native_response secure 502 delegated_dnssec_validation_failed
-1783324453000 webview_native_response denuoweb 502 delegated_dnssec_validation_failed
-```
-""",
-        encoding="utf-8",
-    )
-    (evidence_dir / "ignored.bin").write_text("not browser evidence", encoding="utf-8")
-    rules = ProviderRules.from_file("configs/provider_rules.json")
-    with connect(db_path) as conn:
-        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
-
-    result = cli.cmd_import_browser_evidence(import_browser_evidence_args(db_path, evidence_dir))
-
-    with connect(db_path) as conn:
-        rows = conn.execute(
-            """
-            SELECT name, evidence_type, browser_result
-            FROM browser_evidence
-            ORDER BY name, evidence_type, browser_result
-            """
-        ).fetchall()
-
-    assert result == 0
-    assert [(row["name"], row["evidence_type"], row["browser_result"]) for row in rows] == [
-        ("direct", "gateway_event", "loaded"),
-        ("secure", "gateway_event", "dnssec_bogus"),
-        ("secure", "resolver_trace", "dane_verified"),
-    ]
 
 
 def test_rebuild_resource_ip_command_restores_derived_index(tmp_path):
