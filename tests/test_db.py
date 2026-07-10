@@ -53,6 +53,7 @@ def test_init_db_migrates_previous_schema_and_backfills_resource_flags(tmp_path)
               qname TEXT NOT NULL,
               rrtype TEXT NOT NULL,
               status TEXT NOT NULL,
+              flags TEXT,
               answer_json TEXT NOT NULL DEFAULT '[]',
               captured_at TEXT NOT NULL
             );
@@ -92,6 +93,17 @@ def test_init_db_migrates_previous_schema_and_backfills_resource_flags(tmp_path)
             VALUES('previous', 'working', 'valid')
             """
         )
+        conn.execute(
+            """
+            INSERT INTO dns_evidence(
+              name, qname, rrtype, status, flags, answer_json, captured_at
+            ) VALUES(
+              'previous', '_443._tcp.previous.', 'TLSA', 'ok', 'QR AA',
+              '["_443._tcp.previous. 300 IN TLSA 3 1 1 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]',
+              '2026-01-01T00:00:00Z'
+            )
+            """
+        )
 
     with connect(db_path) as conn:
         init_db(conn)
@@ -102,6 +114,7 @@ def test_init_db_migrates_previous_schema_and_backfills_resource_flags(tmp_path)
                 "resource_summary",
                 "provider_summary",
                 "dns_evidence",
+                "tlsa_evidence_summary",
                 "changed_name_rollbacks",
             )
         }
@@ -130,6 +143,13 @@ def test_init_db_migrates_previous_schema_and_backfills_resource_flags(tmp_path)
             WHERE provider_key = 'unknown/custom'
             """
         ).fetchone()
+        tlsa_summary = conn.execute(
+            """
+            SELECT has_tlsa, tlsa_records, tlsa_owners, observed_at, checked_at
+            FROM tlsa_evidence_summary
+            WHERE name = 'previous'
+            """
+        ).fetchone()
 
     assert {"state", "renewal_height", "last_seen_height", "updated_at"} <= tables["names"]
     assert {
@@ -146,6 +166,9 @@ def test_init_db_migrates_previous_schema_and_backfills_resource_flags(tmp_path)
     assert {"provider_type", "ns_pattern", "ip_pattern"} <= tables["provider_summary"]
     assert {"server", "source", "source_id", "authority_json", "additional_json"} <= tables[
         "dns_evidence"
+    ]
+    assert {"has_tlsa", "tlsa_records", "tlsa_owners", "observed_at", "checked_at"} <= tables[
+        "tlsa_evidence_summary"
     ]
     assert "previous_live_status" not in tables["changed_name_rollbacks"]
     assert {"live_status", "host_candidates", "host_live_status", "browser_evidence"}.isdisjoint(
@@ -169,3 +192,8 @@ def test_init_db_migrates_previous_schema_and_backfills_resource_flags(tmp_path)
         "names_count": 1,
         "likely_website_count": 1,
     }
+    assert tlsa_summary["has_tlsa"] == 1
+    assert '"owner":"_443._tcp.previous."' in tlsa_summary["tlsa_records"]
+    assert tlsa_summary["tlsa_owners"] == '["_443._tcp.previous."]'
+    assert tlsa_summary["observed_at"] == "2026-01-01T00:00:00Z"
+    assert tlsa_summary["checked_at"] == "2026-01-01T00:00:00Z"

@@ -2,20 +2,21 @@
 
 Static topology and DANE-readiness snapshots for the current Handshake namespace.
 
-HNScrawler builds a compact SQLite database from HSD-derived root state, classifies current on-chain resource summaries, derives static compliance stages, and publishes a paginated static report. It does not run website liveness checks, device/browser checks, or host-candidate discovery.
+HNScrawler builds a compact SQLite database from HSD-derived root state, classifies current on-chain resource summaries, combines them with imported delegated-DNS evidence, derives compliance stages, and publishes a paginated static report. It does not run website liveness checks, device/browser checks, or host-candidate discovery.
 
 The current analysis answers:
 
 - Which active names publish SYNTH or delegated nameserver bootstrap material?
 - Which delegated names are missing parent-side GLUE?
 - Which active names publish DS records?
-- Which DS names already include TLSA material, and which need TLSA?
+- Which roots have an authoritative or authenticated HTTPS TLSA answer in stored DNS evidence?
+- Which DS names still lack stored TLSA proof and need verification before generator handoff?
 - Which names are parked/default/resolver infrastructure and should stay out of action queues?
 
 ## Compliance Stages
 
-- `tlsa_present`: current HNS resource data has DS and TLSA material.
-- `tlsa_gap`: current HNS resource data has DS but no static TLSA material.
+- `tlsa_present`: parent DS is present and stored delegated-DNS evidence contains an authoritative or authenticated HTTPS TLSA answer.
+- `tlsa_gap`: parent DS is present, but stored DNS evidence does not prove TLSA presence.
 - `missing_glue`: delegation exists but parent-side GLUE bootstrap is missing.
 - `bootstrap_ready`: SYNTH or delegated GLUE bootstrap exists; the next step is DNSSEC, DS, and TLSA.
 - `non_actionable`: expired, parked/default, resolver infrastructure, empty, or unsupported resources.
@@ -70,6 +71,8 @@ hns-topology import-dns-evidence --db data/topology.sqlite --file dns-evidence.j
 ```
 
 Imported DNS observations are exported under `data/dns-evidence/<name>.json` and linked from matching name rows.
+
+TLSA is not part of Handshake's on-chain Resource format. HTTPS TLSA presence is therefore derived only from the latest stored observation per query/server/source identity. A qualifying record must be an exact `_443._tcp.<host>` answer below the indexed root and carry authoritative (`AA`) or authenticated-data (`AD`) evidence. The headline is labeled **TLSA observed** because imports are not an exhaustive live scan; `tlsa_evidence_names` in `summary.json` reports the number of roots with stored TLSA probes.
 
 ## Published Artifacts
 

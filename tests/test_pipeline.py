@@ -30,6 +30,7 @@ from hns_topology.indexer import (
     reclassify_existing_names,
     rollback_reorg,
 )
+from hns_topology.lookup_api import lookup_name
 from hns_topology.models import DnsEvidence
 from hns_topology.provider_rules import ProviderRules
 from hns_topology.site_generator import generate_site
@@ -120,6 +121,7 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     assert summary["ds_records"] == 1
     assert summary["strict_hns_ready"] == 3
     assert summary["tlsa_present_names"] == 0
+    assert summary["tlsa_evidence_names"] == 0
     assert summary["static_tlsa_certificate_expired_names"] == 0
     assert summary["needs_dane"] == 1
     assert summary["needs_fix"] == 2
@@ -154,7 +156,7 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     explainers = {item["key"]: item for item in summary["overview_explainers"]}
     assert explainers["direct_ip_records"]["filter_link"] == "names.html?filter=direct_ip_records"
     assert explainers["needs_dane"]["count"] == 1
-    assert "static TLSA" in explainers["needs_dane"]["definition"]
+    assert "stored authoritative or authenticated TLSA" in explainers["needs_dane"]["definition"]
     assert explainers["needs_fix"]["count"] == 2
     assert explainers["static_tlsa_certificate_expired_names"]["count"] == 0
     assert {item["ip"] for item in summary["top_resource_ips"]} >= {
@@ -173,6 +175,89 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     assert resource_ip_count == 5
     assert resource_ip_version == RESOURCE_IP_INDEX_VERSION
     assert "idx_resource_ip_ip_name" in resource_ip_indexes
+
+
+def test_delegated_tlsa_evidence_drives_summary_filter_rows_and_lookup(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    out = tmp_path / "public"
+    association = "ab" * 32
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    observation = DnsEvidence(
+        name="secure",
+        qname="_443._tcp.secure.",
+        rrtype="TLSA",
+        server="198.51.100.3",
+        source="scanner",
+        source_id="worker-1",
+        status="ok",
+        rcode="NOERROR",
+        flags="QR AA",
+        answer=[f"_443._tcp.secure. 300 IN TLSA 3 1 1 {association}"],
+        authority=[],
+        additional=[],
+        elapsed_ms=3,
+        error=None,
+        captured_at="2026-07-10T00:00:00Z",
+    )
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+        with conn:
+            insert_dns_evidence_batch(conn, [observation])
+        summary = build_summary(conn)
+        rows = build_names(conn, limit=9)
+        generate_site(conn, db_path=db_path, out_dir=out)
+
+    secure = next(row for row in rows if row["name"] == "secure")
+    names_pages = json.loads((out / "data/names-pages.json").read_text(encoding="utf-8"))
+    observed_collection = names_pages["collections"]["tlsa_present_names"]
+    lookup = lookup_name(db_path, "secure")
+
+    assert summary["tlsa_present_names"] == 1
+    assert summary["tlsa_evidence_names"] == 1
+    assert summary["needs_dane"] == 0
+    assert summary["compliance_stage_counts"]["tlsa_present"] == 1
+    assert secure["has_tlsa"] is True
+    assert secure["tlsa_owners"] == ["_443._tcp.secure."]
+    assert secure["tlsa_records"][0]["association"] == association
+    assert secure["tlsa_observed_at"] == "2026-07-10T00:00:00Z"
+    assert observed_collection["row_count"] == 1
+    assert lookup["row"]["has_tlsa"] is True
+    assert lookup["row"]["tlsa_records"][0]["owner"] == "_443._tcp.secure."
+
+
+def test_observed_tlsa_metric_does_not_require_ds_or_compliance_stage(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    association = "cd" * 32
+    observations = [
+        DnsEvidence(
+            name=name,
+            qname=f"_443._tcp.{name}.",
+            rrtype="TLSA",
+            server="198.51.100.2",
+            source="scanner",
+            source_id="worker-1",
+            status="ok",
+            rcode="NOERROR",
+            flags="QR AA",
+            answer=[f"_443._tcp.{name}. 300 IN TLSA 3 1 1 {association}"],
+            authority=[],
+            additional=[],
+            elapsed_ms=3,
+            error=None,
+            captured_at="2026-07-10T00:00:00Z",
+        )
+        for name in ("delegated", "noglue")
+    ]
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=FIXTURE, rules=rules)
+        with conn:
+            insert_dns_evidence_batch(conn, observations)
+        summary = build_summary(conn)
+
+    assert summary["tlsa_present_names"] == 2
+    assert summary["compliance_stage_counts"]["tlsa_present"] == 0
+    assert summary["compliance_stage_counts"]["missing_glue"] == 1
 
 
 def test_static_embedded_tlsa_expired_certificate_exports_filter(tmp_path):

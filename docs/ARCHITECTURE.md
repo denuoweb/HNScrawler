@@ -1,20 +1,15 @@
 # Architecture
 
-HNScrawler is a static topology indexer for Handshake names. It indexes HSD-derived root state, classifies compact resource summaries, derives static DANE-readiness queues, and publishes a static site.
+HNScrawler is a static topology indexer for Handshake names. It indexes HSD-derived root state, classifies compact resource summaries, combines them with imported delegated-DNS observations, derives DANE-readiness queues, and publishes a static site.
 
 It intentionally does not perform website liveness checks, host discovery, device/browser checks, or active HTTPS/DANE verification.
 
 ## Pipeline
 
 ```text
-HSD RPC / JSONL / fixture
-  -> normalized names
-  -> resource summaries
-  -> provider classification
-  -> resource-IP index
-  -> static compliance stages
-  -> static site export
-  -> release validation
+HSD RPC / JSONL / fixture -> resource + provider summaries
+imported DNS evidence     -> authoritative/authenticated TLSA summary
+both summaries            -> compliance stages -> static site -> validation
 ```
 
 ## Indexing
@@ -40,9 +35,10 @@ Resource classification is based on current HNS resource records:
 - NS delegation
 - GLUE bootstrap
 - DS records
-- TLSA records
 - TXT presence
 - provider/default/resolver infrastructure rules
+
+Handshake Resource data is referral data and cannot contain TLSA. HTTPS TLSA records live in the delegated zone at `_443._tcp.<host>`. `dns_evidence` is the source of TLSA observations; the derived `tlsa_evidence_summary` table keeps the latest observation per query/server/source identity, rejects malformed or wrong-owner data, and deduplicates apex, `www`, and evidence-backed subdomain owners to one root-level presence count.
 
 Known default parking and resolver infrastructure stay out of actionable queues.
 
@@ -50,8 +46,8 @@ Known default parking and resolver infrastructure stay out of actionable queues.
 
 The canonical workflow state is the derived `compliance_stage`:
 
-- `tlsa_present`: DS and TLSA material are present in current HNS resource data.
-- `tlsa_gap`: DS is present but TLSA material is missing.
+- `tlsa_present`: parent DS and stored authoritative/authenticated TLSA evidence are both present. This does not prove a certificate match.
+- `tlsa_gap`: parent DS is present, but stored DNS evidence does not prove TLSA presence.
 - `missing_glue`: NS delegation exists but GLUE bootstrap is missing.
 - `bootstrap_ready`: SYNTH or delegated GLUE bootstrap exists; DNSSEC/DS/TLSA planning is next.
 - `non_actionable`: expired, parked/default, resolver infrastructure, empty, or unsupported resources.

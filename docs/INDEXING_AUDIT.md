@@ -47,7 +47,7 @@ Site generation now writes a complete release tree into a staging directory and 
 
 Names filters now use that row-store pattern: `names-pages/all` is the canonical sorted row store, while nonzero visible filters, provider queues, and `stage:<compliance_stage>` collections are ordinal postings into that store. The browser resolves only the active postings page back to canonical rows. Hidden filters, zero-row filters, and provider-type queues are not exported.
 
-During export, the generator builds a temporary `export_name_ordinals` table with ordinal, provider, provider type, resource flags, TLSA presence, static TLSA certificate-expiry state, and the derived `compliance_stage` for the exported name set. Nonzero posting collections are counted and streamed from that temporary export index, avoiding repeated joins across the production `names`, `resource_summary`, and `provider_summary` tables.
+During export, the generator builds a temporary `export_name_ordinals` table with ordinal, provider, provider type, resource flags, normalized delegated-DNS TLSA evidence, legacy static certificate-expiry state, and the derived `compliance_stage` for the exported name set. Nonzero posting collections are counted and streamed from that temporary export index, avoiding repeated joins across the production `names`, `resource_summary`, `tlsa_evidence_summary`, and `provider_summary` tables.
 
 If detailed diagnostics must show every resource record at production scale, store full resource detail once per canonical name row or in sharded on-demand detail files, not once per filter.
 

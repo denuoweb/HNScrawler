@@ -32,6 +32,6 @@ Sources:
 
 ## Current Implementation Limits
 
-- Static analysis records HNS DS and TLSA material from resource data. It does not store full delegated chains, denial-of-existence proofs, arbitrary zone contents, or HTTPS certificate observations.
+- Static analysis records HNS DS from Resource data. TLSA cannot appear in the Handshake Resource format; HTTPS TLSA presence comes from imported delegated-DNS observations at exact `_443._tcp.<host>` owners. The crawler does not claim exhaustive delegated-zone coverage, denial-of-existence proof, or HTTPS certificate matching from TLSA presence alone.
 - Incremental catch-up reads `last_indexed_height`, scans detailed HSD block JSON through the target height, records empty blocks for reorg safety, and refuses ranges above `INCREMENTAL_MAX_BLOCKS`. Single-block scans decode plaintext names when covenant items include them and resolve name hashes with HSD `getnamebyhash`. Empty single-block scans and unresolved name hashes fail by default; use `ALLOW_EMPTY_BLOCK_SCAN=1` only for known-empty blocks and `ALLOW_UNRESOLVED_NAME_HASHES=1` only for deliberate best-effort runs.
 - The JSONL exporter depends on HSD internal module paths and serialized `NameState` / `Resource` formats. Re-run an `EXPORT_LIMIT` smoke export after HSD upgrades before a full production export. Use `EXPORT_FORMAT=full` only when debugging an HSD format mismatch.

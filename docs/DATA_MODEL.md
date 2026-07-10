@@ -1,6 +1,6 @@
 # Data Model
 
-HNScrawler stores root-level Handshake topology and static DNS/DANE readiness evidence. The database no longer stores live website checks, host candidates, host live status, or browser/device observations.
+HNScrawler stores root-level Handshake topology and imported DNS/DANE readiness evidence. The database no longer stores live website checks, host candidates, host live status, or browser/device observations.
 
 ## Core Tables
 
@@ -12,7 +12,7 @@ Key/value provenance and run metadata:
 - HSD chain/version, indexed height, indexed tip hash
 - crawler version
 - provider-rule version, path, and hash
-- resource-IP index version
+- resource-IP and TLSA-evidence summary versions
 
 ### `names`
 
@@ -31,12 +31,11 @@ One row per root name:
 
 Compact parsed HNS resource state per name:
 
-- JSON arrays: `ns_names`, `glue4`, `glue6`, `synth4`, `synth6`, `ds_records`, `tlsa_records`
-- static TLSA certificate fields: `tlsa_cert_not_valid_after`, `tlsa_cert_expired`
+- JSON arrays: `ns_names`, `glue4`, `glue6`, `synth4`, `synth6`, `ds_records`
 - flags: `has_ds`, `has_ns`, `has_glue`, `has_synth`, `has_txt`
 - `raw_size`, `resource_version`, `resource_hash`
 
-Static TLSA certificate expiry is only inferred for embedded full-certificate TLSA records (`selector = 0`, `matchingType = 0`). SPKI-hash TLSA records do not contain certificate validity windows.
+Legacy `tlsa_records` and static certificate-expiry columns remain in the schema for database compatibility, but HSD Resource does not encode TLSA and those columns are not the source of the public TLSA presence metric.
 
 ### `resource_ip`
 
@@ -70,6 +69,17 @@ Imported static DNS observations:
 
 These rows export to `data/dns-evidence/<name>.json` when present.
 
+### `tlsa_evidence_summary`
+
+Derived root-level TLSA observation state:
+
+- `has_tlsa`: at least one latest authoritative (`AA`) or authenticated (`AD`) HTTPS TLSA answer exists
+- JSON arrays: normalized `tlsa_records`, deduplicated `tlsa_owners`
+- `observed_at`: latest qualifying positive observation
+- `checked_at`: latest stored TLSA observation, including negative/error results
+
+The summary uses only exact `_443._tcp.<host>` owners at or below the indexed HNS root. For each `(qname, rrtype, server, source, source_id)` identity, a newer negative observation supersedes an older positive. The table is rebuilt for existing databases and refreshed whenever evidence is imported.
+
 ### `block_history`
 
 Incremental indexing history:
@@ -99,7 +109,7 @@ Reorg rollback snapshots:
 - `bootstrap_ready`
 - `non_actionable`
 
-The stage is not stored as source data; it is derived from expiration state, provider type, resource bootstrap flags, DS, and TLSA presence.
+The stage is not stored as source data; it is derived from expiration state, provider type, resource bootstrap flags, DS, and normalized TLSA evidence.
 
 ## Public Export
 

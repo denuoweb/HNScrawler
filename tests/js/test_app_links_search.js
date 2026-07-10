@@ -59,3 +59,30 @@ function loadApp(search = "") {
     "data/ip-addresses/2001%253Adb8%253A%253A10/page-1.json"
   );
 }
+
+{
+  const app = loadApp("");
+  const html = app.snapshot({
+    active_names: 100,
+    expired_names: 5,
+    tlsa_present_names: 2,
+    tlsa_evidence_names: 33,
+    strict_hns_ready: 10,
+    compliance_stage_counts: {
+      tlsa_present: 0,
+      tlsa_gap: 7,
+      missing_glue: 3
+    }
+  });
+  assert.equal(html.includes('<span class="label">TLSA observed</span><span class="value">2</span>'), true);
+  assert.equal(html.includes("33 roots have stored TLSA probes"), true);
+  assert.equal(html.includes("names.html?filter=tlsa_present_names"), true);
+  assert.equal(html.includes("stage%3Atlsa_present"), false);
+}
+
+{
+  const app = loadApp("");
+  const commands = app.targetProbeCommands("secure", "192.0.2.53");
+  assert.equal(commands.includes("dig @192.0.2.53 _443._tcp.secure. TLSA +norecurse +dnssec"), true);
+  assert.equal(commands.includes("dig @192.0.2.53 _443._tcp.www.secure. TLSA +norecurse +dnssec"), true);
+}

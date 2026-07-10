@@ -27,6 +27,18 @@ RESOURCE_IP_LOOKUP_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_resource_ip_ip_name ON resource_ip(ip, name);
 """
 
+TLSA_EVIDENCE_SUMMARY_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS tlsa_evidence_summary (
+  name TEXT PRIMARY KEY,
+  has_tlsa INTEGER NOT NULL DEFAULT 0,
+  tlsa_records TEXT NOT NULL DEFAULT '[]',
+  tlsa_owners TEXT NOT NULL DEFAULT '[]',
+  observed_at TEXT,
+  checked_at TEXT,
+  FOREIGN KEY(name) REFERENCES names(name) ON DELETE CASCADE
+) WITHOUT ROWID;
+"""
+
 SCHEMA_SQL = f"""
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
@@ -104,6 +116,8 @@ CREATE TABLE IF NOT EXISTS dns_evidence (
   FOREIGN KEY(name) REFERENCES names(name) ON DELETE CASCADE
 );
 
+{TLSA_EVIDENCE_SUMMARY_TABLE_SQL}
+
 CREATE TABLE IF NOT EXISTS block_history (
   height INTEGER PRIMARY KEY,
   block_hash TEXT NOT NULL,
@@ -130,6 +144,7 @@ CREATE INDEX IF NOT EXISTS idx_names_provider ON names(provider_guess);
 CREATE INDEX IF NOT EXISTS idx_names_expired ON names(expired);
 CREATE INDEX IF NOT EXISTS idx_dns_evidence_name_captured ON dns_evidence(name, captured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_dns_evidence_query_captured ON dns_evidence(name, qname, rrtype, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tlsa_evidence_summary_present ON tlsa_evidence_summary(has_tlsa, name);
 """
 
 NAMES_COLUMNS = (
@@ -176,6 +191,8 @@ RESOURCE_IP_FIELDS = (
 )
 RESOURCE_IP_INDEX_META_KEY = "resource_ip_index_version"
 RESOURCE_IP_INDEX_VERSION = "2"
+TLSA_EVIDENCE_SUMMARY_META_KEY = "tlsa_evidence_summary_version"
+TLSA_EVIDENCE_SUMMARY_VERSION = "1"
 
 DNS_EVIDENCE_COLUMNS = (
     "name",
@@ -332,6 +349,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     _migrate_schema(conn)
     _drop_obsolete_schema(conn)
     conn.executescript(CORE_INDEX_SQL)
+    _ensure_tlsa_evidence_summary_current(conn)
     conn.commit()
 
 
@@ -386,10 +404,90 @@ def upsert_resource_rows(conn: sqlite3.Connection, rows: Iterable[tuple[Any, ...
 
 def insert_dns_evidence(conn: sqlite3.Connection, evidence: DnsEvidence) -> None:
     conn.execute(INSERT_DNS_EVIDENCE_SQL, _dns_evidence_params(evidence))
+    if evidence.rrtype.upper() == "TLSA":
+        refresh_tlsa_evidence_summary(conn, names=[evidence.name])
 
 
 def insert_dns_evidence_batch(conn: sqlite3.Connection, evidence: Iterable[DnsEvidence]) -> None:
-    conn.executemany(INSERT_DNS_EVIDENCE_SQL, (_dns_evidence_params(item) for item in evidence))
+    items = list(evidence)
+    if not items:
+        return
+    conn.executemany(INSERT_DNS_EVIDENCE_SQL, (_dns_evidence_params(item) for item in items))
+    tlsa_names = {item.name for item in items if item.rrtype.upper() == "TLSA"}
+    if tlsa_names:
+        refresh_tlsa_evidence_summary(conn, names=tlsa_names)
+
+
+def refresh_tlsa_evidence_summary(
+    conn: sqlite3.Connection,
+    *,
+    names: Iterable[str] | None = None,
+) -> int:
+    from .tlsa_evidence import summarize_tlsa_evidence
+
+    normalized_names = None
+    if names is not None:
+        normalized_names = sorted({str(name).strip().lower().rstrip(".") for name in names if name})
+        if not normalized_names:
+            return 0
+        conn.executemany(
+            "DELETE FROM tlsa_evidence_summary WHERE name = ?",
+            ((name,) for name in normalized_names),
+        )
+        rows: list[sqlite3.Row] = []
+        for offset in range(0, len(normalized_names), 500):
+            name_batch = normalized_names[offset : offset + 500]
+            placeholders = ",".join("?" for _ in name_batch)
+            rows.extend(
+                conn.execute(
+                    f"""
+                    SELECT de.*
+                    FROM dns_evidence de
+                    JOIN names n ON n.name = de.name
+                    WHERE de.name IN ({placeholders}) AND upper(de.rrtype) = 'TLSA'
+                    ORDER BY de.name, de.captured_at DESC, de.id DESC
+                    """,
+                    name_batch,
+                )
+            )
+    else:
+        conn.execute("DELETE FROM tlsa_evidence_summary")
+        rows = conn.execute(
+            """
+            SELECT de.*
+            FROM dns_evidence de
+            JOIN names n ON n.name = de.name
+            WHERE upper(de.rrtype) = 'TLSA'
+            ORDER BY de.name, de.captured_at DESC, de.id DESC
+            """
+        )
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(str(row["name"]), []).append(dict(row))
+
+    summaries = [summarize_tlsa_evidence(name, evidence_rows) for name, evidence_rows in grouped.items()]
+    conn.executemany(
+        """
+        INSERT INTO tlsa_evidence_summary(
+          name, has_tlsa, tlsa_records, tlsa_owners, observed_at, checked_at
+        ) VALUES(?, ?, ?, ?, ?, ?)
+        """,
+        (
+            (
+                summary.name,
+                int(summary.has_tlsa),
+                dumps_json(summary.records),
+                dumps_json(summary.owners),
+                summary.observed_at,
+                summary.checked_at,
+            )
+            for summary in summaries
+        ),
+    )
+    if normalized_names is None:
+        set_meta(conn, TLSA_EVIDENCE_SUMMARY_META_KEY, TLSA_EVIDENCE_SUMMARY_VERSION)
+    return len(summaries)
 
 
 def capture_rollback(
@@ -715,6 +813,12 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         for column in columns:
             conn.execute(f"UPDATE {table} SET {column} = '[]' WHERE {column} IS NULL")
     backfill_resource_flags(conn)
+
+
+def _ensure_tlsa_evidence_summary_current(conn: sqlite3.Connection) -> None:
+    if get_meta(conn, TLSA_EVIDENCE_SUMMARY_META_KEY) == TLSA_EVIDENCE_SUMMARY_VERSION:
+        return
+    refresh_tlsa_evidence_summary(conn)
 
 
 def _drop_obsolete_schema(conn: sqlite3.Connection) -> None:

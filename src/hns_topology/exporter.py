@@ -79,7 +79,7 @@ NAME_FILTERS = {
     "default_provider_names": "ps.provider_type = 'default_parking'",
     "ds_records": "rs.has_ds = 1",
     "dnssec_candidates": "rs.has_ds = 1 AND rs.has_ns = 1",
-    "tlsa_present_names": "rs.has_ds = 1 AND COALESCE(json_array_length(rs.tlsa_records), 0) > 0",
+    "tlsa_present_names": "COALESCE(tes.has_tlsa, 0) = 1",
     "static_tlsa_certificate_expired_names": STATIC_TLSA_CERTIFICATE_EXPIRED_SQL,
     "strict_hns_ready": (
         f"{ACTIONABLE_PROVIDER_SQL} AND "
@@ -91,7 +91,7 @@ NAME_FILTERS = {
     ),
     "needs_dane": (
         f"{ACTIONABLE_PROVIDER_SQL} AND "
-        "rs.has_ds = 1 AND COALESCE(json_array_length(rs.tlsa_records), 0) = 0"
+        "rs.has_ds = 1 AND COALESCE(tes.has_tlsa, 0) = 0"
     ),
     "needs_fix": "rs.has_ns = 1 AND rs.has_glue = 0",
     "missing_glue_only": "rs.has_ns = 1 AND rs.has_glue = 0",
@@ -100,10 +100,10 @@ NAME_FILTERS = {
 NEXT_ACTION_SPECS = (
     NextActionSpec(
         key="generate_tlsa",
-        label="Generate TLSA record",
+        label="Verify or generate TLSA",
         stage="tlsa_gap",
         generator_intent="generate_tlsa",
-        definition="Current HNS resource data has DS but no TLSA association.",
+        definition="Parent DS is present, but no authoritative or authenticated TLSA answer is stored.",
     ),
     NextActionSpec(
         key="fix_ns_glue",
@@ -154,15 +154,15 @@ OVERVIEW_EXPLAINER_SPECS = (
     ),
     OverviewExplainerSpec(
         key="tlsa_present_names",
-        label="TLSA present",
+        label="TLSA observed",
         count_key="tlsa_present_names",
-        definition="Current HNS resource data contains DS plus at least one TLSA association.",
+        definition="Stored delegated-DNS evidence contains an authoritative or authenticated HTTPS TLSA answer. This is presence evidence, not certificate-match proof.",
     ),
     OverviewExplainerSpec(
         key="static_tlsa_certificate_expired_names",
-        label="Static TLSA expired certificate",
+        label="Legacy embedded TLSA certificate expired",
         count_key="static_tlsa_certificate_expired_names",
-        definition="Current HNS resource data contains a TLSA association that embeds a full DER certificate whose notAfter timestamp is expired. Normal TLSA 3 1 1 SPKI hashes do not expose certificate dates.",
+        definition="Legacy compatibility diagnostic for synthetic/imported Resource payloads. HSD Resource cannot encode TLSA, so production delegated TLSA certificate validity requires separate HTTPS evidence.",
     ),
     OverviewExplainerSpec(
         key="likely_websites",
@@ -178,9 +178,9 @@ OVERVIEW_EXPLAINER_SPECS = (
     ),
     OverviewExplainerSpec(
         key="needs_dane",
-        label="Needs DANE",
+        label="TLSA unobserved",
         count_key="needs_dane",
-        definition="Actionable active names with DS but no static TLSA association.",
+        definition="Actionable active names with parent DS but no stored authoritative or authenticated TLSA answer. Verify before generating a replacement.",
     ),
     OverviewExplainerSpec(
         key="needs_fix",
@@ -217,7 +217,7 @@ POSTING_NAME_FILTERS = {
     "default_provider_names": "provider_type = 'default_parking'",
     "ds_records": "has_ds = 1",
     "dnssec_candidates": "has_ds = 1 AND has_ns = 1",
-    "tlsa_present_names": "has_ds = 1 AND has_tlsa = 1",
+    "tlsa_present_names": "has_tlsa = 1",
     "static_tlsa_certificate_expired_names": STATIC_TLSA_CERTIFICATE_EXPIRED_EXPORT_SQL,
     "strict_hns_ready": (
         f"{ACTIONABLE_EXPORT_SQL} AND "
@@ -241,7 +241,7 @@ def _name_compliance_stage_sql() -> str:
         has_ns="rs.has_ns",
         has_glue="rs.has_glue",
         has_synth="rs.has_synth",
-        has_tlsa="CASE WHEN COALESCE(json_array_length(rs.tlsa_records), 0) > 0 THEN 1 ELSE 0 END",
+        has_tlsa="COALESCE(tes.has_tlsa, 0)",
     )
 
 
@@ -332,9 +332,11 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
                     AND COALESCE(rs.has_ns, 0) = 1
                    THEN 1 ELSE 0 END) AS dnssec_candidates,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0
-                    AND COALESCE(rs.has_ds, 0) = 1
-                    AND COALESCE(json_array_length(rs.tlsa_records), 0) > 0
+                    AND COALESCE(tes.has_tlsa, 0) = 1
                    THEN 1 ELSE 0 END) AS tlsa_present_names,
+          SUM(CASE WHEN COALESCE(n.expired, 0) = 0
+                    AND tes.name IS NOT NULL
+                   THEN 1 ELSE 0 END) AS tlsa_evidence_names,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0
                     AND COALESCE(rs.tlsa_cert_expired, 0) != 0
                    THEN 1 ELSE 0 END) AS static_tlsa_certificate_expired_names,
@@ -356,7 +358,7 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0
                     AND {ACTIONABLE_PROVIDER_SQL}
                     AND COALESCE(rs.has_ds, 0) = 1
-                    AND COALESCE(json_array_length(rs.tlsa_records), 0) = 0
+                    AND COALESCE(tes.has_tlsa, 0) = 0
                    THEN 1 ELSE 0 END) AS needs_dane,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0 AND ps.provider_type = 'default_parking'
                    THEN 1 ELSE 0 END) AS default_provider_names,
@@ -371,6 +373,7 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
         FROM names n
         LEFT JOIN resource_summary rs ON rs.name = n.name
         LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
+        LEFT JOIN tlsa_evidence_summary tes ON tes.name = n.name
         """
     ).fetchone()
     summary = {
@@ -399,6 +402,7 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
         "ds_records": _row_int(resource_counts, "ds_records"),
         "dnssec_candidates": _row_int(resource_counts, "dnssec_candidates"),
         "tlsa_present_names": _row_int(resource_counts, "tlsa_present_names"),
+        "tlsa_evidence_names": _row_int(resource_counts, "tlsa_evidence_names"),
         "static_tlsa_certificate_expired_names": _row_int(
             resource_counts, "static_tlsa_certificate_expired_names"
         ),
@@ -443,6 +447,7 @@ def build_compliance_stages(conn: sqlite3.Connection) -> list[dict[str, Any]]:
               FROM names n
               JOIN resource_summary rs ON rs.name = n.name
               LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
+              LEFT JOIN tlsa_evidence_summary tes ON tes.name = n.name
               WHERE COALESCE(n.expired, 0) = 0
             )
             GROUP BY compliance_stage
@@ -622,6 +627,7 @@ def build_names(
         FROM names n
         JOIN resource_summary rs ON rs.name = n.name
         LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
+        LEFT JOIN tlsa_evidence_summary tes ON tes.name = n.name
         WHERE {where}
         ORDER BY n.name
         LIMIT ?
@@ -636,7 +642,10 @@ def build_names(
               n.name, n.state, n.expired, n.onchain_class, n.provider_guess,
               COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types,
               rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6,
-              rs.ds_records, rs.tlsa_records,
+              rs.ds_records, COALESCE(tes.tlsa_records, '[]') AS tlsa_records,
+              COALESCE(tes.tlsa_owners, '[]') AS tlsa_owners,
+              COALESCE(tes.has_tlsa, 0) AS has_tlsa,
+              tes.observed_at AS tlsa_observed_at, tes.checked_at AS tlsa_checked_at,
               rs.tlsa_cert_not_valid_after, COALESCE(rs.tlsa_cert_expired, 0) AS tlsa_cert_expired,
               rs.has_ds,
               { _ns_handoff_select_columns() },
@@ -665,6 +674,7 @@ def build_names(
                 "synth6",
                 "ds_records",
                 "tlsa_records",
+                "tlsa_owners",
             ],
         )
         for row in rows
@@ -1116,11 +1126,12 @@ def _prepare_export_name_ordinals(conn: sqlite3.Connection, limit: int) -> None:
             COALESCE(rs.has_ns, 0) AS has_ns,
             COALESCE(rs.has_glue, 0) AS has_glue,
             COALESCE(rs.has_synth, 0) AS has_synth,
-            CASE WHEN COALESCE(json_array_length(rs.tlsa_records), 0) > 0 THEN 1 ELSE 0 END AS has_tlsa,
+            COALESCE(tes.has_tlsa, 0) AS has_tlsa,
             COALESCE(rs.tlsa_cert_expired, 0) AS tlsa_cert_expired
           FROM names n
           JOIN resource_summary rs ON rs.name = n.name
           LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
+          LEFT JOIN tlsa_evidence_summary tes ON tes.name = n.name
           ORDER BY n.name
           LIMIT ?
         )
@@ -1374,6 +1385,7 @@ def _name_row_columns(*, row_detail: str = "full") -> str:
         return f"""
           n.name, n.expired, n.onchain_class, n.provider_guess,
           COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types, rs.has_ds,
+          COALESCE(tes.has_tlsa, 0) AS has_tlsa,
           json_extract(rs.ns_names, '$[0]') AS first_ns,
           json_extract(rs.glue4, '$[0]') AS first_glue4,
           json_extract(rs.glue6, '$[0]') AS first_glue6,
@@ -1389,7 +1401,10 @@ def _name_row_columns(*, row_detail: str = "full") -> str:
           n.name, n.state, n.expired, n.onchain_class, n.provider_guess,
           COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types,
           rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6,
-          rs.ds_records, rs.tlsa_records,
+          rs.ds_records, COALESCE(tes.tlsa_records, '[]') AS tlsa_records,
+          COALESCE(tes.tlsa_owners, '[]') AS tlsa_owners,
+          COALESCE(tes.has_tlsa, 0) AS has_tlsa,
+          tes.observed_at AS tlsa_observed_at, tes.checked_at AS tlsa_checked_at,
           rs.tlsa_cert_not_valid_after, COALESCE(rs.tlsa_cert_expired, 0) AS tlsa_cert_expired,
           rs.has_ds,
           {_ns_handoff_select_columns()},
@@ -1411,6 +1426,7 @@ def _name_json_columns(*, row_detail: str = "full") -> list[str]:
         "synth6",
         "ds_records",
         "tlsa_records",
+        "tlsa_owners",
     ]
 
 
@@ -1424,6 +1440,7 @@ def _name_output_keys(*, row_detail: str = "full") -> list[str]:
             "provider_type",
             "record_types",
             "has_ds",
+            "has_tlsa",
             "first_ns",
             "first_glue4",
             "first_glue6",
@@ -1448,6 +1465,7 @@ def _name_rows_from_sql() -> str:
       FROM names n
       JOIN resource_summary rs ON rs.name = n.name
       LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
+      LEFT JOIN tlsa_evidence_summary tes ON tes.name = n.name
       LEFT JOIN {NS_HANDOFF_TABLE} enh ON enh.name = n.name
     """
 
@@ -1489,6 +1507,10 @@ def write_names_csv(conn: sqlite3.Connection, path: Path, *, limit: int) -> None
         "synth6",
         "ds_records",
         "tlsa_records",
+        "tlsa_owners",
+        "has_tlsa",
+        "tlsa_observed_at",
+        "tlsa_checked_at",
         "tlsa_cert_not_valid_after",
         "tlsa_cert_expired",
         "has_ds",
@@ -1756,6 +1778,8 @@ def _dns_evidence_path_sql() -> str:
 
 def _name_row(row: sqlite3.Row, json_columns: list[str]) -> dict[str, Any]:
     parsed = parse_json_columns(dict(row), json_columns)
+    if "has_tlsa" in parsed:
+        parsed["has_tlsa"] = bool(parsed["has_tlsa"])
     if "tlsa_cert_expired" in parsed:
         parsed["tlsa_cert_expired"] = bool(parsed["tlsa_cert_expired"])
     return parsed

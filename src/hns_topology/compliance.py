@@ -11,16 +11,16 @@ COMPLIANCE_STAGES = (
 )
 
 COMPLIANCE_STAGE_LABELS = {
-    "tlsa_present": "TLSA present",
-    "tlsa_gap": "TLSA gap",
+    "tlsa_present": "DS + TLSA observed",
+    "tlsa_gap": "TLSA unobserved",
     "missing_glue": "Missing GLUE",
     "bootstrap_ready": "Bootstrap ready",
     "non_actionable": "Non-actionable",
 }
 
 COMPLIANCE_STAGE_DEFINITIONS = {
-    "tlsa_present": "Current HNS resource data has DS and TLSA material; verify externally before treating it as working DANE.",
-    "tlsa_gap": "Current HNS resource data has DS but no static TLSA material.",
+    "tlsa_present": "Parent DS is present and stored delegated-DNS evidence contains an authoritative or authenticated HTTPS TLSA answer; certificate matching is not implied.",
+    "tlsa_gap": "Parent DS is present, but stored delegated-DNS evidence does not currently prove an HTTPS TLSA answer.",
     "missing_glue": "Delegation is missing parent-side nameserver bootstrap address records.",
     "bootstrap_ready": "HNS bootstrap exists; the next compliance step is DNSSEC signing, DS, and TLSA.",
     "non_actionable": "Expired, parked/default, resolver infrastructure, empty, or unsupported resources.",

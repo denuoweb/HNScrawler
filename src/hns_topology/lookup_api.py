@@ -28,6 +28,7 @@ JSON_COLUMNS = (
     "synth6",
     "ds_records",
     "tlsa_records",
+    "tlsa_owners",
 )
 
 
@@ -67,7 +68,7 @@ def lookup_name(db_path: str | Path, name: str) -> dict:
             has_ns="rs.has_ns",
             has_glue="rs.has_glue",
             has_synth="rs.has_synth",
-            has_tlsa="CASE WHEN COALESCE(json_array_length(rs.tlsa_records), 0) > 0 THEN 1 ELSE 0 END",
+            has_tlsa="COALESCE(tes.has_tlsa, 0)",
         )
         try:
             row = conn.execute(
@@ -76,7 +77,10 @@ def lookup_name(db_path: str | Path, name: str) -> dict:
                   n.name, n.state, n.expired, n.onchain_class, n.provider_guess,
                   COALESCE(ps.provider_type, 'unknown') AS provider_type, n.record_types,
                   rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6,
-                  rs.ds_records, rs.tlsa_records,
+                  rs.ds_records, COALESCE(tes.tlsa_records, '[]') AS tlsa_records,
+                  COALESCE(tes.tlsa_owners, '[]') AS tlsa_owners,
+                  COALESCE(tes.has_tlsa, 0) AS has_tlsa,
+                  tes.observed_at AS tlsa_observed_at, tes.checked_at AS tlsa_checked_at,
                   rs.tlsa_cert_not_valid_after, COALESCE(rs.tlsa_cert_expired, 0) AS tlsa_cert_expired,
                   rs.has_ds,
                   {_ns_handoff_select_columns()},
@@ -86,6 +90,7 @@ def lookup_name(db_path: str | Path, name: str) -> dict:
                 FROM names n
                 JOIN resource_summary rs ON rs.name = n.name
                 LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
+                LEFT JOIN tlsa_evidence_summary tes ON tes.name = n.name
                 LEFT JOIN {NS_HANDOFF_TABLE} enh ON enh.name = n.name
                 WHERE n.name = ?
                 LIMIT 1
@@ -123,6 +128,8 @@ def lookup_name(db_path: str | Path, name: str) -> dict:
 
 def _lookup_row(row: sqlite3.Row) -> dict:
     parsed = parse_json_columns(dict(row), JSON_COLUMNS)
+    if "has_tlsa" in parsed:
+        parsed["has_tlsa"] = bool(parsed["has_tlsa"])
     if "tlsa_cert_expired" in parsed:
         parsed["tlsa_cert_expired"] = bool(parsed["tlsa_cert_expired"])
     return parsed

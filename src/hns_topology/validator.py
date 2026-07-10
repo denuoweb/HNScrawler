@@ -20,6 +20,7 @@ REQUIRED_TABLES = {
     "resource_ip",
     "provider_summary",
     "dns_evidence",
+    "tlsa_evidence_summary",
     "block_history",
     "changed_name_rollbacks",
 }

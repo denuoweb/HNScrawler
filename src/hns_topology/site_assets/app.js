@@ -88,7 +88,9 @@ function hasDs(row) {
 }
 
 function hasTlsa(row) {
-  return (Array.isArray(row.tlsa_records) && row.tlsa_records.length > 0) || hasRecordType(row, "TLSA");
+  return row.has_tlsa === true
+    || Number(row.has_tlsa || 0) === 1
+    || (Array.isArray(row.tlsa_records) && row.tlsa_records.length > 0);
 }
 
 function recordTypes(row) {
@@ -143,11 +145,11 @@ function filterName(filter) {
     default_provider_names: "default providers",
     ds_records: "DS records",
     dnssec_candidates: "DNSSEC candidates",
-    tlsa_present_names: "TLSA present",
-    static_tlsa_certificate_expired_names: "static TLSA expired certificate",
+    tlsa_present_names: "TLSA observed",
+    static_tlsa_certificate_expired_names: "legacy embedded TLSA certificate expired",
     strict_hns_ready: "strict HNS ready",
     likely_websites: "likely host roots",
-    needs_dane: "needs DANE",
+    needs_dane: "TLSA unobserved",
     needs_fix: "needs fix",
     missing_glue_only: "missing GLUE only"
   })[filter] || filter;
@@ -155,8 +157,8 @@ function filterName(filter) {
 
 function stageLabel(stage) {
   return ({
-    tlsa_present: "TLSA present",
-    tlsa_gap: "TLSA gap",
+    tlsa_present: "DS + TLSA observed",
+    tlsa_gap: "TLSA unobserved",
     missing_glue: "Missing GLUE",
     bootstrap_ready: "Bootstrap ready",
     non_actionable: "Non-actionable"
@@ -165,8 +167,8 @@ function stageLabel(stage) {
 
 function stageDefinition(stage) {
   return ({
-    tlsa_present: "Current HNS resource data has DS and TLSA material.",
-    tlsa_gap: "Current HNS resource data has DS but no TLSA material.",
+    tlsa_present: "Parent DS and authoritative or authenticated TLSA evidence are present.",
+    tlsa_gap: "Parent DS is present, but stored DNS evidence does not prove TLSA presence.",
     missing_glue: "Parent-side nameserver bootstrap is missing.",
     bootstrap_ready: "HNS bootstrap exists; publish DNSSEC and TLSA.",
     non_actionable: "Expired, parked, resolver, empty, or unsupported."
@@ -366,8 +368,8 @@ function rowAction(row) {
   if (stage === "tlsa_present") {
     return {
       type: "badge",
-      label: "TLSA present",
-      detail: "DS and TLSA material are present in current HNS resource data.",
+      label: "TLSA observed",
+      detail: "Parent DS and authoritative or authenticated TLSA evidence are stored; certificate matching is not implied.",
       href: sitePath(`names.html?filter=tlsa_present_names&q=${encodeURIComponent(row.name || "")}`)
     };
   }
@@ -387,8 +389,8 @@ function rowAction(row) {
   }
   if (stage === "tlsa_gap") {
     return {
-      label: "Generate TLSA record",
-      detail: "Parent DS is present; add TLSA material for the HTTPS service owner.",
+      label: "Verify or generate TLSA",
+      detail: "Parent DS is present, but no authoritative or authenticated TLSA answer is stored.",
       href: daneGeneratorUrl(row, "generate_tlsa")
     };
   }
@@ -419,14 +421,15 @@ function actionCell(row) {
 function snapshot(summary) {
   const stageCounts = summary.compliance_stage_counts || {};
   const hasStageCounts = Boolean(summary.compliance_stage_counts);
-  const tlsaPresent = stageCounts.tlsa_present ?? summary.tlsa_present_names;
+  const tlsaPresent = Number(summary.tlsa_present_names || 0);
+  const tlsaEvidence = Number(summary.tlsa_evidence_names || 0);
   const tlsaGap = stageCounts.tlsa_gap ?? summary.needs_dane;
   const stageBlockers = Number(stageCounts.missing_glue || 0);
   const blockerQueue = hasStageCounts ? stageBlockers : summary.needs_fix;
   return `<section class="snapshot">
     ${metric("Active names", summary.active_names, `${fmt.format(summary.expired_names)} expired`, "names.html")}
-    ${metric("TLSA present", tlsaPresent, `${pct(tlsaPresent, summary.active_names)} of active`, `names.html?filter=${COMPLIANCE_STAGE_FILTER_PREFIX}tlsa_present`)}
-    ${metric("TLSA gaps", tlsaGap, "ready for generator handoff", `names.html?filter=${COMPLIANCE_STAGE_FILTER_PREFIX}tlsa_gap`)}
+    ${metric("TLSA observed", tlsaPresent, `${fmt.format(tlsaEvidence)} roots have stored TLSA probes`, "names.html?filter=tlsa_present_names")}
+    ${metric("TLSA unobserved", tlsaGap, "verify before generator handoff", `names.html?filter=${COMPLIANCE_STAGE_FILTER_PREFIX}tlsa_gap`)}
     ${metric("Compliance blockers", blockerQueue, "blocking verification")}
     ${metric("Strict HNS ready", summary.strict_hns_ready, "bootstrap material present", "names.html?filter=strict_hns_ready")}
   </section>`;
@@ -1009,9 +1012,9 @@ function namesFilterControls({summary, providers, active}) {
   const daneOptions = [
     {value: "ds_records", label: "DS records", countKey: "ds_records"},
     {value: "dnssec_candidates", label: "DNSSEC candidates", countKey: "dnssec_candidates"},
-    {value: "tlsa_present_names", label: "TLSA present", countKey: "tlsa_present_names"},
-    {value: "static_tlsa_certificate_expired_names", label: "Static TLSA expired certificate", countKey: "static_tlsa_certificate_expired_names"},
-    {value: "needs_dane", label: "Needs DANE", countKey: "needs_dane"}
+    {value: "tlsa_present_names", label: "TLSA observed", countKey: "tlsa_present_names"},
+    {value: "static_tlsa_certificate_expired_names", label: "Legacy embedded TLSA certificate expired", countKey: "static_tlsa_certificate_expired_names"},
+    {value: "needs_dane", label: "TLSA unobserved", countKey: "needs_dane"}
   ];
   const clearLink = active
     ? `<a class="search-clear" href="${escapeHtml(hrefWithoutParams(["filter", "page"]))}">Clear</a>`
@@ -1044,7 +1047,7 @@ function adoptionFunnel(summary) {
     <div class="panel-heading">
       <div>
         <h2>Static Compliance Pipeline</h2>
-        <p class="meta">Stages are derived from current HNS resource data, provider classification, DS, GLUE, SYNTH, and TLSA material.</p>
+        <p class="meta">Stages combine current HNS resource data with stored delegated-DNS TLSA evidence. TLSA presence is not the same as DANE certificate verification.</p>
       </div>
     </div>
     <div class="funnel-grid">${stages.map((stage) => `
@@ -1200,6 +1203,23 @@ function dsRecordLine(record) {
   ].filter((value) => value !== null && value !== undefined && value !== "").join(" ");
 }
 
+function tlsaRecordLine(record) {
+  if (!record || typeof record !== "object") return "";
+  return [
+    record.owner,
+    record.usage,
+    record.selector,
+    record.matchingType,
+    record.association
+  ].filter((value) => value !== null && value !== undefined && value !== "").join(" ");
+}
+
+function tlsaRecordsCell(row) {
+  const records = Array.isArray(row.tlsa_records) ? row.tlsa_records : [];
+  if (!records.length) return "";
+  return records.map(tlsaRecordLine).filter(Boolean).map((line) => `<code>${escapeHtml(line)}</code>`).join("<br>");
+}
+
 function resourceRecordBlock(label, lines) {
   if (!lines.length) return "";
   return lines.map((line) => `<div class="resource-record"><span>${escapeHtml(label)}</span>${line}</div>`).join("");
@@ -1262,6 +1282,9 @@ function staticDiagnosticStatus(row) {
     ["NS handoff bootstrap", row.ns_handoff_bootstrap_ip
       ? `${row.ns_handoff_bootstrap_field || "bootstrap"} ${row.ns_handoff_bootstrap_ip}`
       : ""],
+    ["TLSA owners", Array.isArray(row.tlsa_owners) ? row.tlsa_owners.join(", ") : ""],
+    ["TLSA observed", row.tlsa_observed_at],
+    ["TLSA last checked", row.tlsa_checked_at],
     ["Static TLSA cert notAfter", row.tlsa_cert_not_valid_after],
     ["Static TLSA cert expired", row.tlsa_cert_expired === true ? "yes" : ""]
   ].filter(([, value]) => value !== null && value !== undefined && value !== "");
@@ -1346,12 +1369,12 @@ function dnssecChainCheck(row) {
 
 function tlsaOwnerCheck(row) {
   if (hasTlsa(row)) {
-    return {label: "TLSA material", status: "pass", detail: "TLSA material is present in current HNS resource data."};
+    return {label: "TLSA evidence", status: "pass", detail: "An authoritative or authenticated HTTPS TLSA answer is stored."};
   }
   if (complianceStage(row) === "tlsa_gap") {
-    return {label: "TLSA material", status: "fail", detail: "DS is present but no TLSA material is present."};
+    return {label: "TLSA evidence", status: "warn", detail: "DS is present, but stored DNS evidence does not prove whether TLSA is currently published."};
   }
-  return {label: "TLSA material", status: "pending", detail: "No TLSA material is present yet."};
+  return {label: "TLSA evidence", status: "pending", detail: "No qualifying TLSA answer is stored yet."};
 }
 
 function dnsProbeCommands(row) {
@@ -1380,6 +1403,7 @@ function targetProbeCommands(name, server) {
     ...dnsTransportCommands(server, `${name}.`, "A"),
     ...dnsTransportCommands(server, `${name}.`, "AAAA"),
     ...dnsTransportCommands(server, `_443._tcp.${name}.`, "TLSA"),
+    ...dnsTransportCommands(server, `_443._tcp.www.${name}.`, "TLSA"),
     ...dnsTransportCommands(server, `${name}.`, "DNSKEY")
   ];
 }
@@ -1520,7 +1544,7 @@ function namesColumns(rowDetail) {
     {key: "synth4", label: "SYNTH4", width: "7%"},
     {key: "synth6", label: "SYNTH6", width: "7%"},
     {...compactColumns[6], width: "4%"},
-    {key: "tlsa_records", label: "TLSA", width: "6%"}
+    {key: "tlsa_records", label: "Observed TLSA", render: tlsaRecordsCell, width: "6%"}
   ];
 }
 
