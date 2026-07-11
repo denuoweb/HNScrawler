@@ -13,7 +13,6 @@ from hns_topology.dane import (
     TLSARecord,
     build_tlsa_records,
     certificate_metadata_from_der,
-    certificate_metadata_from_tlsa,
     parse_tlsa_zone_line,
     tlsa_record_matches_certificate,
 )
@@ -98,29 +97,13 @@ def test_tlsa_cli_prints_and_verifies_records(tmp_path, capsys):
     assert "[ok] _443._tcp.denuoweb.: TLSA 3 1 1" in verified
 
 
-def test_certificate_metadata_is_available_only_from_embedded_certificate_tlsa():
+def test_certificate_metadata_from_live_certificate():
     cert = make_certificate()
     cert_der = cert.public_bytes(serialization.Encoding.DER)
     metadata = certificate_metadata_from_der(cert_der)
-    embedded = TLSARecord(
-        owner="_443._tcp.denuoweb.",
-        ttl=300,
-        usage=3,
-        selector=0,
-        matching_type=0,
-        association=cert_der.hex(),
-    )
-    spki_hash = TLSARecord(
-        owner="_443._tcp.denuoweb.",
-        ttl=300,
-        usage=3,
-        selector=1,
-        matching_type=1,
-        association=metadata.spki_sha256,
-    )
 
-    assert certificate_metadata_from_tlsa(embedded) == metadata
-    assert certificate_metadata_from_tlsa(spki_hash) is None
+    assert len(metadata.sha256) == 64
+    assert len(metadata.spki_sha256) == 64
     assert metadata.not_valid_after.endswith("Z")
 
 

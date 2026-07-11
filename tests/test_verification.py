@@ -25,8 +25,7 @@ def test_direct_bootstrap_verification_plan_uses_first_strict_server():
     assert [command["transport"] for command in plan["commands"][:4]] == ["udp53", "tcp53", "udp53", "tcp53"]
     assert {command["rrtype"] for command in plan["commands"]} == {"A", "AAAA", "TLSA", "DNSKEY", "SVCB"}
     assert {command["qname"] for command in plan["commands"] if command["rrtype"] == "TLSA"} == {
-        "_443._tcp.secure.",
-        "_443._tcp.www.secure.",
+        "_443._tcp.secure."
     }
     assert "RFC 9461" in plan["commands"][0]["note"]
 
@@ -69,7 +68,7 @@ def test_indirect_handoff_verification_plan_requires_resolved_nameserver_ip():
     assert commands[4] == "dig @192.155.93.228 _dns.ns1.skyinclude. SVCB +norecurse +dnssec"
     assert commands[6] == "dig @<resolved-ns-ip> mercenary. A +norecurse +dnssec"
     assert plan["commands"][6]["requires"] == "resolved nameserver A/AAAA address"
-    assert len(plan["commands"]) == 16
+    assert len(plan["commands"]) == 14
 
 
 def test_verification_csv_rows_skips_names_without_probe_path():
@@ -81,7 +80,7 @@ def test_verification_csv_rows_skips_names_without_probe_path():
         ]
     )
 
-    assert len(rows) == 10
+    assert len(rows) == 8
     assert {row["name"] for row in rows} == {"direct"}
     assert rows[0]["command"] == "dig @203.0.113.10 direct. A +norecurse +dnssec"
     assert rows[0]["purpose"] == "target_zone_probe"

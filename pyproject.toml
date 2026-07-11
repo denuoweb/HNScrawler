@@ -23,12 +23,13 @@ dev = [
 
 [project.scripts]
 hns-topology = "hns_topology.cli:main"
+hns-live-directory = "hns_topology.live_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-hns_topology = ["site_assets/*"]
+hns_topology = ["site_assets/*", "live_site_assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -41,4 +42,3 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 ignore = ["E501"]
-

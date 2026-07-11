@@ -6,6 +6,8 @@ from hns_topology import cli
 from hns_topology.db import (
     RESOURCE_IP_INDEX_META_KEY,
     RESOURCE_IP_INDEX_VERSION,
+    TOPOLOGY_SCHEMA_CLEANUP_META_KEY,
+    TOPOLOGY_SCHEMA_CLEANUP_VERSION,
     connect,
     get_meta,
     init_db,
@@ -92,6 +94,24 @@ class FakeCatchUpClient:
             name = params[0]
             return {"name": name, "nameHash": f"hash-{name}", "state": "CLOSED"}
         raise AssertionError(f"unexpected method: {method}")
+
+
+def test_legacy_schema_cleanup_requires_explicit_confirmation(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+
+    refused = cli.cmd_cleanup_legacy_schema(
+        argparse.Namespace(db=str(db_path), confirm_large_rewrite=False)
+    )
+    cleaned = cli.cmd_cleanup_legacy_schema(
+        argparse.Namespace(db=str(db_path), confirm_large_rewrite=True)
+    )
+
+    with connect(db_path) as conn:
+        version = get_meta(conn, TOPOLOGY_SCHEMA_CLEANUP_META_KEY)
+
+    assert refused == 2
+    assert cleaned == 0
+    assert version == TOPOLOGY_SCHEMA_CLEANUP_VERSION
 
 
 def test_incremental_scan_refuses_empty_block_without_explicit_allow(tmp_path, monkeypatch):

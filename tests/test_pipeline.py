@@ -1,14 +1,9 @@
 import csv
 import json
 import stat
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.x509.oid import NameOID
 
 from hns_topology.compliance import COMPLIANCE_STAGES
 from hns_topology.db import (
@@ -143,7 +138,6 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     assert summary["strict_hns_ready"] == 3
     assert summary["tlsa_present_names"] == 0
     assert summary["tlsa_evidence_names"] == 0
-    assert summary["static_tlsa_certificate_expired_names"] == 0
     assert summary["needs_dane"] == 1
     assert summary["needs_fix"] == 2
     assert [item["stage"] for item in summary["compliance_stages"]] == list(COMPLIANCE_STAGES)
@@ -179,7 +173,6 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     assert explainers["needs_dane"]["count"] == 1
     assert "stored authoritative or authenticated TLSA" in explainers["needs_dane"]["definition"]
     assert explainers["needs_fix"]["count"] == 2
-    assert explainers["static_tlsa_certificate_expired_names"]["count"] == 0
     assert {item["ip"] for item in summary["top_resource_ips"]} >= {
         "198.51.100.2",
         "198.51.100.3",
@@ -279,70 +272,6 @@ def test_observed_tlsa_metric_does_not_require_ds_or_compliance_stage(tmp_path):
     assert summary["tlsa_present_names"] == 2
     assert summary["compliance_stage_counts"]["tlsa_present"] == 0
     assert summary["compliance_stage_counts"]["missing_glue"] == 1
-
-
-def test_static_embedded_tlsa_expired_certificate_exports_filter(tmp_path):
-    db_path = tmp_path / "topology.sqlite"
-    out = tmp_path / "public"
-    fixture_path = tmp_path / "static-tlsa-expired.json"
-    cert_der = make_certificate_der(days_valid=-1)
-    fixture_path.write_text(
-        json.dumps(
-            {
-                "chain": "fixture",
-                "height": 337200,
-                "tip_hash": "static-tlsa-expired",
-                "hsd_version": "fixture",
-                "names": [
-                    {
-                        "name": "staticcert",
-                        "nameHash": "hash-staticcert",
-                        "state": "CLOSED",
-                        "renewal": 337000,
-                        "resource": {
-                            "records": [
-                                {
-                                    "type": "TLSA",
-                                    "usage": 3,
-                                    "selector": 0,
-                                    "matchingType": 0,
-                                    "certificate": cert_der.hex(),
-                                }
-                            ]
-                        },
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    rules = ProviderRules.from_file("configs/provider_rules.json")
-    with connect(db_path) as conn:
-        bootstrap_from_fixture(conn, fixture_path=fixture_path, rules=rules)
-        generate_site(conn, db_path=db_path, out_dir=out)
-
-    summary = json.loads((out / "data/summary.json").read_text(encoding="utf-8"))
-    names_pages = json.loads((out / "data/names-pages.json").read_text(encoding="utf-8"))
-    collection = names_pages["collections"]["static_tlsa_certificate_expired_names"]
-    postings_page = json.loads(
-        (out / "data" / collection["path_template"].replace("{page}", "1")).read_text(
-            encoding="utf-8"
-        )
-    )
-    all_page = json.loads(
-        (
-            out
-            / "data"
-            / names_pages["collections"]["all"]["path_template"].replace("{page}", "1")
-        ).read_text(encoding="utf-8")
-    )
-
-    assert summary["static_tlsa_certificate_expired_names"] == 1
-    assert collection["row_count"] == 1
-    assert postings_page["rows"] == [0]
-    assert all_page["rows"][0]["name"] == "staticcert"
-    assert all_page["rows"][0]["tlsa_cert_expired"] is True
-    assert all_page["rows"][0]["tlsa_cert_not_valid_after"].endswith("Z")
 
 
 def test_generate_site_writes_requested_artifacts(tmp_path):
@@ -498,7 +427,6 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert names_page_names == sorted(names_page_names)
     assert "dane_rows" not in names_pages["collections"]
     assert "missing_glue" not in names_pages["collections"]
-    assert "static_tlsa_certificate_expired_names" not in names_pages["collections"]
     assert "provider_type:self_hosted" not in names_pages["collections"]
     assert names_pages["collections"]["ds_records"]["row_count"] == 1
     assert names_pages["collections"]["strict_hns_ready"]["row_count"] == 3
@@ -778,8 +706,6 @@ def test_compact_names_pages_include_generator_handoff_fields(tmp_path, monkeypa
         "first_glue6",
         "first_synth4",
         "first_synth6",
-        "tlsa_cert_not_valid_after",
-        "tlsa_cert_expired",
         "compliance_stage",
         "raw_size",
         "resource_version",
@@ -1333,20 +1259,3 @@ def test_reorg_rollback_restores_previous_compact_rows(tmp_path):
     assert json.loads(restored_resource["ns_names"]) == []
     assert json.loads(restored_resource["synth4"]) == ["203.0.113.10"]
     assert remaining_history == 0
-
-
-def make_certificate_der(*, days_valid: int) -> bytes:
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "staticcert")])
-    now = datetime.now(UTC)
-    cert = (
-        x509.CertificateBuilder()
-        .subject_name(subject)
-        .issuer_name(subject)
-        .public_key(key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(now - timedelta(days=2))
-        .not_valid_after(now + timedelta(days=days_valid))
-        .sign(key, hashes.SHA256())
-    )
-    return cert.public_bytes(serialization.Encoding.DER)

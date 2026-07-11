@@ -70,9 +70,6 @@ CREATE TABLE IF NOT EXISTS resource_summary (
   synth4 TEXT,
   synth6 TEXT,
   ds_records TEXT,
-  tlsa_records TEXT,
-  tlsa_cert_not_valid_after TEXT,
-  tlsa_cert_expired INTEGER DEFAULT 0,
   has_ds INTEGER DEFAULT 0,
   has_ns INTEGER DEFAULT 0,
   has_glue INTEGER DEFAULT 0,
@@ -169,9 +166,6 @@ RESOURCE_COLUMNS = (
     "synth4",
     "synth6",
     "ds_records",
-    "tlsa_records",
-    "tlsa_cert_not_valid_after",
-    "tlsa_cert_expired",
     "has_ds",
     "has_ns",
     "has_glue",
@@ -258,9 +252,6 @@ SCHEMA_COLUMN_MIGRATIONS = {
         "synth4": "TEXT",
         "synth6": "TEXT",
         "ds_records": "TEXT",
-        "tlsa_records": "TEXT",
-        "tlsa_cert_not_valid_after": "TEXT",
-        "tlsa_cert_expired": "INTEGER DEFAULT 0",
         "has_ds": "INTEGER DEFAULT 0",
         "has_ns": "INTEGER DEFAULT 0",
         "has_glue": "INTEGER DEFAULT 0",
@@ -313,19 +304,25 @@ JSON_ARRAY_DEFAULT_COLUMNS = {
         "synth4",
         "synth6",
         "ds_records",
-        "tlsa_records",
     ),
     "dns_evidence": ("answer_json", "authority_json", "additional_json"),
 }
 
-OBSOLETE_TABLES = (
+TOPOLOGY_SCHEMA_CLEANUP_META_KEY = "topology_schema_cleanup_version"
+TOPOLOGY_SCHEMA_CLEANUP_VERSION = "1"
+LEGACY_TABLES = (
     "live_status",
     "host_candidates",
     "host_live_status",
     "browser_evidence",
 )
 
-OBSOLETE_COLUMNS = {
+LEGACY_COLUMNS = {
+    "resource_summary": (
+        "tlsa_records",
+        "tlsa_cert_not_valid_after",
+        "tlsa_cert_expired",
+    ),
     "changed_name_rollbacks": ("previous_live_status",),
 }
 
@@ -347,7 +344,6 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
     _migrate_schema(conn)
-    _drop_obsolete_schema(conn)
     conn.executescript(CORE_INDEX_SQL)
     _ensure_tlsa_evidence_summary_current(conn)
     conn.commit()
@@ -821,14 +817,18 @@ def _ensure_tlsa_evidence_summary_current(conn: sqlite3.Connection) -> None:
     refresh_tlsa_evidence_summary(conn)
 
 
-def _drop_obsolete_schema(conn: sqlite3.Connection) -> None:
-    for table in OBSOLETE_TABLES:
+def clean_legacy_schema(conn: sqlite3.Connection) -> bool:
+    if get_meta(conn, TOPOLOGY_SCHEMA_CLEANUP_META_KEY) == TOPOLOGY_SCHEMA_CLEANUP_VERSION:
+        return False
+    for table in LEGACY_TABLES:
         conn.execute(f"DROP TABLE IF EXISTS {table}")
-    for table, columns in OBSOLETE_COLUMNS.items():
+    for table, columns in LEGACY_COLUMNS.items():
         existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
         for column in columns:
             if column in existing:
                 conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+    set_meta(conn, TOPOLOGY_SCHEMA_CLEANUP_META_KEY, TOPOLOGY_SCHEMA_CLEANUP_VERSION)
+    return True
 
 
 def _dns_evidence_params(evidence: DnsEvidence) -> tuple[Any, ...]:
@@ -883,9 +883,6 @@ def _resource_params(summary: ResourceSummary) -> tuple[Any, ...]:
         dumps_json(summary.synth4),
         dumps_json(summary.synth6),
         dumps_json(summary.ds_records),
-        dumps_json(summary.tlsa_records),
-        summary.tlsa_cert_not_valid_after,
-        int(summary.tlsa_cert_expired),
         int(summary.has_ds),
         int(summary.has_ns),
         int(summary.has_glue),

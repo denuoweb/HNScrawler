@@ -6,6 +6,9 @@ def test_nightly_scripts_parse_as_bash():
     for script in [
         Path("scripts/full-nightly-job.sh"),
         Path("scripts/gcloud-run-indexer-pipeline.sh"),
+        Path("scripts/run-live-directory.sh"),
+        Path("scripts/setup-live-directory-service.sh"),
+        Path("scripts/gcloud-deploy-live-directory.sh"),
     ]:
         subprocess.run(["bash", "-n", str(script)], check=True)
 
@@ -31,3 +34,41 @@ def test_exporter_has_no_standalone_dane_page_builders():
         "DANE_FILTERS =",
     ]:
         assert removed_builder not in exporter
+
+
+def test_live_directory_is_not_called_by_existing_build_or_publish_scripts():
+    existing_pipeline_scripts = [
+        "scripts/full-nightly-job.sh",
+        "scripts/generate-site.sh",
+        "scripts/gcloud-run-indexer-pipeline.sh",
+        "scripts/publish-indexer-site.sh",
+        "scripts/publish-site.sh",
+    ]
+
+    for path in existing_pipeline_scripts:
+        script = Path(path).read_text(encoding="utf-8")
+        assert "run-live-directory" not in script
+        assert "hns-live-directory" not in script
+
+
+def test_large_legacy_schema_cleanup_is_not_called_by_existing_pipelines():
+    for path in (
+        "scripts/full-nightly-job.sh",
+        "scripts/generate-site.sh",
+        "scripts/gcloud-run-indexer-pipeline.sh",
+        "scripts/publish-indexer-site.sh",
+        "scripts/publish-site.sh",
+    ):
+        script = Path(path).read_text(encoding="utf-8")
+        assert "cleanup-legacy-schema" not in script
+
+
+def test_live_directory_runner_uses_web_vm_snapshot_and_separate_state():
+    runner = Path("scripts/run-live-directory.sh").read_text(encoding="utf-8")
+    setup = Path("scripts/setup-live-directory-service.sh").read_text(encoding="utf-8")
+
+    assert 'TOPOLOGY_DB="${TOPOLOGY_DB:-/mnt/hns-topology/topology.sqlite}"' in runner
+    assert 'LIVE_DB="${LIVE_DB:-$LIVE_ROOT/data/live.sqlite}"' in runner
+    assert '.venv/bin/hns-live-directory "${args[@]}"' in runner
+    assert "OnUnitActiveSec=1d" in setup
+    assert "hns-live-directory.timer" in setup

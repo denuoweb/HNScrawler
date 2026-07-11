@@ -12,6 +12,7 @@ PAGES = {
     "names.html": ("names", "HNS Root Diagnostics"),
 }
 SITE_BASE_PATH = "/hns-topology/"
+LIVE_SITE_PATH = "/hns-live/"
 
 
 def generate_site(
@@ -93,10 +94,11 @@ def _copy_assets(out: Path) -> None:
 
 def _html(*, page: str, title: str) -> str:
     nav = "\n".join(
-        f'<a href="{SITE_BASE_PATH}{filename}" data-nav="{name}">{label}</a>'
-        for filename, (name, label) in [
-            ("index.html", ("overview", "Domain Directory")),
-            ("names.html", ("names", "Root Diagnostics")),
+        f'<a href="{href}" data-nav="{name}">{label}</a>'
+        for href, name, label in [
+            (f"{SITE_BASE_PATH}index.html", "overview", "Domain Directory"),
+            (LIVE_SITE_PATH, "websites", "Websites Online"),
+            (f"{SITE_BASE_PATH}names.html", "names", "Root Diagnostics"),
         ]
     )
     return f"""<!doctype html>

@@ -1,6 +1,8 @@
 # Data Model
 
-HNScrawler stores root-level Handshake topology and imported DNS/DANE readiness evidence. The database no longer stores live website checks, host candidates, host live status, or browser/device observations.
+The topology database stores root-level Handshake topology and imported DNS/DANE readiness evidence. It does not store live website checks, host candidates, host live status, or browser/device observations.
+
+The standalone live-directory database is deliberately separate. It stores copied root bootstrap inputs, evidence-backed host candidates, current HTTP/HTTPS/DANE probe status, retry scheduling, and bounded run metadata. See `docs/LIVE_DIRECTORY.md`.
 
 ## Core Tables
 
@@ -35,7 +37,15 @@ Compact parsed HNS resource state per name:
 - flags: `has_ds`, `has_ns`, `has_glue`, `has_synth`, `has_txt`
 - `raw_size`, `resource_version`, `resource_hash`
 
-Legacy `tlsa_records` and static certificate-expiry columns remain in the schema for database compatibility, but HSD Resource does not encode TLSA and those columns are not the source of the public TLSA presence metric.
+TLSA is not represented here because Handshake Resource data cannot contain delegated-zone TLSA records.
+
+New databases are created directly from the reduced schema. Existing large databases keep harmless legacy columns until the explicit maintenance command removes them:
+
+```bash
+hns-topology cleanup-legacy-schema --db data/topology.sqlite --confirm-large-rewrite
+```
+
+The command records `topology_schema_cleanup_version` and is intentionally not called by normal initialization, indexing, generation, or publish scripts because SQLite may rewrite the large `resource_summary` table while dropping columns.
 
 ### `resource_ip`
 

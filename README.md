@@ -2,7 +2,7 @@
 
 Static topology and DANE-readiness snapshots for the current Handshake namespace.
 
-HNScrawler builds a compact SQLite database from HSD-derived root state, classifies current on-chain resource summaries, combines them with imported delegated-DNS evidence, derives compliance stages, and publishes a paginated static report. It does not run website liveness checks, device/browser checks, or host-candidate discovery.
+HNScrawler builds a compact SQLite database from HSD-derived root state, classifies current on-chain resource summaries, combines them with imported delegated-DNS evidence, derives compliance stages, and publishes a paginated static report. The topology build does not run website liveness checks. A separate `hns-live-directory` service can consume the published snapshot on the web VM without extending the HSD build or deploy cycle.
 
 The current analysis answers:
 
@@ -73,6 +73,10 @@ hns-topology import-dns-evidence --db data/topology.sqlite --file dns-evidence.j
 Imported DNS observations are exported under `data/dns-evidence/<name>.json` and linked from matching name rows.
 
 TLSA is not part of Handshake's on-chain Resource format. HTTPS TLSA presence is therefore derived only from the latest stored observation per query/server/source identity. A qualifying record must be an exact `_443._tcp.<host>` answer below the indexed root and carry authoritative (`AA`) or authenticated-data (`AD`) evidence. The headline is labeled **TLSA observed** because imports are not an exhaustive live scan; `tlsa_evidence_names` in `summary.json` reports the number of roots with stored TLSA probes.
+
+## Live Website Directory
+
+The independent live scanner has its own database, CLI, static output, runner, and web-VM timer. It checks apex hosts by default, discovers subdomains only from DNS evidence, and separates authenticated HTTPS websites from HTTP-only websites. See `docs/LIVE_DIRECTORY.md`.
 
 ## Published Artifacts
 

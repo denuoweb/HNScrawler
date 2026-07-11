@@ -15,6 +15,7 @@ from .dane import (
     tlsa_record_matches_certificate,
 )
 from .db import (
+    clean_legacy_schema,
     connect,
     get_meta,
     init_db,
@@ -62,6 +63,14 @@ def build_parser() -> argparse.ArgumentParser:
     init = sub.add_parser("init-db", help="Create or migrate the SQLite schema.")
     init.add_argument("--db", required=True)
     init.set_defaults(func=cmd_init_db)
+
+    cleanup = sub.add_parser(
+        "cleanup-legacy-schema",
+        help="Explicitly remove obsolete topology columns and former live tables.",
+    )
+    cleanup.add_argument("--db", required=True)
+    cleanup.add_argument("--confirm-large-rewrite", action="store_true")
+    cleanup.set_defaults(func=cmd_cleanup_legacy_schema)
 
     fixture = sub.add_parser("bootstrap-fixture", help="Build an index from fixture JSON.")
     fixture.add_argument("--fixture", required=True)
@@ -214,6 +223,22 @@ def cmd_init_db(args: argparse.Namespace) -> int:
     with connect(args.db) as conn:
         init_db(conn)
     print(f"initialized {args.db}")
+    return 0
+
+
+def cmd_cleanup_legacy_schema(args: argparse.Namespace) -> int:
+    if not args.confirm_large_rewrite:
+        print(
+            "refusing legacy schema cleanup without --confirm-large-rewrite",
+            file=sys.stderr,
+        )
+        return 2
+    with connect(args.db) as conn:
+        init_db(conn)
+        with conn:
+            changed = clean_legacy_schema(conn)
+    status = "cleaned" if changed else "already current"
+    print(f"legacy schema {status}: {args.db}")
     return 0
 
 

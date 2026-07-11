@@ -261,7 +261,6 @@ def index_compact_name_batch(
         synth4 = _string_list(row.get("synth4"))
         synth6 = _string_list(row.get("synth6"))
         ds_records = _dict_list(row.get("ds_records"))
-        tlsa_records = _dict_list(row.get("tlsa_records"))
         record_types = _record_type_list(row.get("record_types"))
         has_ds = bool(row.get("has_ds")) or bool(ds_records)
         has_ns = bool(ns_names)
@@ -313,9 +312,6 @@ def index_compact_name_batch(
                 _json_string_list(synth4),
                 _json_string_list(synth6),
                 _json_list(ds_records, sort_keys=True),
-                _json_list(tlsa_records, sort_keys=True),
-                row.get("tlsa_cert_not_valid_after"),
-                int(_bool_flag(row.get("tlsa_cert_expired"))),
                 int(has_ds),
                 int(has_ns),
                 int(has_glue),
@@ -443,8 +439,7 @@ def reclassify_existing_names(
         SELECT
           n.name, n.expired, n.record_types, n.onchain_class, n.provider_guess,
           rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6,
-          rs.ds_records, rs.tlsa_records,
-          rs.tlsa_cert_not_valid_after, rs.tlsa_cert_expired,
+          rs.ds_records,
           rs.has_ds, rs.has_txt, rs.raw_size, rs.resource_version, rs.resource_hash
         FROM names n
         JOIN resource_summary rs ON rs.name = n.name
@@ -629,12 +624,6 @@ def _summary_from_compact_row(name: str, row: dict[str, Any]) -> ResourceSummary
         synth4=_string_list(row.get("synth4")),
         synth6=_string_list(row.get("synth6")),
         ds_records=sorted(ds_records, key=lambda item: json.dumps(item, sort_keys=True)),
-        tlsa_records=sorted(
-            _dict_list(row.get("tlsa_records")),
-            key=lambda item: json.dumps(item, sort_keys=True),
-        ),
-        tlsa_cert_not_valid_after=row.get("tlsa_cert_not_valid_after"),
-        tlsa_cert_expired=_bool_flag(row.get("tlsa_cert_expired")),
         has_ds=bool(row.get("has_ds")) or bool(ds_records),
         has_txt=bool(row.get("has_txt")),
         raw_size=int(row.get("raw_size") or 0),
@@ -655,9 +644,6 @@ def _summary_from_stored_row(name: str, row: Any) -> ResourceSummary:
             "synth4": loads_json_list(row["synth4"]),
             "synth6": loads_json_list(row["synth6"]),
             "ds_records": loads_json_list(row["ds_records"]),
-            "tlsa_records": loads_json_list(row["tlsa_records"]),
-            "tlsa_cert_not_valid_after": row["tlsa_cert_not_valid_after"],
-            "tlsa_cert_expired": row["tlsa_cert_expired"],
             "record_types": loads_json_list(row["record_types"]),
             "has_ds": row["has_ds"],
             "has_txt": row["has_txt"],

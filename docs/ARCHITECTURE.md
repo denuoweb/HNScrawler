@@ -2,7 +2,7 @@
 
 HNScrawler is a static topology indexer for Handshake names. It indexes HSD-derived root state, classifies compact resource summaries, combines them with imported delegated-DNS observations, derives DANE-readiness queues, and publishes a static site.
 
-It intentionally does not perform website liveness checks, host discovery, device/browser checks, or active HTTPS/DANE verification.
+The topology pipeline intentionally does not perform website liveness checks, host discovery, device/browser checks, or active HTTPS/DANE verification. The standalone live-directory process runs separately on the web VM and consumes a published topology snapshot read-only.
 
 ## Pipeline
 
@@ -92,3 +92,7 @@ Optional downloads:
 - absence of private key artifacts
 
 Production wrappers run validation before archive or publish.
+
+## Standalone Live Directory
+
+`hns-live-directory` owns a separate SQLite database and static tree under `/mnt/hns-topology/live-directory` on `denuoweb-vm`. It is scheduled independently and is never called by the indexer pipeline. Its candidate, DNS, HTTP/HTTPS, DANE, retry, and export model is documented in `docs/LIVE_DIRECTORY.md`.

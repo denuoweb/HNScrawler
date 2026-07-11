@@ -153,7 +153,6 @@ function filterName(filter) {
     ds_records: "DS records",
     dnssec_candidates: "DNSSEC candidates",
     tlsa_present_names: "TLSA observed",
-    static_tlsa_certificate_expired_names: "legacy embedded TLSA certificate expired",
     strict_hns_ready: "strict HNS ready",
     likely_websites: "likely host roots",
     needs_dane: "TLSA unobserved",
@@ -1377,7 +1376,6 @@ function namesFilterControls({summary, providers, active}) {
     {value: "ds_records", label: "DS records", countKey: "ds_records"},
     {value: "dnssec_candidates", label: "DNSSEC candidates", countKey: "dnssec_candidates"},
     {value: "tlsa_present_names", label: "TLSA observed", countKey: "tlsa_present_names"},
-    {value: "static_tlsa_certificate_expired_names", label: "Legacy embedded TLSA certificate expired", countKey: "static_tlsa_certificate_expired_names"},
     {value: "needs_dane", label: "TLSA unobserved", countKey: "needs_dane"}
   ];
   const clearLink = active
@@ -1638,9 +1636,7 @@ function staticDiagnosticStatus(row) {
       : ""],
     ["TLSA owners", Array.isArray(row.tlsa_owners) ? row.tlsa_owners.join(", ") : ""],
     ["TLSA observed", row.tlsa_observed_at],
-    ["TLSA last checked", row.tlsa_checked_at],
-    ["Static TLSA cert notAfter", row.tlsa_cert_not_valid_after],
-    ["Static TLSA cert expired", row.tlsa_cert_expired === true ? "yes" : ""]
+    ["TLSA last checked", row.tlsa_checked_at]
   ].filter(([, value]) => value !== null && value !== undefined && value !== "");
   return `<dl class="diagnostic-kv">${fields.map(([key, value]) => `
     <div><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(prettyToken(value))}</dd></div>`).join("")}</dl>`;

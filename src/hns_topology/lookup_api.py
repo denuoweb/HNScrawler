@@ -81,7 +81,6 @@ def lookup_name(db_path: str | Path, name: str) -> dict:
                   COALESCE(tes.tlsa_owners, '[]') AS tlsa_owners,
                   COALESCE(tes.has_tlsa, 0) AS has_tlsa,
                   tes.observed_at AS tlsa_observed_at, tes.checked_at AS tlsa_checked_at,
-                  rs.tlsa_cert_not_valid_after, COALESCE(rs.tlsa_cert_expired, 0) AS tlsa_cert_expired,
                   rs.has_ds,
                   {_ns_handoff_select_columns()},
                   rs.raw_size, rs.resource_version, rs.resource_hash, n.last_seen_height, n.updated_at,
@@ -130,8 +129,6 @@ def _lookup_row(row: sqlite3.Row) -> dict:
     parsed = parse_json_columns(dict(row), JSON_COLUMNS)
     if "has_tlsa" in parsed:
         parsed["has_tlsa"] = bool(parsed["has_tlsa"])
-    if "tlsa_cert_expired" in parsed:
-        parsed["tlsa_cert_expired"] = bool(parsed["tlsa_cert_expired"])
     return parsed
 
 

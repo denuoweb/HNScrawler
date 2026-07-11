@@ -54,15 +54,6 @@ def certificate_metadata_from_der(cert_der: bytes) -> CertificateMetadata:
     )
 
 
-def certificate_metadata_from_tlsa(record: TLSARecord) -> CertificateMetadata | None:
-    if record.selector != 0 or record.matching_type != 0:
-        return None
-    try:
-        return certificate_metadata_from_der(bytes.fromhex(record.association))
-    except ValueError:
-        return None
-
-
 def build_tlsa_records(
     cert: x509.Certificate,
     *,

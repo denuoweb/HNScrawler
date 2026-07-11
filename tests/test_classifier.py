@@ -1,10 +1,3 @@
-from datetime import UTC, datetime, timedelta
-
-from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.x509.oid import NameOID
-
 from hns_topology.classifier import classify_onchain, summarize_resource
 from hns_topology.infra import resource_ip_role
 from hns_topology.provider_rules import ProviderRules
@@ -74,55 +67,6 @@ def test_hnsdns_txt_is_plain_txt_not_authoritative_doh_discovery():
     assert summary.record_types == ["GLUE4", "NS", "TXT"]
 
 
-def test_summarizes_static_embedded_tlsa_certificate_expiration():
-    cert = make_certificate(days_valid=-1)
-    cert_der = cert.public_bytes(serialization.Encoding.DER)
-
-    summary = summarize_resource(
-        "expiredcert",
-        {
-            "records": [
-                {
-                    "type": "TLSA",
-                    "usage": 3,
-                    "selector": 0,
-                    "matchingType": 0,
-                    "certificate": cert_der.hex(),
-                }
-            ]
-        },
-    )
-
-    assert summary.record_types == ["TLSA"]
-    assert summary.tlsa_cert_expired is True
-    assert summary.tlsa_cert_not_valid_after.endswith("Z")
-    assert summary.tlsa_records[0]["certificateExpired"] is True
-    assert summary.tlsa_records[0]["certificateNotValidAfter"] == summary.tlsa_cert_not_valid_after
-
-
-def test_spki_hash_tlsa_does_not_infer_certificate_expiration():
-    summary = summarize_resource(
-        "spki",
-        {
-            "records": [
-                {
-                    "type": "TLSA",
-                    "usage": 3,
-                    "selector": 1,
-                    "matchingType": 1,
-                    "certificate": "aa" * 32,
-                }
-            ]
-        },
-    )
-
-    assert summary.record_types == ["TLSA"]
-    assert summary.tlsa_records[0]["selector"] == 1
-    assert "certificateNotValidAfter" not in summary.tlsa_records[0]
-    assert summary.tlsa_cert_not_valid_after is None
-    assert summary.tlsa_cert_expired is False
-
-
 def test_classifies_malformed_resource():
     summary = summarize_resource("bad", {"records": "wrong"})
 
@@ -176,7 +120,6 @@ def test_resource_ip_role_uses_source_backed_glue_labels():
         == "BNS collision study identified glue cluster"
     )
     assert resource_ip_role("203.0.113.10")["role"] == "unknown"
-
 
 def test_provider_rules_mark_known_public_resolver_ips():
     rules = ProviderRules.from_file("configs/provider_rules.json")
@@ -239,19 +182,3 @@ def test_provider_rules_match_private_direct_ip_clusters():
     summary = summarize_resource("private", {"records": [{"type": "SYNTH4", "address": "10.8.0.1"}]})
 
     assert rules.match("private", summary) == "direct-ip/private"
-
-
-def make_certificate(*, days_valid: int) -> x509.Certificate:
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "expiredcert")])
-    now = datetime.now(UTC)
-    return (
-        x509.CertificateBuilder()
-        .subject_name(subject)
-        .issuer_name(subject)
-        .public_key(key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(now - timedelta(days=2))
-        .not_valid_after(now + timedelta(days=days_valid))
-        .sign(key, hashes.SHA256())
-    )

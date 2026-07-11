@@ -164,6 +164,25 @@ scripts/gcloud-stop-indexer.sh
 
 Incremental mode reads `last_indexed_height` from the compact DB, scans detailed HSD blocks through the current tip, records empty blocks for reorg safety, and indexes changed names. It refuses to scan more than `INCREMENTAL_MAX_BLOCKS` blocks, default `300`, so a stale database fails closed instead of doing an unexpectedly large block walk. Increase `INCREMENTAL_MAX_BLOCKS` deliberately for a known catch-up window, or run a fresh `PIPELINE_MODE=extract-jsonl` bootstrap when the gap is large.
 
+## Independent Live Website Directory
+
+Website probing is not part of the nightly/weekly update above. `denuoweb-vm` reads the topology snapshot already published at `/mnt/hns-topology/topology.sqlite` and maintains a separate `/mnt/hns-topology/live-directory` database and public tree.
+
+```bash
+DRY_RUN=1 scripts/gcloud-deploy-live-directory.sh
+CONFIRM_LIVE_DIRECTORY_DEPLOY=1 scripts/gcloud-deploy-live-directory.sh
+```
+
+This installs `hns-live-directory.service` and `hns-live-directory.timer` without modifying `hns-topology-production.timer`, the indexer VM pipeline, or either topology publish script. Full behavior and paths are in `docs/LIVE_DIRECTORY.md`.
+
+The obsolete embedded-TLSA columns are absent from newly built databases. Physical removal from an existing production database is a separate maintenance operation because SQLite may rewrite the large resource table; no weekly script runs it automatically:
+
+```bash
+hns-topology cleanup-legacy-schema --db /mnt/hnscrawler/data/topology.sqlite --confirm-large-rewrite
+```
+
+Run that command only in a planned maintenance window with a current database snapshot and enough free disk for SQLite's rewrite behavior.
+
 For a limited HSD RPC smoke report, use `PIPELINE_MODE=bootstrap BOOTSTRAP_LIMIT=100 scripts/gcloud-run-indexer-pipeline.sh` after HSD is synced. For the initial full report, use `PIPELINE_MODE=extract-jsonl EXPORT_FORMAT=compact JSONL_PATH=/mnt/hnscrawler/data/extracted_names.jsonl scripts/gcloud-run-indexer-pipeline.sh`. If a JSONL file has already been produced, use `PIPELINE_MODE=jsonl JSONL_PATH=/mnt/hnscrawler/data/extracted_names.jsonl scripts/gcloud-run-indexer-pipeline.sh`. If you intentionally accept the risk of HSD's unpaginated `getnames` for a full RPC bootstrap, set `ALLOW_UNPAGINATED_GETNAMES=1 PIPELINE_MODE=bootstrap`.
 
 `scripts/gcloud-run-indexer-pipeline.sh` runs `scripts/verify-release.sh` after static site generation. It defaults to a remote systemd runner so site generation and verification are not killed if the local SSH/IAP tunnel or caller exits. Set `INDEXER_PIPELINE_WAIT=0` only for an intentionally detached run where the VM must be left running; `scripts/gcloud-production-cycle.sh` refuses to combine detached pipeline mode with `INDEXER_FINAL_ACTION=stop` because that would kill the VM-owned work immediately after launch. Set `RUN_PUBLISH_FROM_INDEXER=1` to publish from inside the same VM-owned unit after verification. Set `INDEXER_PIPELINE_RUNNER=ssh` only for emergency debugging of the old foreground behavior. The GCE pipeline defaults `MIN_INDEXED_HEIGHT` to `HSD_MIN_BLOCK_HEIGHT`, so a structurally valid but shallow snapshot cannot pass production release validation or publish validation.

@@ -116,7 +116,6 @@ def _target_probe_commands(name: str, server: str, *, requires: str = "") -> lis
         (f"{name}.", "A", "Origin A address"),
         (f"{name}.", "AAAA", "Origin AAAA address"),
         (f"_443._tcp.{name}.", "TLSA", "HTTPS TLSA"),
-        (f"_443._tcp.www.{name}.", "TLSA", "HTTPS www TLSA"),
         (f"{name}.", "DNSKEY", "DNSKEY"),
     )
     return [

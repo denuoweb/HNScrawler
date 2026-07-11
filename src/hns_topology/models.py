@@ -27,9 +27,6 @@ class ResourceSummary:
     synth4: list[str]
     synth6: list[str]
     ds_records: list[dict[str, Any]]
-    tlsa_records: list[dict[str, Any]]
-    tlsa_cert_not_valid_after: str | None
-    tlsa_cert_expired: bool
     has_ds: bool
     has_txt: bool
     raw_size: int

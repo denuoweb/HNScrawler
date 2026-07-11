@@ -1,6 +1,6 @@
 import sqlite3
 
-from hns_topology.db import connect, init_db, recompute_provider_summary
+from hns_topology.db import clean_legacy_schema, connect, init_db, recompute_provider_summary
 
 
 def test_init_db_migrates_previous_schema_and_backfills_resource_flags(tmp_path):
@@ -30,6 +30,9 @@ def test_init_db_migrates_previous_schema_and_backfills_resource_flags(tmp_path)
               synth4 TEXT,
               synth6 TEXT,
               ds_records TEXT,
+              tlsa_records TEXT,
+              tlsa_cert_not_valid_after TEXT,
+              tlsa_cert_expired INTEGER DEFAULT 0,
               raw_size INTEGER,
               resource_hash TEXT
             );
@@ -79,11 +82,12 @@ def test_init_db_migrates_previous_schema_and_backfills_resource_flags(tmp_path)
         conn.execute(
             """
             INSERT INTO resource_summary(
-              name, ns_names, glue4, glue6, synth4, synth6, ds_records, raw_size, resource_hash
+              name, ns_names, glue4, glue6, synth4, synth6, ds_records, tlsa_records,
+              tlsa_cert_not_valid_after, tlsa_cert_expired, raw_size, resource_hash
             )
             VALUES(
               'previous', '["ns1.previous"]', '["203.0.113.7"]', '[]', '[]', '[]',
-              '[{"digest": "abc"}]', 123, 'resource-hash'
+              '[{"digest": "abc"}]', '[]', NULL, 0, 123, 'resource-hash'
             )
             """
         )
@@ -107,6 +111,12 @@ def test_init_db_migrates_previous_schema_and_backfills_resource_flags(tmp_path)
 
     with connect(db_path) as conn:
         init_db(conn)
+        legacy_columns_before = {
+            row["name"] for row in conn.execute("PRAGMA table_info(resource_summary)")
+        }
+        assert "tlsa_records" in legacy_columns_before
+        assert clean_legacy_schema(conn) is True
+        assert clean_legacy_schema(conn) is False
         tables = {
             table: {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
             for table in (
@@ -125,7 +135,7 @@ def test_init_db_migrates_previous_schema_and_backfills_resource_flags(tmp_path)
         flags = conn.execute(
             """
             SELECT has_ds, has_ns, has_glue, has_synth, has_txt,
-                   tlsa_records, tlsa_cert_not_valid_after, tlsa_cert_expired, resource_version
+                   resource_version
             FROM resource_summary
             WHERE name = 'previous'
             """
@@ -158,11 +168,11 @@ def test_init_db_migrates_previous_schema_and_backfills_resource_flags(tmp_path)
         "has_glue",
         "has_synth",
         "has_txt",
-        "tlsa_records",
-        "tlsa_cert_not_valid_after",
-        "tlsa_cert_expired",
         "resource_version",
     } <= tables["resource_summary"]
+    assert {"tlsa_records", "tlsa_cert_not_valid_after", "tlsa_cert_expired"}.isdisjoint(
+        tables["resource_summary"]
+    )
     assert {"provider_type", "ns_pattern", "ip_pattern"} <= tables["provider_summary"]
     assert {"server", "source", "source_id", "authority_json", "additional_json"} <= tables[
         "dns_evidence"
@@ -180,9 +190,6 @@ def test_init_db_migrates_previous_schema_and_backfills_resource_flags(tmp_path)
         "has_glue": 1,
         "has_synth": 0,
         "has_txt": 1,
-        "tlsa_records": "[]",
-        "tlsa_cert_not_valid_after": None,
-        "tlsa_cert_expired": 0,
         "resource_version": None,
     }
     assert dict(provider) == {

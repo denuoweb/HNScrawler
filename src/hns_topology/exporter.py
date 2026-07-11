@@ -59,8 +59,6 @@ ACTIONABLE_PROVIDER_SQL = (
     f"COALESCE(ps.provider_type, 'unknown') NOT IN ({NON_ACTIONABLE_PROVIDER_TYPES_SQL})"
 )
 ACTIONABLE_EXPORT_SQL = f"provider_type NOT IN ({NON_ACTIONABLE_PROVIDER_TYPES_SQL})"
-STATIC_TLSA_CERTIFICATE_EXPIRED_SQL = "COALESCE(rs.tlsa_cert_expired, 0) != 0"
-STATIC_TLSA_CERTIFICATE_EXPIRED_EXPORT_SQL = "tlsa_cert_expired != 0"
 
 
 class NextActionSpec(NamedTuple):
@@ -84,7 +82,6 @@ NAME_FILTERS = {
     "ds_records": "rs.has_ds = 1",
     "dnssec_candidates": "rs.has_ds = 1 AND rs.has_ns = 1",
     "tlsa_present_names": "COALESCE(tes.has_tlsa, 0) = 1",
-    "static_tlsa_certificate_expired_names": STATIC_TLSA_CERTIFICATE_EXPIRED_SQL,
     "strict_hns_ready": (
         f"{ACTIONABLE_PROVIDER_SQL} AND "
         "(rs.has_synth = 1 OR (rs.has_ns = 1 AND rs.has_glue = 1))"
@@ -163,12 +160,6 @@ OVERVIEW_EXPLAINER_SPECS = (
         definition="Stored delegated-DNS evidence contains an authoritative or authenticated HTTPS TLSA answer. This is presence evidence, not certificate-match proof.",
     ),
     OverviewExplainerSpec(
-        key="static_tlsa_certificate_expired_names",
-        label="Legacy embedded TLSA certificate expired",
-        count_key="static_tlsa_certificate_expired_names",
-        definition="Legacy compatibility diagnostic for synthetic/imported Resource payloads. HSD Resource cannot encode TLSA, so production delegated TLSA certificate validity requires separate HTTPS evidence.",
-    ),
-    OverviewExplainerSpec(
         key="likely_websites",
         label="Likely host roots",
         count_key="likely_websites",
@@ -210,7 +201,6 @@ EXPORTED_NAME_FILTERS = (
     "ds_records",
     "dnssec_candidates",
     "tlsa_present_names",
-    "static_tlsa_certificate_expired_names",
     "needs_dane",
     "missing_glue_only",
 )
@@ -222,7 +212,6 @@ POSTING_NAME_FILTERS = {
     "ds_records": "has_ds = 1",
     "dnssec_candidates": "has_ds = 1 AND has_ns = 1",
     "tlsa_present_names": "has_tlsa = 1",
-    "static_tlsa_certificate_expired_names": STATIC_TLSA_CERTIFICATE_EXPIRED_EXPORT_SQL,
     "strict_hns_ready": (
         f"{ACTIONABLE_EXPORT_SQL} AND "
         "(has_synth = 1 OR (has_ns = 1 AND has_glue = 1))"
@@ -346,9 +335,6 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
                     AND tes.name IS NOT NULL
                    THEN 1 ELSE 0 END) AS tlsa_evidence_names,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0
-                    AND COALESCE(rs.tlsa_cert_expired, 0) != 0
-                   THEN 1 ELSE 0 END) AS static_tlsa_certificate_expired_names,
-          SUM(CASE WHEN COALESCE(n.expired, 0) = 0
                     AND {ACTIONABLE_PROVIDER_SQL}
                     AND (
                       COALESCE(rs.has_synth, 0) = 1
@@ -411,9 +397,6 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
         "dnssec_candidates": _row_int(resource_counts, "dnssec_candidates"),
         "tlsa_present_names": _row_int(resource_counts, "tlsa_present_names"),
         "tlsa_evidence_names": _row_int(resource_counts, "tlsa_evidence_names"),
-        "static_tlsa_certificate_expired_names": _row_int(
-            resource_counts, "static_tlsa_certificate_expired_names"
-        ),
         "likely_websites": _row_int(resource_counts, "likely_websites"),
         "strict_hns_ready": _row_int(resource_counts, "strict_hns_ready"),
         "needs_dane": _row_int(resource_counts, "needs_dane"),
@@ -694,7 +677,6 @@ def build_names(
               COALESCE(tes.tlsa_owners, '[]') AS tlsa_owners,
               COALESCE(tes.has_tlsa, 0) AS has_tlsa,
               tes.observed_at AS tlsa_observed_at, tes.checked_at AS tlsa_checked_at,
-              rs.tlsa_cert_not_valid_after, COALESCE(rs.tlsa_cert_expired, 0) AS tlsa_cert_expired,
               rs.has_ds,
               { _ns_handoff_select_columns() },
               rs.raw_size, rs.resource_version, rs.resource_hash, n.last_seen_height, n.updated_at,
@@ -1529,7 +1511,6 @@ def _prepare_export_name_ordinals(conn: sqlite3.Connection, limit: int) -> None:
           has_glue INTEGER NOT NULL,
           has_synth INTEGER NOT NULL,
           has_tlsa INTEGER NOT NULL,
-          tlsa_cert_expired INTEGER NOT NULL,
           compliance_stage TEXT NOT NULL
         ) WITHOUT ROWID
         """
@@ -1540,11 +1521,11 @@ def _prepare_export_name_ordinals(conn: sqlite3.Connection, limit: int) -> None:
         f"""
         INSERT INTO export_name_ordinals(
           name, ordinal, expired, provider_guess, provider_type, has_ds, has_ns,
-          has_glue, has_synth, has_tlsa, tlsa_cert_expired, compliance_stage
+          has_glue, has_synth, has_tlsa, compliance_stage
         )
         SELECT
           name, ordinal, expired, provider_guess, provider_type, has_ds, has_ns,
-          has_glue, has_synth, has_tlsa, tlsa_cert_expired, {_export_compliance_stage_sql()} AS compliance_stage
+          has_glue, has_synth, has_tlsa, {_export_compliance_stage_sql()} AS compliance_stage
         FROM (
           SELECT
             n.name,
@@ -1556,8 +1537,7 @@ def _prepare_export_name_ordinals(conn: sqlite3.Connection, limit: int) -> None:
             COALESCE(rs.has_ns, 0) AS has_ns,
             COALESCE(rs.has_glue, 0) AS has_glue,
             COALESCE(rs.has_synth, 0) AS has_synth,
-            COALESCE(tes.has_tlsa, 0) AS has_tlsa,
-            COALESCE(rs.tlsa_cert_expired, 0) AS tlsa_cert_expired
+            COALESCE(tes.has_tlsa, 0) AS has_tlsa
           FROM names n
           JOIN resource_summary rs ON rs.name = n.name
           LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
@@ -1821,7 +1801,6 @@ def _name_row_columns(*, row_detail: str = "full") -> str:
           json_extract(rs.glue6, '$[0]') AS first_glue6,
           json_extract(rs.synth4, '$[0]') AS first_synth4,
           json_extract(rs.synth6, '$[0]') AS first_synth6,
-          rs.tlsa_cert_not_valid_after, COALESCE(rs.tlsa_cert_expired, 0) AS tlsa_cert_expired,
           {_ns_handoff_select_columns()},
           rs.raw_size, rs.resource_version, rs.resource_hash, n.last_seen_height, n.updated_at,
           {_dns_evidence_path_sql()},
@@ -1835,7 +1814,6 @@ def _name_row_columns(*, row_detail: str = "full") -> str:
           COALESCE(tes.tlsa_owners, '[]') AS tlsa_owners,
           COALESCE(tes.has_tlsa, 0) AS has_tlsa,
           tes.observed_at AS tlsa_observed_at, tes.checked_at AS tlsa_checked_at,
-          rs.tlsa_cert_not_valid_after, COALESCE(rs.tlsa_cert_expired, 0) AS tlsa_cert_expired,
           rs.has_ds,
           {_ns_handoff_select_columns()},
           rs.raw_size, rs.resource_version, rs.resource_hash, n.last_seen_height, n.updated_at,
@@ -1876,8 +1854,6 @@ def _name_output_keys(*, row_detail: str = "full") -> list[str]:
             "first_glue6",
             "first_synth4",
             "first_synth6",
-            "tlsa_cert_not_valid_after",
-            "tlsa_cert_expired",
             *NS_HANDOFF_COLUMNS,
             "raw_size",
             "resource_version",
@@ -1941,8 +1917,6 @@ def write_names_csv(conn: sqlite3.Connection, path: Path, *, limit: int) -> None
         "has_tlsa",
         "tlsa_observed_at",
         "tlsa_checked_at",
-        "tlsa_cert_not_valid_after",
-        "tlsa_cert_expired",
         "has_ds",
         *NS_HANDOFF_COLUMNS,
         "raw_size",
@@ -2214,8 +2188,6 @@ def _name_row(row: sqlite3.Row, json_columns: list[str]) -> dict[str, Any]:
     parsed = parse_json_columns(dict(row), json_columns)
     if "has_tlsa" in parsed:
         parsed["has_tlsa"] = bool(parsed["has_tlsa"])
-    if "tlsa_cert_expired" in parsed:
-        parsed["tlsa_cert_expired"] = bool(parsed["tlsa_cert_expired"])
     return parsed
 
 
