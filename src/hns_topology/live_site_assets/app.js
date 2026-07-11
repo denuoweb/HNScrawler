@@ -43,7 +43,7 @@ function hrefWith(updates) {
 }
 
 function categoryLabel(category) {
-  return ({https: "HTTPS Websites", http_only: "HTTP-only Websites", offline: "No Website Available"})[category] || category;
+  return ({https: "HTTPS Endpoints", http_only: "HTTP Endpoints", offline: "No Endpoint Available"})[category] || category;
 }
 
 function categoryCount(summary, category) {
@@ -56,8 +56,8 @@ function categoryCount(summary, category) {
 
 function protocolBadge(row) {
   if (row.category === "https") return '<span class="badge badge-secure">HTTPS</span>';
-  if (row.category === "http_only") return '<span class="badge badge-http">HTTP only</span>';
-  return '<span class="badge badge-offline">No website</span>';
+  if (row.category === "http_only") return '<span class="badge badge-http">HTTP</span>';
+  return '<span class="badge badge-offline">No endpoint</span>';
 }
 
 function trustBadges(row) {
@@ -116,7 +116,7 @@ function rowHtml(row) {
 }
 
 function categoryTabs(summary, active) {
-  return `<nav class="category-tabs" aria-label="Website protocol">
+  return `<nav class="category-tabs" aria-label="Endpoint protocol">
     ${["https", "http_only", "offline"].map((category) => `
       <a class="category-tab${category === active ? " active" : ""}" href="${escapeHtml(hrefWith({category, page: null}))}">
         <span>${escapeHtml(categoryLabel(category))}</span>
@@ -128,16 +128,16 @@ function categoryTabs(summary, active) {
 function metrics(summary) {
   const due = Number(summary.candidate_plan?.due_total || 0);
   return `<section class="metrics">
-    <div><span>Online</span><strong>${numberFormat.format(summary.online_count || 0)}</strong></div>
-    <div><span>HTTPS</span><strong>${numberFormat.format(summary.https_count || 0)}</strong></div>
-    <div><span>HTTP only</span><strong>${numberFormat.format(summary.http_only_count || 0)}</strong></div>
+    <div><span>Reachable endpoints</span><strong>${numberFormat.format(summary.online_count || 0)}</strong></div>
+    <div><span>HTTPS endpoints</span><strong>${numberFormat.format(summary.https_count || 0)}</strong></div>
+    <div><span>HTTP endpoints</span><strong>${numberFormat.format(summary.http_only_count || 0)}</strong></div>
     <div><span>Probe queue</span><strong>${numberFormat.format(due)}</strong></div>
   </section>`;
 }
 
 function pagination(page, pageCount) {
   if (pageCount <= 1) return "";
-  return `<nav class="pagination" aria-label="Website pages">
+  return `<nav class="pagination" aria-label="Endpoint pages">
     <a class="page-button${page <= 1 ? " disabled" : ""}" href="${escapeHtml(hrefWith({page: Math.max(1, page - 1)}))}">Previous</a>
     <span>Page ${numberFormat.format(page)} of ${numberFormat.format(pageCount)}</span>
     <a class="page-button${page >= pageCount ? " disabled" : ""}" href="${escapeHtml(hrefWith({page: Math.min(pageCount, page + 1)}))}">Next</a>
@@ -179,7 +179,7 @@ function render(app, summary, data) {
       ${pagination(page, pageCount)}
       <div class="table-wrap"><table>
         <thead><tr><th>Host</th><th>Protocol</th><th>DNS</th><th>Source</th><th>Checked</th><th></th></tr></thead>
-        <tbody>${rows.length ? rows.map(rowHtml).join("") : '<tr><td class="empty" colspan="6">No matching websites.</td></tr>'}</tbody>
+        <tbody>${rows.length ? rows.map(rowHtml).join("") : '<tr><td class="empty" colspan="6">No matching endpoints.</td></tr>'}</tbody>
       </table></div>
       ${pagination(page, pageCount)}
     </section>`;
