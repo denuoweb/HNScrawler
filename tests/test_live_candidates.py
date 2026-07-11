@@ -85,7 +85,7 @@ def test_sync_adds_apex_and_evidence_subdomains_without_guessing_www(tmp_path, m
     assert "tlsa_owner" in candidates[("direct", "blog.direct")]["sources_json"]
 
 
-def test_sync_excludes_untrusted_bootstrap_but_retains_ds_delegation(tmp_path):
+def test_sync_excludes_ds_root_without_actionable_bootstrap_or_tlsa(tmp_path):
     topology_db = tmp_path / "topology.sqlite"
     live_db = tmp_path / "live.sqlite"
     rules = ProviderRules.from_file("configs/provider_rules.json")
@@ -97,9 +97,9 @@ def test_sync_excludes_untrusted_bootstrap_but_retains_ds_delegation(tmp_path):
         result = sync_topology(conn, topology_db)
         roots = [dict(row) for row in conn.execute("SELECT name, strict_ready FROM roots")]
 
-    assert result["roots"] == 1
-    assert result["candidates"] == 1
-    assert roots == [{"name": "secure", "strict_ready": 0}]
+    assert result["roots"] == 0
+    assert result["candidates"] == 0
+    assert roots == []
 
 
 def test_sync_retains_known_external_dns_delegations_without_glue(tmp_path):

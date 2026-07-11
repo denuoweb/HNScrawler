@@ -24,7 +24,7 @@ Daily cycles compare the topology tip, height, provider-rule hash, and generatio
 
 ## Candidate Policy
 
-The scanner imports active, actionable roots with direct HNS nameserver IP evidence from SYNTH or GLUE. It also admits lower-priority no-GLUE delegations when DS, stored TLSA evidence, or a recognized external DNS provider makes the root a useful candidate; the probe resolves those individual NS hostnames before issuing authoritative queries. An aggregate delegation-host count alone is not treated as website evidence. The scanner creates only the root apex candidate by default.
+The scanner imports active, actionable roots with direct HNS nameserver IP evidence from SYNTH or GLUE. It also admits lower-priority no-GLUE delegations when stored TLSA evidence or a recognized external DNS provider makes the root a useful candidate; the probe resolves those individual NS hostnames before issuing authoritative queries. DS raises the priority of a root that has another admission signal, but DS alone is too broad to establish likely website service. An aggregate delegation-host count alone is not treated as website evidence. The scanner creates only the root apex candidate by default.
 
 Within the same due tier, the initial discovery order is:
 
@@ -32,7 +32,7 @@ Within the same due tier, the initial discovery order is:
 2. other stored DNS subdomain evidence;
 3. DS roots with a global SYNTH/GLUE bootstrap;
 4. unsigned roots with a global SYNTH/GLUE bootstrap;
-5. DS or recognized external-provider delegations whose NS address must be resolved at probe time.
+5. recognized external-provider delegations whose NS address must be resolved at probe time.
 
 The overview's aggregated Delegation Hosts table is useful for infrastructure analysis, but it is not itself website evidence. TLSA-unobserved is a broad remediation queue rather than a high-confidence liveness signal.
 

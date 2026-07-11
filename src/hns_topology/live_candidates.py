@@ -57,8 +57,7 @@ ROOT_SELECTION_SQL = f"""
   OR (
     COALESCE(rs.has_ns, 0) = 1
     AND (
-      COALESCE(rs.has_ds, 0) = 1
-      OR COALESCE(tes.has_tlsa, 0) = 1
+      COALESCE(tes.has_tlsa, 0) = 1
       OR COALESCE(ps.provider_type, 'unknown') = 'external_dns'
     )
   )
@@ -194,18 +193,27 @@ def _prepare_candidate_names(conn: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """
     )
-    excluded_ips = sorted(EXCLUDED_BOOTSTRAP_IPS)
-    placeholders = ",".join("?" for _ in excluded_ips)
-    conn.execute(
-        f"""
-        INSERT OR IGNORE INTO live_candidate_names(name)
-        SELECT name
-        FROM resource_ip
-        WHERE ip NOT IN ({placeholders})
-        GROUP BY name
-        """,
-        excluded_ips,
-    )
+    resource_ips = [
+        str(row["ip"])
+        for row in conn.execute(
+            """
+            SELECT DISTINCT ip
+            FROM resource_ip INDEXED BY idx_resource_ip_ip_name
+            """
+        )
+    ]
+    for address in resource_ips:
+        if not _is_actionable_bootstrap_ip(address):
+            continue
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO live_candidate_names(name)
+            SELECT name
+            FROM resource_ip INDEXED BY idx_resource_ip_ip_name
+            WHERE ip = ?
+            """,
+            (address,),
+        )
     conn.execute(
         """
         INSERT OR IGNORE INTO live_candidate_names(name)
@@ -214,27 +222,20 @@ def _prepare_candidate_names(conn: sqlite3.Connection) -> None:
         WHERE has_tlsa = 1
         """
     )
-    excluded_types = ",".join("?" for _ in NON_ACTIONABLE_PROVIDER_TYPES)
-    providers = [
-        (str(row["provider_key"]), str(row["provider_type"] or "unknown"))
+    provider_keys = [
+        str(row["provider_key"])
         for row in conn.execute(
-            f"""
-            SELECT provider_key, provider_type
-            FROM provider_summary
-            WHERE COALESCE(provider_type, 'unknown') NOT IN ({excluded_types})
-            """,
-            NON_ACTIONABLE_PROVIDER_TYPES,
+            "SELECT provider_key FROM provider_summary WHERE provider_type = 'external_dns'"
         )
     ]
-    for provider_key, provider_type in providers:
-        classes = ROOT_CLASSES_SQL if provider_type == "external_dns" else "'DNSSEC_CANDIDATE'"
+    for provider_key in provider_keys:
         conn.execute(
             f"""
             INSERT OR IGNORE INTO live_candidate_names(name)
             SELECT name
             FROM names INDEXED BY idx_names_provider
             WHERE provider_guess = ?
-              AND onchain_class IN ({classes})
+              AND onchain_class IN ({ROOT_CLASSES_SQL})
             """,
             (provider_key,),
         )
