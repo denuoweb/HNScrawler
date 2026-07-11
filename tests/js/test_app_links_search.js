@@ -145,6 +145,31 @@ function loadOverviewApp(search = "") {
 
 {
   const app = loadApp("");
+  assert.match(app.liveStatusShard("ansbank"), /^[0-9a-f]{2}$/);
+  const html = app.renderLiveDnsStatus({
+    roots: {
+      ansbank: [{
+        host: "ansbank",
+        dns_status: "unreachable",
+        addresses: [],
+        dnssec_status: "dnskey_missing",
+        tlsa_status: "missing",
+        dane_status: "missing",
+        http_status: "not_checked",
+        https_status: "failed",
+        webpki_status: "not_checked",
+        failure_reason: "authoritative_dns_unreachable",
+        checked_at: "2026-07-11T20:39:29Z"
+      }]
+    }
+  }, "ansbank");
+  assert.equal(html.includes("DNS unreachable"), true);
+  assert.equal(html.includes("authoritative dns unreachable"), true);
+  assert.equal(app.renderLiveDnsStatus(null, "missing").includes("No live scan result"), true);
+}
+
+{
+  const app = loadApp("");
   const html = app.topologySignals(
     {top_resource_ips: []},
     {

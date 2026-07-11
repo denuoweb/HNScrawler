@@ -16,6 +16,7 @@ from .live_db import (
     get_live_meta,
     latest_probe_run,
     live_dane_evidence_summary,
+    live_status_lookup_rows,
     live_summary_counts,
 )
 from .timeutil import utc_now
@@ -27,6 +28,7 @@ REQUIRED_LIVE_FILES = (
     "app.js",
     "data/summary.json",
     "data/sites.json",
+    "data/live-status/index.json",
     "data/manifest.json",
 )
 
@@ -113,11 +115,15 @@ def _export_into(conn: sqlite3.Connection, out: Path) -> dict[str, Any]:
     }
     _write_json(data_dir / "summary.json", summary)
     _write_json(data_dir / "sites.json", sites)
+    status_artifacts = _write_live_status_lookup(conn, data_dir, generated_at)
     _copy_assets(out)
     (out / "index.html").write_text(_html(), encoding="utf-8")
     manifest = {
         "generated_at": generated_at,
-        "artifacts": [_artifact(data_dir, relative) for relative in ("summary.json", "sites.json")],
+        "artifacts": [
+            _artifact(data_dir, relative)
+            for relative in ("summary.json", "sites.json", *status_artifacts)
+        ],
     }
     _write_json(data_dir / "manifest.json", manifest)
     return summary
@@ -127,6 +133,49 @@ def _copy_assets(out: Path) -> None:
     assets = resources.files("hns_topology").joinpath("live_site_assets")
     for asset in ("styles.css", "app.js"):
         shutil.copyfile(assets.joinpath(asset), out / asset)
+
+
+def _write_live_status_lookup(
+    conn: sqlite3.Connection,
+    data_dir: Path,
+    generated_at: str,
+) -> list[str]:
+    by_shard: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for row in live_status_lookup_rows(conn):
+        shard = _live_status_shard(str(row["root_name"]))
+        roots = by_shard.setdefault(shard, {})
+        roots.setdefault(str(row["root_name"]), []).append(row)
+
+    status_dir = data_dir / "live-status"
+    status_dir.mkdir(parents=True, exist_ok=True)
+    artifacts = ["live-status/index.json"]
+    for shard, roots in sorted(by_shard.items()):
+        relative = f"live-status/{shard}.json"
+        _write_compact_json(
+            data_dir / relative,
+            {
+                "generated_at": generated_at,
+                "roots": roots,
+            },
+        )
+        artifacts.append(relative)
+    _write_compact_json(
+        status_dir / "index.json",
+        {
+            "generated_at": generated_at,
+            "format": "live-status-v1",
+            "root_count": sum(len(roots) for roots in by_shard.values()),
+            "shards": sorted(by_shard),
+        },
+    )
+    return artifacts
+
+
+def _live_status_shard(name: str) -> str:
+    value = 2166136261
+    for byte in name.encode("utf-8"):
+        value = ((value ^ byte) * 16777619) & 0xFFFFFFFF
+    return f"{value & 0xFF:02x}"
 
 
 def _html() -> str:
@@ -193,6 +242,13 @@ def _sha256(path: Path) -> str:
 
 def _write_json(path: Path, value: Any) -> None:
     path.write_text(dumps_pretty(value), encoding="utf-8")
+
+
+def _write_compact_json(path: Path, value: Any) -> None:
+    path.write_text(
+        json.dumps(value, ensure_ascii=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
 
 
 def _int_or_none(value: str) -> int | None:

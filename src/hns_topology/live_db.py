@@ -551,6 +551,50 @@ def live_dane_evidence_summary(conn: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
+def live_status_lookup_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT
+          hs.root_name, hs.host, hs.category, hs.listing_state, hs.checked_at,
+          hs.dns_status, hs.addresses_json, hs.dnssec_status, hs.tlsa_status,
+          hs.dane_status, hs.http_status, hs.http_status_code, hs.https_status,
+          hs.https_status_code, hs.webpki_status, hs.failure_reason,
+          hs.last_good_category
+        FROM host_status hs
+        JOIN candidates c ON c.root_name = hs.root_name AND c.host = hs.host
+        JOIN roots r ON r.name = hs.root_name
+        WHERE c.active = 1 AND r.active = 1
+          AND hs.topology_resource_hash = c.topology_resource_hash
+        ORDER BY hs.root_name, hs.host
+        """
+    )
+    result = []
+    for row in rows:
+        value = dict(row)
+        listed = value["listing_state"] in {"listed", "degraded"}
+        result.append(
+            {
+                "root_name": str(value["root_name"]),
+                "host": str(value["host"]),
+                "category": str(value["last_good_category"] if listed else "offline"),
+                "listing_state": str(value["listing_state"]),
+                "checked_at": str(value["checked_at"]),
+                "dns_status": str(value["dns_status"]),
+                "addresses": _json_value(value["addresses_json"], []),
+                "dnssec_status": str(value["dnssec_status"]),
+                "tlsa_status": str(value["tlsa_status"]),
+                "dane_status": str(value["dane_status"]),
+                "http_status": str(value["http_status"]),
+                "http_status_code": value["http_status_code"],
+                "https_status": str(value["https_status"]),
+                "https_status_code": value["https_status_code"],
+                "webpki_status": str(value["webpki_status"]),
+                "failure_reason": str(value["failure_reason"] or ""),
+            }
+        )
+    return result
+
+
 def directory_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute(
         """

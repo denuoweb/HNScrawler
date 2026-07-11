@@ -7,6 +7,7 @@ const PROVIDER_FILTER_PREFIX = "provider:";
 const COMPLIANCE_STAGE_FILTER_PREFIX = "stage:";
 const DANE_GENERATOR_BASE = window.__DANE_GENERATOR_BASE__ || "/dane-generator/";
 const LIVE_DIRECTORY_SUMMARY_PATH = "/hns-live/data/summary.json";
+const LIVE_STATUS_BASE_PATH = "/hns-live/data/live-status/";
 const IP_FIELD_MAP = {
   1: "GLUE4",
   2: "GLUE6",
@@ -1798,6 +1799,54 @@ function evidenceLines(label, lines) {
   return `<div class="evidence-lines"><span>${escapeHtml(label)}</span>${lines.map(codeLine).join("")}</div>`;
 }
 
+function liveStatusShard(name) {
+  let value = 2166136261;
+  for (const character of String(name || "").toLowerCase()) {
+    value = Math.imul(value ^ character.charCodeAt(0), 16777619) >>> 0;
+  }
+  return (value & 0xff).toString(16).padStart(2, "0");
+}
+
+function liveStatusValue(label, value) {
+  if (value === null || value === undefined || value === "") return "";
+  return `${label} ${value}`;
+}
+
+function renderLiveDnsStatus(payload, name) {
+  const hosts = payload?.roots?.[name];
+  if (!Array.isArray(hosts) || !hosts.length) {
+    return `<p class="meta">No live scan result for this name yet.</p>`;
+  }
+  return `<div class="dns-evidence-list">${hosts.map((item) => {
+    const status = [
+      liveStatusValue("DNS", item.dns_status),
+      Array.isArray(item.addresses) && item.addresses.length ? `Addresses ${item.addresses.join(", ")}` : "",
+      liveStatusValue("DNSSEC", item.dnssec_status),
+      liveStatusValue("TLSA", item.tlsa_status),
+      liveStatusValue("DANE", item.dane_status),
+      liveStatusValue("HTTP", item.http_status_code || item.http_status),
+      liveStatusValue("HTTPS", item.https_status_code || item.https_status),
+      liveStatusValue("WebPKI", item.webpki_status),
+      item.checked_at ? `Checked ${item.checked_at}` : ""
+    ].filter(Boolean).join(" - ");
+    return `<article class="dns-evidence-item">
+      <header><strong>${escapeHtml(item.host || name)}</strong><span>${escapeHtml(status)}</span></header>
+      ${item.failure_reason ? `<p class="meta">Result: ${escapeHtml(String(item.failure_reason).replaceAll("_", " "))}</p>` : ""}
+    </article>`;
+  }).join("")}</div>`;
+}
+
+function liveDnsSection(row) {
+  const name = String(row.name || "");
+  if (!name) return "";
+  return `<section>
+    <h3>Live DNS Scan</h3>
+    <div class="live-dns-body" data-live-dns-name="${escapeHtml(name)}">
+      <p class="meta">Open diagnostics to load the latest bounded live scan.</p>
+    </div>
+  </section>`;
+}
+
 function wireNameDetails() {
   document.querySelectorAll(".name-detail").forEach((details) => {
     details.addEventListener("toggle", async () => {
@@ -1808,6 +1857,13 @@ function wireNameDetails() {
 }
 
 async function loadLazyEvidence(details) {
+  await Promise.all([
+    loadStoredDnsEvidence(details),
+    loadLiveDnsStatus(details)
+  ]);
+}
+
+async function loadStoredDnsEvidence(details) {
   if (details.dataset.evidenceLoaded === "true") return;
   const target = details.querySelector(".dns-evidence-body");
   const path = details.dataset.evidencePath;
@@ -1819,6 +1875,26 @@ async function loadLazyEvidence(details) {
     details.dataset.evidenceLoaded = "true";
   } catch (error) {
     target.innerHTML = `<p class="meta">Could not load DNS evidence: ${escapeHtml(error.message)}</p>`;
+  }
+}
+
+async function loadLiveDnsStatus(details) {
+  const target = details.querySelector(".live-dns-body");
+  const name = target?.dataset.liveDnsName || "";
+  if (!target || !name || target.dataset.loaded === "true") return;
+  target.innerHTML = `<p class="meta">Loading live DNS scan...</p>`;
+  try {
+    const response = await fetch(`${LIVE_STATUS_BASE_PATH}${liveStatusShard(name)}.json`, {cache: "no-store"});
+    if (response.status === 404) {
+      target.innerHTML = renderLiveDnsStatus(null, name);
+    } else if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    } else {
+      target.innerHTML = renderLiveDnsStatus(await response.json(), name);
+    }
+    target.dataset.loaded = "true";
+  } catch (error) {
+    target.innerHTML = `<p class="meta">Could not load live DNS scan: ${escapeHtml(error.message)}</p>`;
   }
 }
 
@@ -1850,6 +1926,7 @@ function nameDetailRow(row, colspan) {
           ${staticDiagnosticStatus(row)}
         </section>
         ${dnsEvidenceSection(row)}
+        ${liveDnsSection(row)}
       </div>
     </details>
   </td></tr>`;

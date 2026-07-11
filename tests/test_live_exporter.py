@@ -49,6 +49,12 @@ def test_live_export_is_standalone_and_valid(tmp_path):
         summary = export_live_site(conn, public)
 
     sites = json.loads((public / "data/sites.json").read_text(encoding="utf-8"))
+    status_index = json.loads((public / "data/live-status/index.json").read_text(encoding="utf-8"))
+    status_shard = json.loads(
+        (public / "data/live-status" / f"{status_index['shards'][0]}.json").read_text(
+            encoding="utf-8"
+        )
+    )
     html = (public / "index.html").read_text(encoding="utf-8")
 
     assert summary["https_count"] == 1
@@ -63,6 +69,10 @@ def test_live_export_is_standalone_and_valid(tmp_path):
     }
     assert sites["rows"][0]["host"] == "example"
     assert sites["rows"][0]["category"] == "https"
+    assert status_index["root_count"] == 1
+    assert status_shard["roots"]["example"][0]["dnssec_status"] == "valid"
+    assert "tlsa_records" not in status_shard["roots"]["example"][0]
+    assert "certificate_sha256" not in status_shard["roots"]["example"][0]
     assert "/hns-topology/index.html" in html
     assert validate_live_site(public) == []
 
