@@ -17,6 +17,8 @@ const collectionRowsCache = new Map();
 const collectionPageRowsCache = new Map();
 const ipAddressLookupCache = new Map();
 const nameserverLookupCache = new Map();
+let nameserverLookupIndexPromise = null;
+const nameserverLookupShardCache = new Map();
 
 function sitePath(path) {
   if (/^(?:[a-z]+:)?\/\//i.test(path) || path.startsWith("/")) return path;
@@ -742,6 +744,36 @@ function nameserverLookupPath(nameserver) {
   return `data/nameservers/${escapePathPercents(encodeURIComponent(nameserver))}.json`;
 }
 
+function nameserverLookupIndexPath() {
+  return "data/nameservers/index.json";
+}
+
+function fnv1a32(value) {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index) & 0xff;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash >>> 0;
+}
+
+function nameserverShardId(nameserver, index) {
+  const shardCount = Number(index?.shard_count || 0) || 1024;
+  const shardWidth = Number(index?.shard_width || 0) || Math.max(1, (shardCount - 1).toString(16).length);
+  return String((fnv1a32(nameserver) % shardCount).toString(16)).padStart(shardWidth, "0");
+}
+
+function nameserverShardPath(nameserver, index) {
+  const template = index?.path_template || "nameservers/shards/{shard}.jsonl";
+  return `data/${template.replace("{shard}", nameserverShardId(nameserver, index))}`;
+}
+
+async function loadText(path) {
+  const response = await fetch(sitePath(path));
+  if (!response.ok) throw new Error(`Failed to load ${path}`);
+  return response.text();
+}
+
 function normalizeIpLookupResult(result, query, ip) {
   const rows = Array.isArray(result.rows) ? result.rows : [];
   return {
@@ -830,7 +862,7 @@ async function lookupNameserver(query, page) {
   const nameserver = normalizeNameserverQuery(query);
   if (!nameserver) return null;
   if (!nameserverLookupCache.has(nameserver)) {
-    const lookupPromise = loadJson(nameserverLookupPath(nameserver))
+    const lookupPromise = loadNameserverLookup(nameserver)
       .catch(() => null);
     nameserverLookupCache.set(nameserver, lookupPromise);
   }
@@ -872,6 +904,60 @@ async function lookupNameserver(query, page) {
     query,
     nameserver
   );
+}
+
+async function loadNameserverLookup(nameserver) {
+  const index = await loadNameserverLookupIndex();
+  if (index?.lookup === "sharded-jsonl") {
+    return loadNameserverFromShard(nameserver, index);
+  }
+  return loadJson(nameserverLookupPath(nameserver));
+}
+
+async function loadNameserverLookupIndex() {
+  if (!nameserverLookupIndexPromise) {
+    nameserverLookupIndexPromise = loadJson(nameserverLookupIndexPath())
+      .catch(() => null);
+  }
+  return nameserverLookupIndexPromise;
+}
+
+async function loadNameserverFromShard(nameserver, index) {
+  const shardPath = nameserverShardPath(nameserver, index);
+  if (!nameserverLookupShardCache.has(shardPath)) {
+    nameserverLookupShardCache.set(
+      shardPath,
+      loadText(shardPath).then((text) => {
+        const entries = new Map();
+        for (const line of text.split("\n")) {
+          if (!line) continue;
+          const entry = JSON.parse(line);
+          if (entry?.n) entries.set(entry.n, entry);
+        }
+        return entries;
+      })
+    );
+  }
+  const entries = await nameserverLookupShardCache.get(shardPath);
+  const entry = entries.get(nameserver);
+  if (!entry) return null;
+  const rowCount = Number(entry.c || 0);
+  const pageSize = Number(index.page_size || 0) || 100;
+  const pageCount = rowCount ? Math.ceil(rowCount / pageSize) : 0;
+  const result = {
+    nameserver,
+    row_count: rowCount,
+    page_count: pageCount,
+    page_size: pageSize,
+    row_detail: index.row_detail || "nameserver_matches",
+    columns: Array.isArray(index.columns) ? index.columns : ["name", "nameserver"]
+  };
+  if (Array.isArray(entry.r)) {
+    result.rows = entry.r.map((name) => ({name, nameserver}));
+  } else if (entry.t) {
+    result.path_template = entry.t;
+  }
+  return result;
 }
 
 async function lookupExactNameFromApi(query, name) {

@@ -9,6 +9,7 @@ import sqlite3
 import sys
 import tempfile
 import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, NamedTuple
 from urllib.parse import quote
@@ -41,6 +42,7 @@ DATA_ARTIFACTS = (
 )
 
 PAGE_SIZE = 1000
+NAMESERVER_SHARD_COUNT = 1024
 OVERVIEW_PAGE_SIZE = 25
 DETAILED_NAME_COLLECTION_ROW_LIMIT = 100_000
 EXPORTED_NAMES_ORDER_SQL = "n.name"
@@ -874,43 +876,78 @@ def write_nameserver_names(conn: sqlite3.Connection, out: Path, *, limit: int) -
     if limit <= 0:
         return 0
     base_dir.mkdir(parents=True, exist_ok=True)
+    shards_dir = base_dir / "shards"
+    shards_dir.mkdir(parents=True, exist_ok=True)
     row_detail = "nameserver_matches"
     output_keys = ["name", "nameserver"]
-    file_count = 0
+    exported_count = 0
     total_names = table_count(conn, "SELECT COUNT(*) FROM names")
-    for item in _nameserver_counts(conn, limit=limit, total_names=total_names):
-        nameserver = str(item["nameserver"])
-        row_count = int(item["row_count"] or 0)
-        current_rows: list[dict[str, Any]] = []
-        current_page = 1
-        for row in _nameserver_rows(conn, nameserver, limit=limit, total_names=total_names):
-            current_rows.append(
-                {
-                    "name": row["name"],
-                    "nameserver": nameserver,
-                }
-            )
-            if len(current_rows) >= PAGE_SIZE:
-                _write_nameserver_page(
-                    base_dir,
-                    nameserver,
-                    current_page,
-                    current_rows,
-                    output_keys=output_keys,
-                )
-                current_rows = []
-                current_page += 1
-        _finish_nameserver_pages(
+    shard_writers = _NameserverShardWriters(shards_dir, NAMESERVER_SHARD_COUNT)
+    try:
+        _prepare_export_nameserver_rows(conn, limit=limit, total_names=total_names)
+        nameserver_count = table_count(
+            conn,
+            "SELECT COUNT(DISTINCT nameserver) FROM export_nameserver_rows",
+        )
+        _write_nameserver_lookup_index(
             base_dir,
-            nameserver,
-            rows=current_rows,
-            row_count=row_count,
-            page=current_page,
+            shard_count=NAMESERVER_SHARD_COUNT,
             row_detail=row_detail,
             output_keys=output_keys,
         )
-        file_count += 1
-    return file_count
+        _log_export(
+            f"writing nameserver lookup shards nameservers={nameserver_count} shards={NAMESERVER_SHARD_COUNT}"
+        )
+        for item in _nameserver_counts(conn):
+            nameserver = str(item["nameserver"])
+            row_count = int(item["row_count"] or 0)
+            current_names: list[str] = []
+            current_page = 1
+            for row in _nameserver_rows(conn, nameserver):
+                current_names.append(str(row["name"]))
+                if row_count > PAGE_SIZE and len(current_names) >= PAGE_SIZE:
+                    _write_nameserver_page(
+                        base_dir,
+                        nameserver,
+                        current_page,
+                        [{"name": name, "nameserver": nameserver} for name in current_names],
+                        output_keys=output_keys,
+                    )
+                    current_names = []
+                    current_page += 1
+            if row_count > PAGE_SIZE:
+                if current_names:
+                    _write_nameserver_page(
+                        base_dir,
+                        nameserver,
+                        current_page,
+                        [{"name": name, "nameserver": nameserver} for name in current_names],
+                        output_keys=output_keys,
+                    )
+                shard_writers.write(
+                    nameserver,
+                    {
+                        "n": nameserver,
+                        "c": row_count,
+                        "t": f"nameservers/{_nameserver_page_dirname(nameserver)}/page-{{page}}.json",
+                    },
+                )
+            else:
+                shard_writers.write(
+                    nameserver,
+                    {
+                        "n": nameserver,
+                        "c": row_count,
+                        "r": current_names,
+                    },
+                )
+            exported_count += 1
+            if exported_count % 1000 == 0:
+                _log_export(f"wrote nameserver lookup progress={exported_count}/{nameserver_count}")
+        return exported_count
+    finally:
+        shard_writers.close()
+        conn.execute("DROP TABLE IF EXISTS temp.export_nameserver_rows")
 
 
 def _ip_address_counts(
@@ -1034,90 +1071,150 @@ def _ip_address_rows(
     )
 
 
-def _nameserver_counts(
+def _prepare_export_nameserver_rows(
     conn: sqlite3.Connection,
     *,
     limit: int,
     total_names: int,
-) -> sqlite3.Cursor:
+) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp.export_nameserver_rows")
+    conn.execute(
+        """
+        CREATE TEMP TABLE export_nameserver_rows(
+          nameserver TEXT NOT NULL,
+          name TEXT NOT NULL,
+          PRIMARY KEY(nameserver, name)
+        ) WITHOUT ROWID
+        """
+    )
     if limit >= total_names:
-        return conn.execute(
+        conn.execute(
             """
-            SELECT LOWER(TRIM(ns.value, '.')) AS nameserver, COUNT(DISTINCT rs.name) AS row_count
+            INSERT OR IGNORE INTO export_nameserver_rows(nameserver, name)
+            SELECT LOWER(TRIM(ns.value, '.')) AS nameserver, rs.name
             FROM resource_summary rs
             JOIN names n ON n.name = rs.name
             JOIN json_each(rs.ns_names) ns
             WHERE COALESCE(n.expired, 0) = 0
               AND ns.value IS NOT NULL
               AND LOWER(TRIM(ns.value, '.')) != ''
-            GROUP BY LOWER(TRIM(ns.value, '.'))
             ORDER BY nameserver
             """
         )
-    return conn.execute(
-        """
-        WITH exported_names AS (
-          SELECT name
-          FROM names
-          ORDER BY name
-          LIMIT ?
-        )
-        SELECT LOWER(TRIM(ns.value, '.')) AS nameserver, COUNT(DISTINCT rs.name) AS row_count
-        FROM resource_summary rs
-        JOIN exported_names en ON en.name = rs.name
-        JOIN names n ON n.name = rs.name
-        JOIN json_each(rs.ns_names) ns
-        WHERE COALESCE(n.expired, 0) = 0
-          AND ns.value IS NOT NULL
-          AND LOWER(TRIM(ns.value, '.')) != ''
-        GROUP BY LOWER(TRIM(ns.value, '.'))
-        ORDER BY nameserver
-        """,
-        (limit,),
-    )
-
-
-def _nameserver_rows(
-    conn: sqlite3.Connection,
-    nameserver: str,
-    *,
-    limit: int,
-    total_names: int,
-) -> sqlite3.Cursor:
-    if limit >= total_names:
-        return conn.execute(
+    else:
+        conn.execute(
             """
-            SELECT rs.name
+            INSERT OR IGNORE INTO export_nameserver_rows(nameserver, name)
+            WITH exported_names AS (
+              SELECT name
+              FROM names
+              ORDER BY name
+              LIMIT ?
+            )
+            SELECT LOWER(TRIM(ns.value, '.')) AS nameserver, rs.name
             FROM resource_summary rs
+            JOIN exported_names en ON en.name = rs.name
             JOIN names n ON n.name = rs.name
             JOIN json_each(rs.ns_names) ns
             WHERE COALESCE(n.expired, 0) = 0
-              AND LOWER(TRIM(ns.value, '.')) = ?
-            GROUP BY rs.name
-            ORDER BY rs.name
+              AND ns.value IS NOT NULL
+              AND LOWER(TRIM(ns.value, '.')) != ''
+            ORDER BY nameserver
             """,
-            (nameserver,),
+            (limit,),
         )
+
+
+def _nameserver_counts(conn: sqlite3.Connection) -> sqlite3.Cursor:
     return conn.execute(
         """
-        WITH exported_names AS (
-          SELECT name
-          FROM names
-          ORDER BY name
-          LIMIT ?
-        )
-        SELECT rs.name
-        FROM resource_summary rs
-        JOIN exported_names en ON en.name = rs.name
-        JOIN names n ON n.name = rs.name
-        JOIN json_each(rs.ns_names) ns
-        WHERE COALESCE(n.expired, 0) = 0
-          AND LOWER(TRIM(ns.value, '.')) = ?
-        GROUP BY rs.name
-        ORDER BY rs.name
-        """,
-        (limit, nameserver),
+        SELECT nameserver, COUNT(*) AS row_count
+        FROM export_nameserver_rows
+        GROUP BY nameserver
+        ORDER BY nameserver
+        """
     )
+
+
+def _nameserver_rows(conn: sqlite3.Connection, nameserver: str) -> sqlite3.Cursor:
+    return conn.execute(
+        """
+        SELECT name
+        FROM export_nameserver_rows
+        WHERE nameserver = ?
+        ORDER BY name
+        """,
+        (nameserver,),
+    )
+
+
+class _NameserverShardWriters:
+    def __init__(self, base_dir: Path, shard_count: int, *, max_open: int = 64) -> None:
+        self.base_dir = base_dir
+        self.shard_count = shard_count
+        self.max_open = max_open
+        self._handles: OrderedDict[str, Any] = OrderedDict()
+
+    def write(self, nameserver: str, payload: dict[str, Any]) -> None:
+        shard = _nameserver_shard_id(nameserver, self.shard_count)
+        handle = self._handle(shard)
+        handle.write(dumps_json(payload))
+        handle.write("\n")
+
+    def close(self) -> None:
+        while self._handles:
+            _, handle = self._handles.popitem()
+            handle.close()
+
+    def _handle(self, shard: str) -> Any:
+        handle = self._handles.get(shard)
+        if handle is not None:
+            self._handles.move_to_end(shard)
+            return handle
+        if len(self._handles) >= self.max_open:
+            _, old_handle = self._handles.popitem(last=False)
+            old_handle.close()
+        path = self.base_dir / f"{shard}.jsonl"
+        handle = path.open("a", encoding="utf-8")
+        self._handles[shard] = handle
+        return handle
+
+
+def _write_nameserver_lookup_index(
+    base_dir: Path,
+    *,
+    shard_count: int,
+    row_detail: str,
+    output_keys: list[str],
+) -> None:
+    write_json(
+        base_dir / "index.json",
+        {
+            "version": 2,
+            "lookup": "sharded-jsonl",
+            "hash": "fnv1a32",
+            "shard_count": shard_count,
+            "shard_width": len(f"{shard_count - 1:x}"),
+            "path_template": "nameservers/shards/{shard}.jsonl",
+            "page_size": PAGE_SIZE,
+            "row_detail": row_detail,
+            "columns": output_keys,
+        },
+    )
+
+
+def _nameserver_shard_id(nameserver: str, shard_count: int) -> str:
+    shard = _fnv1a32(_normalize_nameserver(nameserver)) % shard_count
+    width = len(f"{shard_count - 1:x}")
+    return f"{shard:0{width}x}"
+
+
+def _fnv1a32(value: str) -> int:
+    result = 0x811C9DC5
+    for byte in value.encode("utf-8"):
+        result ^= byte
+        result = (result * 0x01000193) & 0xFFFFFFFF
+    return result
 
 
 def _finish_ip_address_pages(
@@ -1219,7 +1316,7 @@ def _write_nameserver_index(
         "row_count": row_count,
         "page_size": PAGE_SIZE,
         "page_count": page_count,
-        "path_template": f"nameservers/{_nameserver_basename(nameserver)}/page-{{page}}.json",
+        "path_template": f"nameservers/{_nameserver_page_dirname(nameserver)}/page-{{page}}.json",
         "row_detail": row_detail,
         "columns": output_keys,
     }
@@ -1262,7 +1359,7 @@ def _write_nameserver_page(
     *,
     output_keys: list[str],
 ) -> None:
-    page_dir = base_dir / _nameserver_basename(nameserver)
+    page_dir = base_dir / _nameserver_page_dirname(nameserver)
     page_dir.mkdir(parents=True, exist_ok=True)
     write_compact_json(
         page_dir / f"page-{page}.json",
@@ -1300,6 +1397,10 @@ def _ip_address_filename(ip: str) -> str:
 
 def _nameserver_basename(nameserver: str) -> str:
     return quote(_normalize_nameserver(nameserver), safe="")
+
+
+def _nameserver_page_dirname(nameserver: str) -> str:
+    return f"{_nameserver_basename(nameserver)}.pages"
 
 
 def _nameserver_filename(nameserver: str) -> str:
@@ -2032,6 +2133,10 @@ def _manifest_artifact_paths(out: Path, *, include_downloads: bool) -> list[str]
         paths.extend(
             path.relative_to(out).as_posix()
             for path in sorted((out / directory).glob("*/*.json"))
+        )
+        paths.extend(
+            path.relative_to(out).as_posix()
+            for path in sorted((out / directory).glob("*/*.jsonl"))
         )
         paths.extend(
             path.relative_to(out).as_posix()

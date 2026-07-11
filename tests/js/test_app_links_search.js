@@ -60,8 +60,12 @@ function loadApp(search = "") {
   );
   assert.equal(app.normalizeNameserverQuery("ns1.skyinclude."), "ns1.skyinclude");
   assert.equal(
-    app.nameserverLookupPath("a.shakestation"),
-    "data/nameservers/a.shakestation.json"
+    app.nameserverLookupIndexPath(),
+    "data/nameservers/index.json"
+  );
+  assert.match(
+    app.nameserverShardPath("a.shakestation", {shard_count: 1024, shard_width: 3}),
+    /^data\/nameservers\/shards\/[0-9a-f]{3}\.jsonl$/
   );
 }
 

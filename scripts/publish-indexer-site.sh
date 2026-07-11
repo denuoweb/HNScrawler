@@ -22,6 +22,7 @@ PUBLISH_SSH_WAIT_SECONDS="${PUBLISH_SSH_WAIT_SECONDS:-5}"
 PUBLISH_DB_RSYNC_INFO="${PUBLISH_DB_RSYNC_INFO:-progress2}"
 INDEXER_PUBLISH_KEY="${INDEXER_PUBLISH_KEY:-/home/den/.ssh/hns_topology_publish_tmp}"
 INDEXER_PUBLISH_KNOWN_HOSTS="${INDEXER_PUBLISH_KNOWN_HOSTS:-/home/den/.ssh/hns_topology_publish_known_hosts}"
+PUBLISH_LOCAL_INDEXER="${PUBLISH_LOCAL_INDEXER:-0}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/gcloud-ssh-lib.sh"
 
@@ -32,11 +33,29 @@ log() {
 gce_ssh() {
   local vm="$1"
   local command="$2"
+  if [[ "$PUBLISH_LOCAL_INDEXER" == "1" && "$vm" == "$INDEXER_VM" ]]; then
+    bash -lc "$command"
+    return
+  fi
   gcloud_compute_ssh "$vm" \
     --project "$GCP_PROJECT" \
     --zone "$GCP_ZONE" \
     --quiet \
     --command "$command"
+}
+
+web_ssh() {
+  local command="$1"
+  if [[ "$PUBLISH_LOCAL_INDEXER" == "1" ]]; then
+    ssh -i "$INDEXER_PUBLISH_KEY" \
+      -o BatchMode=yes \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile="$INDEXER_PUBLISH_KNOWN_HOSTS" \
+      "den@$web_private_ip" \
+      "$command"
+    return
+  fi
+  gce_ssh "$DENUO_WEB_VM" "$command"
 }
 
 metadata_file="$(mktemp)"
@@ -83,10 +102,17 @@ if [ '$MIN_INDEXED_HEIGHT' != '0' ]; then
 fi
 hns-topology \"\${validate_args[@]}\""
 
-indexer_private_ip="${INDEXER_PRIVATE_IP:-$(gcloud compute instances describe "$INDEXER_VM" \
-  --project "$GCP_PROJECT" \
-  --zone "$GCP_ZONE" \
-  --format='value(networkInterfaces[0].networkIP)')}"
+indexer_private_ip="${INDEXER_PRIVATE_IP:-}"
+if [[ -z "$indexer_private_ip" && "$PUBLISH_LOCAL_INDEXER" == "1" ]]; then
+  indexer_private_ip="$(curl -fsS -H 'Metadata-Flavor: Google' \
+    http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/ip || true)"
+fi
+if [[ -z "$indexer_private_ip" ]]; then
+  indexer_private_ip="$(gcloud compute instances describe "$INDEXER_VM" \
+    --project "$GCP_PROJECT" \
+    --zone "$GCP_ZONE" \
+    --format='value(networkInterfaces[0].networkIP)')"
+fi
 web_private_ip="${DENUO_WEB_PRIVATE_IP:-$(gcloud compute instances describe "$DENUO_WEB_VM" \
   --project "$GCP_PROJECT" \
   --zone "$GCP_ZONE" \
@@ -94,31 +120,6 @@ web_private_ip="${DENUO_WEB_PRIVATE_IP:-$(gcloud compute instances describe "$DE
 
 if [[ -z "$indexer_private_ip" || -z "$web_private_ip" ]]; then
   echo "could not resolve private IPs for $INDEXER_VM and $DENUO_WEB_VM" >&2
-  exit 2
-fi
-
-log "resolving publish target on $DENUO_WEB_VM"
-publish_target="$(gce_ssh "$DENUO_WEB_VM" "set -euo pipefail
-mountpoint -q '$PROD_ARTIFACT_MOUNT' || { echo '$PROD_ARTIFACT_MOUNT is not mounted; refusing to publish to boot disk' >&2; exit 2; }
-if [ -L '$DENUO_WEB_PATH' ]; then
-  target=\$(readlink -f '$DENUO_WEB_PATH')
-else
-  target='$DENUO_WEB_PATH'
-fi
-case \"\$target/\" in
-  '$PROD_ARTIFACT_MOUNT'/*) ;;
-  *)
-    if [ '$ALLOW_BOOT_DISK_PUBLISH' != '1' ]; then
-      echo \"refusing to publish to \$target; expected a path under $PROD_ARTIFACT_MOUNT\" >&2
-      exit 2
-    fi
-    ;;
-esac
-sudo mkdir -p \"\$target\"
-printf '%s\n' \"\$target\"" | tail -n1)"
-
-if [[ -z "$publish_target" ]]; then
-  echo "could not resolve publish target on $DENUO_WEB_VM" >&2
   exit 2
 fi
 
@@ -196,6 +197,31 @@ done
 echo 'direct SSH did not become ready' >&2
 exit 2"
 
+log "resolving publish target on $DENUO_WEB_VM"
+publish_target="$(web_ssh "set -euo pipefail
+mountpoint -q '$PROD_ARTIFACT_MOUNT' || { echo '$PROD_ARTIFACT_MOUNT is not mounted; refusing to publish to boot disk' >&2; exit 2; }
+if [ -L '$DENUO_WEB_PATH' ]; then
+  target=\$(readlink -f '$DENUO_WEB_PATH')
+else
+  target='$DENUO_WEB_PATH'
+fi
+case \"\$target/\" in
+  '$PROD_ARTIFACT_MOUNT'/*) ;;
+  *)
+    if [ '$ALLOW_BOOT_DISK_PUBLISH' != '1' ]; then
+      echo \"refusing to publish to \$target; expected a path under $PROD_ARTIFACT_MOUNT\" >&2
+      exit 2
+    fi
+    ;;
+esac
+sudo mkdir -p \"\$target\"
+printf '%s\n' \"\$target\"" | tail -n1)"
+
+if [[ -z "$publish_target" ]]; then
+  echo "could not resolve publish target on $DENUO_WEB_VM" >&2
+  exit 2
+fi
+
 log "rsyncing $INDEXER_PUBLIC_DIR directly to $DENUO_WEB_VM:$publish_target"
 gce_ssh "$INDEXER_VM" "set -euo pipefail
 rsync -a \
@@ -226,7 +252,7 @@ if [[ "$PUBLISH_LOOKUP_DB" == "1" ]]; then
     den@$web_private_ip:'$lookup_tmp'"
 
   log "restarting lookup service on $DENUO_WEB_VM"
-  gce_ssh "$DENUO_WEB_VM" "set -euo pipefail
+  web_ssh "set -euo pipefail
   case '$PROD_LOOKUP_DB' in
     '$PROD_ARTIFACT_MOUNT'/*) ;;
     *) echo 'refusing lookup DB outside $PROD_ARTIFACT_MOUNT: $PROD_LOOKUP_DB' >&2; exit 2 ;;
@@ -240,7 +266,7 @@ if [[ "$PUBLISH_LOOKUP_DB" == "1" ]]; then
 fi
 
 log "finalizing ownership on $DENUO_WEB_VM"
-gce_ssh "$DENUO_WEB_VM" "set -euo pipefail
+web_ssh "set -euo pipefail
 sudo chown www-data:www-data '$publish_target'
 sudo chmod 755 '$publish_target'
 echo '[publish] remote sync complete'"

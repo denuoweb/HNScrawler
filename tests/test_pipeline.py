@@ -40,6 +40,27 @@ FIXTURE = Path("tests/fixtures/sample_hsd_names.json")
 JSONL_FIXTURE = Path("tests/fixtures/sample_hsd_names.jsonl")
 
 
+def read_nameserver_lookup(out: Path, nameserver: str) -> dict:
+    index = json.loads((out / "data/nameservers/index.json").read_text(encoding="utf-8"))
+    assert index["lookup"] == "sharded-jsonl"
+    for shard_path in (out / "data/nameservers/shards").glob("*.jsonl"):
+        for line in shard_path.read_text(encoding="utf-8").splitlines():
+            entry = json.loads(line)
+            if entry["n"] == nameserver:
+                rows = [{"name": name, "nameserver": nameserver} for name in entry.get("r", [])]
+                return {
+                    "nameserver": nameserver,
+                    "row_count": entry["c"],
+                    "page_size": index["page_size"],
+                    "page_count": 1 if entry["c"] else 0,
+                    "row_detail": index["row_detail"],
+                    "columns": index["columns"],
+                    "rows": rows,
+                    "path_template": entry.get("t"),
+                }
+    raise AssertionError(f"nameserver lookup not found: {nameserver}")
+
+
 class FakeHsdClient:
     def __init__(self, *, block_hashes: dict[int, str], resources: dict[str, dict]):
         self.block_hashes = block_hashes
@@ -349,7 +370,7 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
         "data/manifest.json",
         "data/overview-pages.json",
         "data/names-pages.json",
-        "data/nameservers/ns1.delegated.json",
+        "data/nameservers/index.json",
         "data/ip-addresses/198.51.100.2.json",
         "data/ip-addresses/203.0.113.10.json",
         "data/ip-addresses/2001%3Adb8%3A%3A10.json",
@@ -417,7 +438,7 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     direct_ipv6_index = json.loads(
         (out / "data/ip-addresses/2001%3Adb8%3A%3A10.json").read_text(encoding="utf-8")
     )
-    nameserver_index = json.loads((out / "data/nameservers/ns1.delegated.json").read_text(encoding="utf-8"))
+    nameserver_index = read_nameserver_lookup(out, "ns1.delegated")
     delegated_ip_page = json.loads(
         (out / "data" / delegated_ip_index["path_template"].replace("{page}", "1")).read_text(encoding="utf-8")
     )
@@ -427,9 +448,10 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     direct_ipv6_page = json.loads(
         (out / "data" / direct_ipv6_index["path_template"].replace("{page}", "1")).read_text(encoding="utf-8")
     )
-    nameserver_page = json.loads(
-        (out / "data" / nameserver_index["path_template"].replace("{page}", "1")).read_text(encoding="utf-8")
-    )
+    nameserver_page = {
+        "columns": nameserver_index["columns"],
+        "rows": [[row["name"], row["nameserver"]] for row in nameserver_index["rows"]],
+    }
     names_page_names = [row["name"] for row in names_page_rows]
     direct_row = next(row for row in names_page_rows if row["name"] == "direct")
     namebase_provider = next(item for item in providers if item["provider_key"] == "namebase/default")
@@ -454,8 +476,8 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert "names-pages/all/page-1.json" in manifest_artifacts
     assert "ip-addresses/198.51.100.2.json" in manifest_artifacts
     assert "ip-addresses/198.51.100.2/page-1.json" in manifest_artifacts
-    assert "nameservers/ns1.delegated.json" in manifest_artifacts
-    assert "nameservers/ns1.delegated/page-1.json" in manifest_artifacts
+    assert "nameservers/index.json" in manifest_artifacts
+    assert any(path.startswith("nameservers/shards/") for path in manifest_artifacts)
     assert "ip-addresses/203.0.113.10.json" in manifest_artifacts
     assert "ip-addresses/203.0.113.10/page-1.json" in manifest_artifacts
     assert "ip-addresses/2001%3Adb8%3A%3A10.json" in manifest_artifacts
@@ -534,6 +556,7 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert nameserver_index["row_count"] == 1
     assert nameserver_index["row_detail"] == "nameserver_matches"
     assert nameserver_index["columns"] == ["name", "nameserver"]
+    assert nameserver_index["path_template"] is None
     assert nameserver_page["columns"] == ["name", "nameserver"]
     assert nameserver_page["rows"] == [["delegated", "ns1.delegated"]]
     assert "classes" in summary
@@ -556,6 +579,51 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
 
     public_checks = validate_public_release(public_dir=out)
     assert release_is_valid(public_checks), [check for check in public_checks if not check.ok]
+
+
+def test_nameserver_lookup_shards_do_not_emit_per_nameserver_files(tmp_path):
+    db_path = tmp_path / "topology.sqlite"
+    out = tmp_path / "public"
+    fixture_path = tmp_path / "nameserver-collision.json"
+    fixture_path.write_text(
+        json.dumps(
+            {
+                "chain": "fixture",
+                "height": 123456,
+                "tip_hash": "nameserver-collision",
+                "hsd_version": "fixture",
+                "names": [
+                    {
+                        "name": "usesns1",
+                        "nameHash": "hash-usesns1",
+                        "state": "CLOSED",
+                        "renewal": 122000,
+                        "resource": {"records": [{"type": "NS", "ns": "ns1."}]},
+                    },
+                    {
+                        "name": "usesns1json",
+                        "nameHash": "hash-usesns1json",
+                        "state": "CLOSED",
+                        "renewal": 122000,
+                        "resource": {"records": [{"type": "NS", "ns": "ns1.json."}]},
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(db_path) as conn:
+        bootstrap_from_fixture(conn, fixture_path=fixture_path, rules=rules)
+        generate_site(conn, db_path=db_path, out_dir=out)
+
+    ns1_index = read_nameserver_lookup(out, "ns1")
+    ns1_json_index = read_nameserver_lookup(out, "ns1.json")
+
+    assert ns1_index["row_count"] == 1
+    assert ns1_json_index["row_count"] == 1
+    assert not (out / "data/nameservers/ns1.json").exists()
+    assert not (out / "data/nameservers/ns1.json.json").exists()
 
 
 def test_generate_site_requires_current_resource_ip_index_and_preserves_existing_output(tmp_path):

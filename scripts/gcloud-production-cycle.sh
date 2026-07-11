@@ -20,6 +20,9 @@ HSD_READY_ATTEMPTS="${HSD_READY_ATTEMPTS:-720}"
 HSD_READY_INTERVAL_SECONDS="${HSD_READY_INTERVAL_SECONDS:-60}"
 RUN_PIPELINE="${RUN_PIPELINE:-1}"
 RUN_PUBLISH="${RUN_PUBLISH:-1}"
+RUN_PUBLISH_FROM_INDEXER="${RUN_PUBLISH_FROM_INDEXER:-0}"
+INDEXER_PIPELINE_RUNNER="${INDEXER_PIPELINE_RUNNER:-systemd}"
+INDEXER_PIPELINE_WAIT="${INDEXER_PIPELINE_WAIT:-1}"
 INDEXER_FINAL_ACTION="${INDEXER_FINAL_ACTION:-stop}"
 INDEXER_FAILURE_ACTION="${INDEXER_FAILURE_ACTION:-stop}"
 
@@ -32,6 +35,24 @@ case "$INDEXER_FAILURE_ACTION" in
   stop|delete-vm|keep) ;;
   *) echo "INDEXER_FAILURE_ACTION must be stop, delete-vm, or keep" >&2; exit 2 ;;
 esac
+
+case "$INDEXER_PIPELINE_RUNNER" in
+  systemd|ssh) ;;
+  *) echo "INDEXER_PIPELINE_RUNNER must be systemd or ssh" >&2; exit 2 ;;
+esac
+
+if [ "$RUN_PIPELINE" = "1" ] && [ "$INDEXER_PIPELINE_RUNNER" = "systemd" ] && [ "$INDEXER_PIPELINE_WAIT" != "1" ]; then
+  if [ "$INDEXER_FINAL_ACTION" != "keep" ] || [ "$INDEXER_FAILURE_ACTION" != "keep" ]; then
+    cat >&2 <<EOF
+Refusing to launch a detached remote pipeline with VM cleanup enabled.
+
+Set INDEXER_PIPELINE_WAIT=1 so this wrapper waits for the VM-owned unit before
+stopping the indexer, or set both INDEXER_FINAL_ACTION=keep and
+INDEXER_FAILURE_ACTION=keep for an intentionally detached run.
+EOF
+    exit 2
+  fi
+fi
 
 if [ "$CONFIRM_PRODUCTION_RUN" != "1" ] && [ "$DRY_RUN" != "1" ]; then
   cat >&2 <<EOF
@@ -118,7 +139,12 @@ trap on_exit EXIT
 
 echo "production cycle"
 echo "project=$GCP_PROJECT zone=$GCP_ZONE indexer=$INDEXER_VM"
-echo "pipeline=${PIPELINE_MODE:-incremental} publish=$RUN_PUBLISH final=$INDEXER_FINAL_ACTION failure=$INDEXER_FAILURE_ACTION dry_run=$DRY_RUN"
+if [ "$RUN_PUBLISH" = "1" ] && [ "$RUN_PUBLISH_FROM_INDEXER" = "1" ]; then
+  PUBLISH_MODE="indexer"
+else
+  PUBLISH_MODE="$RUN_PUBLISH"
+fi
+echo "pipeline=${PIPELINE_MODE:-incremental} publish=$PUBLISH_MODE final=$INDEXER_FINAL_ACTION failure=$INDEXER_FAILURE_ACTION dry_run=$DRY_RUN"
 
 if [ "$RUN_PREFLIGHT" = "1" ]; then
   run_cmd scripts/gcloud-production-preflight.sh
@@ -159,7 +185,7 @@ if [ "$RUN_PIPELINE" = "1" ]; then
   run_cmd scripts/gcloud-run-indexer-pipeline.sh
 fi
 
-if [ "$RUN_PUBLISH" = "1" ]; then
+if [ "$RUN_PUBLISH" = "1" ] && [ "$RUN_PUBLISH_FROM_INDEXER" != "1" ]; then
   run_cmd scripts/publish-indexer-site.sh
 fi
 
