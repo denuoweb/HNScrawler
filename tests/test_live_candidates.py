@@ -1,7 +1,9 @@
 from hns_topology.db import connect, insert_dns_evidence
 from hns_topology.indexer import bootstrap_from_fixture
 from hns_topology.live_candidates import (
+    _is_actionable_bootstrap_ip,
     _is_public_ip,
+    _topology_root_rows,
     dns_hosts_from_evidence,
     sync_topology,
     sync_topology_if_changed,
@@ -18,6 +20,24 @@ def test_bootstrap_ip_filter_requires_global_unicast():
     assert _is_public_ip("224.0.0.1") is False
     assert _is_public_ip("ff02::1") is False
     assert _is_public_ip("127.0.0.1") is False
+    assert _is_actionable_bootstrap_ip("93.184.216.34") is True
+    assert _is_actionable_bootstrap_ip("44.231.6.183") is False
+
+
+def test_root_detail_query_starts_from_materialized_candidate_names():
+    captured = []
+    connection = type(
+        "CaptureConnection",
+        (),
+        {"execute": lambda self, sql, params: captured.append((sql, params))},
+    )()
+
+    _topology_root_rows(connection)
+
+    sql, _params = captured[0]
+    assert "FROM live_candidate_names candidate" in sql
+    assert "CROSS JOIN names n ON n.name = candidate.name" in sql
+    assert "names n INDEXED BY idx_names_class" not in sql
 
 
 def test_sync_adds_apex_and_evidence_subdomains_without_guessing_www(tmp_path, monkeypatch):

@@ -8,7 +8,11 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from .infra import NON_ACTIONABLE_PROVIDER_TYPES
+from .infra import (
+    BULK_DEFAULT_RESOURCE_IPS,
+    KNOWN_HNS_RESOLVER_IPS,
+    NON_ACTIONABLE_PROVIDER_TYPES,
+)
 from .live_db import (
     begin_topology_sync,
     finish_topology_sync,
@@ -60,6 +64,7 @@ ROOT_SELECTION_SQL = f"""
   )
 )
 """
+EXCLUDED_BOOTSTRAP_IPS = frozenset([*BULK_DEFAULT_RESOURCE_IPS, *KNOWN_HNS_RESOLVER_IPS])
 
 
 def sync_topology(live_conn: sqlite3.Connection, topology_db: str | Path) -> dict[str, int]:
@@ -73,7 +78,15 @@ def sync_topology(live_conn: sqlite3.Connection, topology_db: str | Path) -> dic
     with sqlite3.connect(uri, uri=True) as topology:
         topology.row_factory = sqlite3.Row
         topology.create_function("hns_live_public_ip", 1, _is_public_ip, deterministic=True)
+        topology.create_function(
+            "hns_live_actionable_ip",
+            1,
+            _is_actionable_bootstrap_ip,
+            deterministic=True,
+        )
+        topology.execute("PRAGMA temp_store = FILE")
         _require_topology_tables(topology)
+        _prepare_candidate_names(topology)
         meta = {
             row["key"]: row["value"]
             for row in topology.execute("SELECT key, value FROM snapshot_meta")
@@ -173,6 +186,59 @@ def dns_hosts_from_evidence(root_name: str, item: dict[str, Any]) -> list[str]:
     return sorted(hosts)
 
 
+def _prepare_candidate_names(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp.live_candidate_names")
+    conn.execute(
+        """
+        CREATE TEMP TABLE live_candidate_names (
+          name TEXT PRIMARY KEY
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO live_candidate_names(name)
+        SELECT name
+        FROM resource_ip
+        WHERE hns_live_actionable_ip(ip) = 1
+        GROUP BY name
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO live_candidate_names(name)
+        SELECT name
+        FROM names INDEXED BY idx_names_class
+        WHERE onchain_class = 'DNSSEC_CANDIDATE'
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO live_candidate_names(name)
+        SELECT name
+        FROM tlsa_evidence_summary
+        WHERE has_tlsa = 1
+        """
+    )
+    provider_keys = [
+        str(row["provider_key"])
+        for row in conn.execute(
+            "SELECT provider_key FROM provider_summary WHERE provider_type = 'external_dns'"
+        )
+    ]
+    for provider_key in provider_keys:
+        conn.execute(
+            f"""
+            INSERT OR IGNORE INTO live_candidate_names(name)
+            SELECT name
+            FROM names INDEXED BY idx_names_provider
+            WHERE provider_guess = ?
+              AND onchain_class IN ({ROOT_CLASSES_SQL})
+            """,
+            (provider_key,),
+        )
+
+
 def _topology_root_rows(conn: sqlite3.Connection):
     excluded = ",".join("?" for _ in NON_ACTIONABLE_PROVIDER_TYPES)
     return conn.execute(
@@ -184,7 +250,8 @@ def _topology_root_rows(conn: sqlite3.Connection):
           COALESCE(ps.provider_type, 'unknown') AS provider_type,
           COALESCE(tes.has_tlsa, 0) AS has_tlsa,
           COALESCE(tes.tlsa_owners, '[]') AS tlsa_owners
-        FROM names n INDEXED BY idx_names_class
+        FROM live_candidate_names candidate
+        CROSS JOIN names n ON n.name = candidate.name
         JOIN resource_summary rs ON rs.name = n.name
         LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
         LEFT JOIN tlsa_evidence_summary tes ON tes.name = n.name
@@ -251,8 +318,9 @@ def _dns_evidence_candidates(
         f"""
         SELECT de.name, de.qname, de.rrtype, de.answer_json, de.captured_at,
                rs.resource_hash
-        FROM dns_evidence de
-        JOIN names n ON n.name = de.name
+        FROM live_candidate_names candidate
+        CROSS JOIN names n ON n.name = candidate.name
+        JOIN dns_evidence de ON de.name = n.name
         JOIN resource_summary rs ON rs.name = n.name
         LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
         LEFT JOIN tlsa_evidence_summary tes ON tes.name = n.name
@@ -309,6 +377,7 @@ def _require_topology_tables(conn: sqlite3.Connection) -> None:
         "names",
         "resource_summary",
         "provider_summary",
+        "resource_ip",
         "dns_evidence",
         "tlsa_evidence_summary",
     }
@@ -378,3 +447,13 @@ def _is_public_ip(value: str) -> bool:
     except ValueError:
         return False
     return address.is_global and not address.is_multicast
+
+
+def _is_actionable_bootstrap_ip(value: str) -> bool:
+    if not _is_public_ip(value):
+        return False
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return str(address) not in EXCLUDED_BOOTSTRAP_IPS
