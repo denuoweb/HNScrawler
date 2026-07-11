@@ -354,7 +354,7 @@ function resolverSoftwareCell(row) {
 
 function overviewPageLink(label, targetPage, disabled, pageParam, collectionKey) {
   if (disabled) return `<button type="button" class="page-link disabled" disabled>${escapeHtml(label)}</button>`;
-  return `<button type="button" class="page-link" data-overview-key="${escapeHtml(collectionKey)}" data-overview-page="${escapeHtml(String(targetPage))}" data-overview-page-param="${escapeHtml(pageParam)}">${escapeHtml(label)}</button>`;
+  return `<button type="button" class="page-link" data-overview-page="${escapeHtml(String(targetPage))}" data-overview-page-param="${escapeHtml(pageParam)}">${escapeHtml(label)}</button>`;
 }
 
 function overviewPagination(state, pageParam, label, collectionKey) {
@@ -499,11 +499,11 @@ function wireOverviewPagination(app, summary, overview) {
     if (!control || !app.contains(control)) return;
     event.preventDefault();
     if (control.disabled) return;
-    const collectionKey = control.dataset.overviewKey || "";
+    const article = control.closest(".overview-collection[data-overview-key]");
+    const collectionKey = article?.dataset.overviewKey || "";
     const pageParam = control.dataset.overviewPageParam || "";
     const targetPage = Number.parseInt(control.dataset.overviewPage || "1", 10);
     const currentState = overview[collectionKey];
-    const article = control.closest("[data-overview-key]");
     if (!currentState || !article || !Number.isFinite(targetPage)) return;
     if (article.getAttribute("aria-busy") === "true") return;
 

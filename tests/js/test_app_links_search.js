@@ -160,6 +160,7 @@ function loadOverviewApp(search = "") {
   assert.equal(html.includes('data-overview-key="resourceIps"'), true);
   assert.equal(html.includes('data-overview-page="2"'), true);
   assert.equal(html.includes("<button"), true);
+  assert.equal(html.includes('class="page-link" data-overview-key'), false);
   assert.equal(html.includes('href="/hns-topology/index.html?resource_ip_page=2"'), false);
 }
 
@@ -176,6 +177,7 @@ function loadOverviewApp(search = "") {
   };
   const attrs = {};
   const article = {
+    dataset: {overviewKey: "resourceIps"},
     innerHTML: "",
     getAttribute(key) {
       return attrs[key] || "";
@@ -196,7 +198,7 @@ function loadOverviewApp(search = "") {
     },
     closest(selector) {
       if (selector === "[data-overview-page]") return control;
-      if (selector === "[data-overview-key]") return article;
+      if (selector === ".overview-collection[data-overview-key]") return article;
       return null;
     }
   };
