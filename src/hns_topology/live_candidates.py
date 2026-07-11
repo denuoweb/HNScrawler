@@ -210,32 +210,31 @@ def _prepare_candidate_names(conn: sqlite3.Connection) -> None:
         """
         INSERT OR IGNORE INTO live_candidate_names(name)
         SELECT name
-        FROM names INDEXED BY idx_names_class
-        WHERE onchain_class = 'DNSSEC_CANDIDATE'
-        """
-    )
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO live_candidate_names(name)
-        SELECT name
         FROM tlsa_evidence_summary
         WHERE has_tlsa = 1
         """
     )
-    provider_keys = [
-        str(row["provider_key"])
+    excluded_types = ",".join("?" for _ in NON_ACTIONABLE_PROVIDER_TYPES)
+    providers = [
+        (str(row["provider_key"]), str(row["provider_type"] or "unknown"))
         for row in conn.execute(
-            "SELECT provider_key FROM provider_summary WHERE provider_type = 'external_dns'"
+            f"""
+            SELECT provider_key, provider_type
+            FROM provider_summary
+            WHERE COALESCE(provider_type, 'unknown') NOT IN ({excluded_types})
+            """,
+            NON_ACTIONABLE_PROVIDER_TYPES,
         )
     ]
-    for provider_key in provider_keys:
+    for provider_key, provider_type in providers:
+        classes = ROOT_CLASSES_SQL if provider_type == "external_dns" else "'DNSSEC_CANDIDATE'"
         conn.execute(
             f"""
             INSERT OR IGNORE INTO live_candidate_names(name)
             SELECT name
             FROM names INDEXED BY idx_names_provider
             WHERE provider_guess = ?
-              AND onchain_class IN ({ROOT_CLASSES_SQL})
+              AND onchain_class IN ({classes})
             """,
             (provider_key,),
         )
