@@ -8,6 +8,8 @@ def test_nightly_scripts_parse_as_bash():
         Path("scripts/gcloud-run-indexer-pipeline.sh"),
         Path("scripts/run-live-directory.sh"),
         Path("scripts/setup-live-directory-service.sh"),
+        Path("scripts/configure-live-directory-nginx.sh"),
+        Path("scripts/publish-hns-topology-navigation.sh"),
         Path("scripts/gcloud-deploy-live-directory.sh"),
     ]:
         subprocess.run(["bash", "-n", str(script)], check=True)
@@ -72,3 +74,15 @@ def test_live_directory_runner_uses_web_vm_snapshot_and_separate_state():
     assert '.venv/bin/hns-live-directory "${args[@]}"' in runner
     assert "OnUnitActiveSec=1d" in setup
     assert "hns-live-directory.timer" in setup
+    assert "configure-live-directory-nginx.sh" in setup
+    assert "publish-hns-topology-navigation.sh" in setup
+
+
+def test_live_directory_nginx_config_serves_the_directory_root_explicitly():
+    snippet = Path("deploy/nginx/hns-live-directory.conf").read_text(encoding="utf-8")
+    setup = Path("scripts/configure-live-directory-nginx.sh").read_text(encoding="utf-8")
+
+    assert "location = /hns-live/" in snippet
+    assert "try_files /hns-live/index.html =404" in snippet
+    assert "location ^~ /hns-live/" in snippet
+    assert "hns.denuoweb.com" in setup

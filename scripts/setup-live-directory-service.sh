@@ -6,6 +6,7 @@ LIVE_REPO_DIR="${LIVE_REPO_DIR:-$LIVE_ROOT/HNScrawler}"
 LIVE_DB="${LIVE_DB:-$LIVE_ROOT/data/live.sqlite}"
 LIVE_PUBLIC_DIR="${LIVE_PUBLIC_DIR:-$LIVE_ROOT/public}"
 LIVE_WEB_PATH="${LIVE_WEB_PATH:-/var/www/denuoweb/hns-live}"
+TOPOLOGY_SITE_DIR="${TOPOLOGY_SITE_DIR:-/mnt/hns-topology/site}"
 TOPOLOGY_DB="${TOPOLOGY_DB:-/mnt/hns-topology/topology.sqlite}"
 LIVE_SERVICE_USER="${LIVE_SERVICE_USER:-den}"
 LIVE_SERVICE_GROUP="${LIVE_SERVICE_GROUP:-www-data}"
@@ -106,6 +107,9 @@ if [[ -e "$LIVE_WEB_PATH" && ! -L "$LIVE_WEB_PATH" ]]; then
 fi
 sudo ln -sfn "$LIVE_PUBLIC_DIR" "$LIVE_WEB_PATH"
 sudo chown -h "$LIVE_SERVICE_USER:$LIVE_SERVICE_GROUP" "$LIVE_WEB_PATH"
+LIVE_REPO_DIR="$LIVE_REPO_DIR" scripts/configure-live-directory-nginx.sh
+LIVE_REPO_DIR="$LIVE_REPO_DIR" TOPOLOGY_SITE_DIR="$TOPOLOGY_SITE_DIR" \
+  scripts/publish-hns-topology-navigation.sh
 
 sudo systemctl daemon-reload
 sudo systemctl enable hns-live-directory.timer

@@ -20,6 +20,8 @@ The live service reads that snapshot and owns separate state:
 
 Replacing the weekly topology database or `/mnt/hns-topology/site` does not replace live probe history or the `/hns-live/` public tree.
 
+The live-directory deployment also installs an explicit `hns.denuoweb.com` Nginx location for `/hns-live/` and refreshes only the topology directory `index.html` navigation. It does not run the topology build or replace its data files.
+
 Daily cycles compare the topology tip, height, provider-rule hash, and generation timestamp first. Candidate roots are refreshed only when that fingerprint changes; unchanged daily runs do not scan the multi-gigabyte topology database. Full refreshes select indexed promising on-chain classes before joining resource details and stream rows into the live database instead of retaining the topology candidate set in memory.
 
 ## Candidate Policy

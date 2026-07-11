@@ -308,6 +308,8 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     index_html = (out / "index.html").read_text(encoding="utf-8")
     assert "<title>HNS Domain Directory</title>" in index_html
     assert "<h1>HNS Domain Directory</h1>" in index_html
+    assert 'href="/hns-live/"' in index_html
+    assert "Websites Online" in index_html
     assert "Live HNS Host Directory" not in index_html
     assert stat.S_IMODE(out.stat().st_mode) == 0o755
     for relative in [
