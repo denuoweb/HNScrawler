@@ -28,6 +28,46 @@ function loadApp(search = "") {
   return context;
 }
 
+function loadOverviewApp(search = "") {
+  const source = fs.readFileSync("src/hns_topology/site_assets/app.js", "utf8")
+    .replace(/\nboot\(\);\s*$/, "\n");
+  const context = {
+    URL,
+    URLSearchParams,
+    Intl,
+    console,
+    Date,
+    setTimeout,
+    fetch: async () => ({
+      ok: true,
+      json: async () => ({
+        rows: [{ip: "203.0.113.11", names_count: 2, field_counts: {GLUE4: 2}, role: "unknown"}]
+      })
+    }),
+    window: {
+      __HNS_TOPOLOGY_BASE__: "/hns-topology/",
+      location: {
+        origin: "https://hns.denuoweb.com",
+        pathname: "/hns-topology/index.html",
+        search
+      },
+      history: {
+        replaced: "",
+        replaceState(_state, _title, url) {
+          this.replaced = url;
+        }
+      }
+    },
+    document: {
+      body: {dataset: {page: "overview"}},
+      querySelectorAll: () => [],
+      getElementById: () => ({innerHTML: ""})
+    }
+  };
+  vm.runInNewContext(source, context);
+  return context;
+}
+
 {
   const app = loadApp("?filter=stage%3Atlsa_gap&q=mercenary");
   const html = app.hnsNameLink("mercenary", "mercenary");
@@ -119,4 +159,68 @@ function loadApp(search = "") {
   assert.equal(html.includes("Provider Classification"), false);
   assert.equal(html.includes('data-overview-key="resourceIps"'), true);
   assert.equal(html.includes('data-overview-page="2"'), true);
+  assert.equal(html.includes("<button"), true);
+  assert.equal(html.includes('href="/hns-topology/index.html?resource_ip_page=2"'), false);
 }
+
+(async () => {
+  const app = loadOverviewApp("");
+  let listener = null;
+  const appRoot = {
+    addEventListener(type, callback) {
+      if (type === "click") listener = callback;
+    },
+    contains(node) {
+      return node === control;
+    }
+  };
+  const attrs = {};
+  const article = {
+    innerHTML: "",
+    getAttribute(key) {
+      return attrs[key] || "";
+    },
+    setAttribute(key, value) {
+      attrs[key] = value;
+    },
+    removeAttribute(key) {
+      delete attrs[key];
+    }
+  };
+  const control = {
+    disabled: false,
+    dataset: {
+      overviewKey: "resourceIps",
+      overviewPage: "2",
+      overviewPageParam: "resource_ip_page"
+    },
+    closest(selector) {
+      if (selector === "[data-overview-page]") return control;
+      if (selector === "[data-overview-key]") return article;
+      return null;
+    }
+  };
+  let prevented = false;
+  app.wireOverviewPagination(appRoot, {top_resource_ips: []}, {
+    resourceIps: {
+      collection: {page_count: 2, path_template: "overview-pages/resource_ips/page-{page}.json"},
+      page: 1,
+      rows: []
+    }
+  });
+  assert.equal(typeof listener, "function");
+  await listener({
+    target: control,
+    preventDefault() {
+      prevented = true;
+    }
+  });
+  assert.equal(prevented, true);
+  assert.equal(attrs["aria-busy"], undefined);
+  assert.equal(article.innerHTML.includes("<article"), false);
+  assert.equal(article.innerHTML.includes("203.0.113.11"), true);
+  assert.equal(app.window.history.replaced, "/hns-topology/index.html?resource_ip_page=2");
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

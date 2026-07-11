@@ -860,8 +860,11 @@ th {
 }
 
 .page-link {
+  appearance: none;
   color: var(--blue);
   background: var(--panel);
+  cursor: pointer;
+  font: inherit;
   font-weight: 700;
   text-decoration: none;
 }
@@ -870,8 +873,10 @@ th {
   background: var(--surface);
 }
 
-.page-link.disabled {
+.page-link.disabled,
+.page-link:disabled {
   color: var(--muted);
+  cursor: default;
   background: var(--surface);
   font-weight: 600;
 }

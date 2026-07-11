@@ -353,8 +353,8 @@ function resolverSoftwareCell(row) {
 }
 
 function overviewPageLink(label, targetPage, disabled, pageParam, collectionKey) {
-  if (disabled) return `<span class="page-link disabled">${escapeHtml(label)}</span>`;
-  return `<a class="page-link" href="${escapeHtml(hrefWithPageParam(targetPage, pageParam))}" data-overview-key="${escapeHtml(collectionKey)}" data-overview-page="${escapeHtml(String(targetPage))}" data-overview-page-param="${escapeHtml(pageParam)}">${escapeHtml(label)}</a>`;
+  if (disabled) return `<button type="button" class="page-link disabled" disabled>${escapeHtml(label)}</button>`;
+  return `<button type="button" class="page-link" data-overview-key="${escapeHtml(collectionKey)}" data-overview-page="${escapeHtml(String(targetPage))}" data-overview-page-param="${escapeHtml(pageParam)}">${escapeHtml(label)}</button>`;
 }
 
 function overviewPagination(state, pageParam, label, collectionKey) {
@@ -465,11 +465,15 @@ function overviewRows(summary, overview, collectionKey) {
   return overview[collectionKey]?.rows || summary[config.fallbackRows] || [];
 }
 
-function overviewCollectionCard(collectionKey, state, rows) {
+function overviewCollectionCardBody(collectionKey, state, rows) {
   const config = overviewCollectionConfig(collectionKey);
+  return `<div class="panel-heading"><h2>${escapeHtml(config.title)}</h2>${overviewPagination(state, config.pageParam, config.pageLabel, collectionKey)}</div>
+    ${table(rows, config.columns, config.emptyMessage, {wrapClass: "compact-table-wrap"})}`;
+}
+
+function overviewCollectionCard(collectionKey, state, rows) {
   return `<article class="panel overview-collection" data-overview-key="${escapeHtml(collectionKey)}">
-    <div class="panel-heading"><h2>${escapeHtml(config.title)}</h2>${overviewPagination(state, config.pageParam, config.pageLabel, collectionKey)}</div>
-    ${table(rows, config.columns, config.emptyMessage, {wrapClass: "compact-table-wrap"})}
+    ${overviewCollectionCardBody(collectionKey, state, rows)}
   </article>`;
 }
 
@@ -491,24 +495,27 @@ function updateOverviewPageParam(pageParam, page) {
 
 function wireOverviewPagination(app, summary, overview) {
   app.addEventListener("click", async (event) => {
-    const link = event.target.closest?.("a[data-overview-page]");
-    if (!link || !app.contains(link)) return;
+    const control = event.target.closest?.("[data-overview-page]");
+    if (!control || !app.contains(control)) return;
     event.preventDefault();
-    const collectionKey = link.dataset.overviewKey || "";
-    const pageParam = link.dataset.overviewPageParam || "";
-    const targetPage = Number.parseInt(link.dataset.overviewPage || "1", 10);
+    if (control.disabled) return;
+    const collectionKey = control.dataset.overviewKey || "";
+    const pageParam = control.dataset.overviewPageParam || "";
+    const targetPage = Number.parseInt(control.dataset.overviewPage || "1", 10);
     const currentState = overview[collectionKey];
-    const article = link.closest("[data-overview-key]");
+    const article = control.closest("[data-overview-key]");
     if (!currentState || !article || !Number.isFinite(targetPage)) return;
+    if (article.getAttribute("aria-busy") === "true") return;
 
     article.setAttribute("aria-busy", "true");
     try {
       overview[collectionKey] = await loadOverviewCollectionPage(currentState, targetPage);
-      article.outerHTML = overviewCollectionCard(
+      article.innerHTML = overviewCollectionCardBody(
         collectionKey,
         overview[collectionKey],
         overviewRows(summary, overview, collectionKey)
       );
+      article.removeAttribute("aria-busy");
       updateOverviewPageParam(pageParam, overview[collectionKey].page);
     } catch (error) {
       article.removeAttribute("aria-busy");
