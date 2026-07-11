@@ -78,6 +78,14 @@ def test_live_directory_runner_uses_web_vm_snapshot_and_separate_state():
     assert "publish-hns-topology-navigation.sh" in setup
 
 
+def test_topology_navigation_publisher_renders_both_entry_pages():
+    publisher = Path("scripts/publish-hns-topology-navigation.sh").read_text(encoding="utf-8")
+
+    assert '_html(page="overview", title="HNS Domain Directory")' in publisher
+    assert '_html(page="names", title="HNS Root Diagnostics")' in publisher
+    assert '"$TOPOLOGY_SITE_DIR/names.html"' in publisher
+
+
 def test_live_directory_nginx_config_serves_the_directory_root_explicitly():
     snippet = Path("deploy/nginx/hns-live-directory.conf").read_text(encoding="utf-8")
     setup = Path("scripts/configure-live-directory-nginx.sh").read_text(encoding="utf-8")
