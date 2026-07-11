@@ -31,19 +31,19 @@ PUBLIC_BOOTSTRAP_SQL = """
 (
   EXISTS (
     SELECT 1 FROM json_each(COALESCE(rs.synth4, '[]')) ip
-    WHERE hns_live_public_ip(ip.value) = 1
+    WHERE hns_live_actionable_ip(ip.value) = 1
   )
   OR EXISTS (
     SELECT 1 FROM json_each(COALESCE(rs.synth6, '[]')) ip
-    WHERE hns_live_public_ip(ip.value) = 1
+    WHERE hns_live_actionable_ip(ip.value) = 1
   )
   OR EXISTS (
     SELECT 1 FROM json_each(COALESCE(rs.glue4, '[]')) ip
-    WHERE hns_live_public_ip(ip.value) = 1
+    WHERE hns_live_actionable_ip(ip.value) = 1
   )
   OR EXISTS (
     SELECT 1 FROM json_each(COALESCE(rs.glue6, '[]')) ip
-    WHERE hns_live_public_ip(ip.value) = 1
+    WHERE hns_live_actionable_ip(ip.value) = 1
   )
 )
 """
@@ -77,7 +77,6 @@ def sync_topology(live_conn: sqlite3.Connection, topology_db: str | Path) -> dic
     uri = f"file:{source.resolve().as_posix()}?mode=ro"
     with sqlite3.connect(uri, uri=True) as topology:
         topology.row_factory = sqlite3.Row
-        topology.create_function("hns_live_public_ip", 1, _is_public_ip, deterministic=True)
         topology.create_function(
             "hns_live_actionable_ip",
             1,
@@ -195,14 +194,17 @@ def _prepare_candidate_names(conn: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """
     )
+    excluded_ips = sorted(EXCLUDED_BOOTSTRAP_IPS)
+    placeholders = ",".join("?" for _ in excluded_ips)
     conn.execute(
-        """
+        f"""
         INSERT OR IGNORE INTO live_candidate_names(name)
         SELECT name
         FROM resource_ip
-        WHERE hns_live_actionable_ip(ip) = 1
+        WHERE ip NOT IN ({placeholders})
         GROUP BY name
-        """
+        """,
+        excluded_ips,
     )
     conn.execute(
         """
@@ -269,7 +271,7 @@ def _root_from_row(row: sqlite3.Row) -> TopologyRoot:
         value
         for column in ("synth4", "synth6", "glue4", "glue6")
         for value in _json_strings(row[column])
-        if _is_public_ip(value)
+        if _is_actionable_bootstrap_ip(value)
     ]
     return TopologyRoot(
         name=_normalize_host(row["name"]),
