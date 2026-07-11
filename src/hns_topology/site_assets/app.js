@@ -856,7 +856,7 @@ function normalizeNameserverQuery(query) {
   }
   value = value.split("/", 1)[0].replace(/\.+$/, "");
   if (!value || value.length > 253) return "";
-  if (!/^[a-z0-9-]+(?:\.[a-z0-9-]+)*$/.test(value)) return "";
+  if (!/^[a-z0-9_-]+(?:\.[a-z0-9_-]+)*$/.test(value)) return "";
   return value;
 }
 

@@ -100,6 +100,10 @@ function loadOverviewApp(search = "") {
   );
   assert.equal(app.normalizeNameserverQuery("ns1.skyinclude."), "ns1.skyinclude");
   assert.equal(
+    app.normalizeNameserverQuery("0x06081c6b2b876eabdc41dfd3345e8fa59588c02e._eth"),
+    "0x06081c6b2b876eabdc41dfd3345e8fa59588c02e._eth"
+  );
+  assert.equal(
     app.nameserverLookupIndexPath(),
     "data/nameservers/index.json"
   );
