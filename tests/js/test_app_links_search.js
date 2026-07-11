@@ -114,12 +114,22 @@ function loadOverviewApp(search = "") {
   const html = app.adoptionFunnel({
     active_names: 100,
     compliance_stages: [
+      {stage: "tlsa_present", count: 99, filter_link: "names.html?filter=stage:tlsa_present"},
       {stage: "tlsa_gap", count: 7, filter_link: "names.html?filter=stage:tlsa_gap"}
     ]
+  }, {
+    live_dane_evidence: {
+      observed_roots: 2,
+      checked_roots: 5,
+      active_roots: 8,
+      last_checked_at: "2026-07-11T00:00:00Z"
+    }
   });
-  assert.equal(html.includes("Static Compliance Pipeline"), true);
+  assert.equal(html.includes("HNS Readiness and Live Evidence"), true);
   assert.equal(html.includes("Active names"), false);
   assert.equal(html.includes("stage:tlsa_gap"), true);
+  assert.equal(html.includes("DS + TLSA observed by live scan"), true);
+  assert.equal(html.includes("99"), false);
 }
 
 {

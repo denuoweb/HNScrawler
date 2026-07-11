@@ -9,7 +9,6 @@ from typing import Any
 
 from .jsonutil import dumps_json
 from .live_models import (
-    CATEGORY_REPAIR,
     ONLINE_CATEGORIES,
     HostProbeResult,
     LiveCandidate,
@@ -128,6 +127,7 @@ def connect_live(db_path: str | Path) -> sqlite3.Connection:
 
 def init_live_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
+    conn.execute("UPDATE host_status SET listing_state = 'unlisted' WHERE listing_state = 'repair'")
     set_live_meta(conn, "schema_version", LIVE_SCHEMA_VERSION)
     conn.commit()
 
@@ -510,7 +510,6 @@ def live_summary_counts(conn: sqlite3.Connection) -> dict[str, int]:
                    THEN 1 ELSE 0 END) AS https,
           SUM(CASE WHEN hs.listing_state IN ('listed', 'degraded') AND hs.last_good_category = 'http_only'
                    THEN 1 ELSE 0 END) AS http_only,
-          SUM(CASE WHEN hs.listing_state = 'repair' THEN 1 ELSE 0 END) AS repair,
           SUM(CASE WHEN hs.listing_state = 'degraded' THEN 1 ELSE 0 END) AS degraded,
           SUM(CASE WHEN hs.listing_state = 'unlisted' THEN 1 ELSE 0 END) AS offline
         FROM host_status hs
@@ -521,6 +520,35 @@ def live_summary_counts(conn: sqlite3.Connection) -> dict[str, int]:
         """
     ).fetchone()
     return {key: int(value or 0) for key, value in dict(row).items()}
+
+
+def live_dane_evidence_summary(conn: sqlite3.Connection) -> dict[str, Any]:
+    row = conn.execute(
+        """
+        SELECT
+          (SELECT COUNT(*) FROM roots WHERE active = 1) AS active_roots,
+          COUNT(DISTINCT hs.root_name) AS checked_roots,
+          COUNT(DISTINCT CASE
+            WHEN r.has_ds = 1
+             AND hs.dnssec_status = 'valid'
+             AND hs.tlsa_status = 'present_secure'
+            THEN hs.root_name
+          END) AS observed_roots,
+          MAX(hs.checked_at) AS last_checked_at
+        FROM host_status hs
+        JOIN candidates c ON c.root_name = hs.root_name AND c.host = hs.host
+        JOIN roots r ON r.name = hs.root_name
+        WHERE c.active = 1 AND r.active = 1
+          AND hs.topology_resource_hash = c.topology_resource_hash
+        """
+    ).fetchone()
+    values = dict(row)
+    return {
+        "active_roots": int(values["active_roots"] or 0),
+        "checked_roots": int(values["checked_roots"] or 0),
+        "observed_roots": int(values["observed_roots"] or 0),
+        "last_checked_at": str(values["last_checked_at"] or ""),
+    }
 
 
 def directory_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -534,7 +562,7 @@ def directory_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         JOIN roots r ON r.name = hs.root_name
         WHERE c.active = 1 AND r.active = 1
           AND hs.topology_resource_hash = c.topology_resource_hash
-          AND hs.listing_state IN ('listed', 'degraded', 'repair')
+          AND hs.listing_state IN ('listed', 'degraded', 'unlisted')
         ORDER BY
           CASE
             WHEN hs.listing_state IN ('listed', 'degraded') AND hs.last_good_category = 'https' THEN 0
@@ -584,17 +612,6 @@ def _listing_state(result: HostProbeResult, previous: dict[str, Any]) -> dict[st
             "last_good_url": result.canonical_url,
             "consecutive_failures": 0,
         }
-    if result.category == CATEGORY_REPAIR:
-        return {
-            "listing_state": "repair",
-            "next_check_at": _after(result.checked_at, days=7),
-            "first_online_at": first_online_at,
-            "last_online_at": last_online_at,
-            "last_good_category": last_good_category,
-            "last_good_url": last_good_url,
-            "consecutive_failures": 0,
-        }
-
     failures += 1
     degraded = bool(last_good_category) and failures < 2
     backoff_days = 1 if degraded else min(90, 7 * (2 ** max(0, failures - 2)))
@@ -612,7 +629,7 @@ def _listing_state(result: HostProbeResult, previous: dict[str, Any]) -> dict[st
 def _directory_row(row: sqlite3.Row) -> dict[str, Any]:
     value = dict(row)
     listed = value["listing_state"] in {"listed", "degraded"}
-    category = value["last_good_category"] if listed else CATEGORY_REPAIR
+    category = value["last_good_category"] if listed else "offline"
     canonical_url = value["last_good_url"] if listed else value["canonical_url"]
     return {
         "root_name": value["root_name"],

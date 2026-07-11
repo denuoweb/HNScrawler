@@ -27,8 +27,8 @@ def test_live_export_is_standalone_and_valid(tmp_path):
                     last_seen_height=123,
                     ns_names=["ns1.example"],
                     bootstrap_addresses=["93.184.216.34"],
-                    ds_records=[],
-                    has_ds=False,
+                    ds_records=[{"keyTag": 1}],
+                    has_ds=True,
                     strict_ready=True,
                 ),
                 synced_at="2026-07-11T00:00:00Z",
@@ -53,6 +53,14 @@ def test_live_export_is_standalone_and_valid(tmp_path):
 
     assert summary["https_count"] == 1
     assert summary["online_count"] == 1
+    assert summary["offline_count"] == 0
+    assert "repair_count" not in summary
+    assert summary["live_dane_evidence"] == {
+        "active_roots": 1,
+        "checked_roots": 1,
+        "observed_roots": 1,
+        "last_checked_at": "2026-07-11T00:00:00Z",
+    }
     assert sites["rows"][0]["host"] == "example"
     assert sites["rows"][0]["category"] == "https"
     assert "/hns-topology/index.html" in html
@@ -68,10 +76,10 @@ def _https_result() -> HostProbeResult:
         canonical_url="https://example/",
         dns_status="resolved",
         addresses=["93.184.216.34"],
-        dnssec_status="unsigned",
-        tlsa_status="missing",
-        tlsa_records=[],
-        dane_status="missing",
+        dnssec_status="valid",
+        tlsa_status="present_secure",
+        tlsa_records=[{"owner": "_443._tcp.example."}],
+        dane_status="valid",
         http_status="response",
         http_status_code=301,
         http_location="https://example/",

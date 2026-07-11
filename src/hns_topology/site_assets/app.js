@@ -6,6 +6,7 @@ const SEARCH_FULL_SCAN_MAX_ROWS = 5000;
 const PROVIDER_FILTER_PREFIX = "provider:";
 const COMPLIANCE_STAGE_FILTER_PREFIX = "stage:";
 const DANE_GENERATOR_BASE = window.__DANE_GENERATOR_BASE__ || "/dane-generator/";
+const LIVE_DIRECTORY_SUMMARY_PATH = "/hns-live/data/summary.json";
 const IP_FIELD_MAP = {
   1: "GLUE4",
   2: "GLUE6",
@@ -29,6 +30,12 @@ function sitePath(path) {
 async function loadJson(path) {
   const response = await fetch(sitePath(path));
   if (!response.ok) throw new Error(`Failed to load ${path}`);
+  return response.json();
+}
+
+async function loadLiveDirectorySummary() {
+  const response = await fetch(LIVE_DIRECTORY_SUMMARY_PATH, {cache: "no-store"});
+  if (!response.ok) throw new Error("Failed to load live directory summary");
   return response.json();
 }
 
@@ -1402,22 +1409,47 @@ function wireAutoSubmitFilter() {
   select.addEventListener("change", () => select.form.submit());
 }
 
-function adoptionFunnel(summary) {
+function liveDaneStage(liveSummary) {
+  const evidence = liveSummary?.live_dane_evidence;
+  if (!evidence) return null;
+  return {
+    live: true,
+    label: "DS + TLSA observed by live scan",
+    count: Number(evidence.observed_roots || 0),
+    checkedRoots: Number(evidence.checked_roots || 0),
+    activeRoots: Number(evidence.active_roots || 0),
+    checkedAt: String(evidence.last_checked_at || ""),
+    href: "/hns-live/"
+  };
+}
+
+function adoptionFunnel(summary, liveSummary = null) {
   const active = Number(summary.active_names || 0);
-  const stages = (summary.compliance_stages || []).filter((stage) => Number(stage.count || 0) > 0);
+  const stages = (summary.compliance_stages || [])
+    .filter((stage) => stage.stage !== "tlsa_present" && Number(stage.count || 0) > 0);
+  const liveStage = liveDaneStage(liveSummary);
+  if (liveStage) stages.unshift(liveStage);
   return `<section class="panel adoption-funnel">
     <div class="panel-heading">
       <div>
-        <h2>Static Compliance Pipeline</h2>
-        <p class="meta">Stages combine current HNS resource data with stored delegated-DNS TLSA evidence. TLSA presence is not the same as DANE certificate verification.</p>
+        <h2>HNS Readiness and Live Evidence</h2>
+        <p class="meta">The DS + TLSA stage is refreshed by the live authoritative DNS scan. All other stages come from the current topology snapshot. TLSA presence is not the same as DANE certificate verification.</p>
       </div>
     </div>
-    <div class="funnel-grid">${stages.map((stage) => `
-      <a class="funnel-stage" href="${escapeHtml(sitePath(stage.filter_link || `names.html?filter=${COMPLIANCE_STAGE_FILTER_PREFIX}${stage.stage}`))}">
+    <div class="funnel-grid">${stages.map((stage) => {
+      const href = stage.live
+        ? stage.href
+        : sitePath(stage.filter_link || `names.html?filter=${COMPLIANCE_STAGE_FILTER_PREFIX}${stage.stage}`);
+      const detail = stage.live
+        ? `${fmt.format(stage.checkedRoots)} of ${fmt.format(stage.activeRoots)} eligible roots checked${stage.checkedAt ? `, latest ${stage.checkedAt}` : ""}. Authoritative DNSSEC and TLSA observation; certificate matching is not implied.`
+        : `${pct(stage.count ?? 0, active)} of active. ${stage.definition || stageDefinition(stage.stage)}`;
+      return `
+      <a class="funnel-stage" href="${escapeHtml(href)}">
         <span>${escapeHtml(stage.label || stageLabel(stage.stage))}</span>
         <strong>${fmt.format(stage.count ?? 0)}</strong>
-        <small>${pct(stage.count ?? 0, active)} of active. ${escapeHtml(stage.definition || stageDefinition(stage.stage))}</small>
-      </a>`).join("")}</div>
+        <small>${escapeHtml(detail)}</small>
+      </a>`;
+    }).join("")}</div>
   </section>`;
 }
 
@@ -1447,14 +1479,15 @@ function namesActionContext(actions = [], filter = "") {
 }
 
 async function renderOverview(app) {
-  const [summary, overviewIndex] = await Promise.all([
+  const [summary, overviewIndex, liveSummary] = await Promise.all([
     loadJson("data/summary.json"),
-    loadJson("data/overview-pages.json").catch(() => null)
+    loadJson("data/overview-pages.json").catch(() => null),
+    loadLiveDirectorySummary().catch(() => null)
   ]);
   const overview = await loadOverviewCollections(summary, overviewIndex);
   const providers = summary.providers || [];
   const classes = summary.classes || [];
-  app.innerHTML = `${adoptionFunnel(summary)}
+  app.innerHTML = `${adoptionFunnel(summary, liveSummary)}
     <section class="grid">
       ${topologySignals(summary, overview)}
       <article class="panel"><h2>Infrastructure Rule Buckets</h2><p class="meta">Each value is active names whose current resource matched that rule in this snapshot, not a provider total. Rules use nameserver suffixes, shared glue IPs, public resolver IPs, and self-hosted patterns.</p>${bars(providers, "provider_key", "names_count", 12, providerRuleBucketLabel, providerFilterHref)}</article>

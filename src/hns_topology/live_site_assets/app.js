@@ -18,10 +18,10 @@ async function loadJson(path) {
 
 function activeCategory(summary) {
   const requested = new URLSearchParams(window.location.search).get("category");
-  if (["https", "http_only", "repair"].includes(requested)) return requested;
+  if (["https", "http_only", "offline"].includes(requested)) return requested;
   if (Number(summary.https_count || 0) > 0) return "https";
   if (Number(summary.http_only_count || 0) > 0) return "http_only";
-  return "repair";
+  return "offline";
 }
 
 function activeSearch() {
@@ -43,21 +43,21 @@ function hrefWith(updates) {
 }
 
 function categoryLabel(category) {
-  return ({https: "HTTPS Websites", http_only: "HTTP-only Websites", repair: "Needs Repair"})[category] || category;
+  return ({https: "HTTPS Websites", http_only: "HTTP-only Websites", offline: "No Website Available"})[category] || category;
 }
 
 function categoryCount(summary, category) {
   return Number(({
     https: summary.https_count,
     http_only: summary.http_only_count,
-    repair: summary.repair_count
+    offline: summary.offline_count
   })[category] || 0);
 }
 
 function protocolBadge(row) {
   if (row.category === "https") return '<span class="badge badge-secure">HTTPS</span>';
   if (row.category === "http_only") return '<span class="badge badge-http">HTTP only</span>';
-  return '<span class="badge badge-repair">Repair</span>';
+  return '<span class="badge badge-offline">No website</span>';
 }
 
 function trustBadges(row) {
@@ -93,7 +93,7 @@ function actionCell(row) {
     });
     return `<a class="button button-upgrade" href="/dane-generator/?${params.toString()}">Upgrade HTTPS</a>`;
   }
-  if (row.category === "repair") {
+  if (row.category === "offline") {
     return `<a class="button" href="/hns-topology/names.html?q=${encodeURIComponent(row.root_name)}">Review</a>`;
   }
   return `<a class="button" href="${escapeHtml(row.url)}" rel="noreferrer">Open</a>`;
@@ -101,9 +101,10 @@ function actionCell(row) {
 
 function rowHtml(row) {
   const source = Array.isArray(row.sources) ? row.sources.join(", ") : "";
+  const hostHref = row.url || `/hns-topology/names.html?q=${encodeURIComponent(row.root_name)}`;
   return `<tr>
     <td class="host-cell" data-label="Host">
-      <a class="host-link" href="${escapeHtml(row.url)}" rel="noreferrer">${escapeHtml(row.host)}</a>
+      <a class="host-link" href="${escapeHtml(hostHref)}" rel="noreferrer">${escapeHtml(row.host)}</a>
       ${row.host !== row.root_name ? `<span class="root-name">${escapeHtml(row.root_name)}/</span>` : ""}
     </td>
     <td data-label="Protocol"><div class="badge-line">${protocolBadge(row)} ${trustBadges(row)}</div><span class="response">${escapeHtml(responseText(row))}</span></td>
@@ -116,7 +117,7 @@ function rowHtml(row) {
 
 function categoryTabs(summary, active) {
   return `<nav class="category-tabs" aria-label="Website protocol">
-    ${["https", "http_only", "repair"].map((category) => `
+    ${["https", "http_only", "offline"].map((category) => `
       <a class="category-tab${category === active ? " active" : ""}" href="${escapeHtml(hrefWith({category, page: null}))}">
         <span>${escapeHtml(categoryLabel(category))}</span>
         <strong>${numberFormat.format(categoryCount(summary, category))}</strong>

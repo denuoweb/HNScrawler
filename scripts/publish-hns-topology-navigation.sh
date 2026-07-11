@@ -18,10 +18,16 @@ test -d "$TOPOLOGY_SITE_DIR" || {
   echo "topology site directory is missing at $TOPOLOGY_SITE_DIR" >&2
   exit 2
 }
+test -f "$LIVE_REPO_DIR/src/hns_topology/site_assets/app.js" || {
+  echo "topology application asset is missing from $LIVE_REPO_DIR" >&2
+  exit 2
+}
 
 temporary_index="$(sudo mktemp "$TOPOLOGY_SITE_DIR/.index.html.live-nav.XXXXXX")"
+temporary_app="$(sudo mktemp "$TOPOLOGY_SITE_DIR/.app.js.live-nav.XXXXXX")"
 cleanup() {
   sudo rm -f "$temporary_index"
+  sudo rm -f "$temporary_app"
 }
 trap cleanup EXIT
 
@@ -38,4 +44,7 @@ Path(sys.argv[1]).write_text(
 PY
 sudo chown "$TOPOLOGY_WEB_OWNER:$TOPOLOGY_WEB_GROUP" "$temporary_index"
 sudo chmod 0644 "$temporary_index"
+sudo install -o "$TOPOLOGY_WEB_OWNER" -g "$TOPOLOGY_WEB_GROUP" -m 0644 \
+  "$LIVE_REPO_DIR/src/hns_topology/site_assets/app.js" "$temporary_app"
 sudo mv -f "$temporary_index" "$TOPOLOGY_SITE_DIR/index.html"
+sudo mv -f "$temporary_app" "$TOPOLOGY_SITE_DIR/app.js"

@@ -132,6 +132,37 @@ def test_probe_classifies_http_response_when_https_fails(monkeypatch):
     assert result.failure_reason == "connection_refused"
 
 
+def test_probe_classifies_untrusted_https_without_http_as_offline(monkeypatch):
+    monkeypatch.setattr(
+        "hns_topology.live_probe.probe_dns",
+        lambda *args, **kwargs: DnsProbeResult(
+            status="resolved",
+            addresses=["93.184.216.34"],
+            dnssec_status="unsigned",
+            tlsa_status="missing",
+        ),
+    )
+
+    def web(_host, _addresses, *, scheme, config):
+        if scheme == "http":
+            return WebProbeResult(scheme="http", status="failed", failure_reason="connection_refused")
+        return WebProbeResult(
+            scheme="https",
+            status="response",
+            status_code=200,
+            webpki_status="invalid",
+            failure_reason="certificate_untrusted",
+        )
+
+    monkeypatch.setattr("hns_topology.live_probe._probe_web", web)
+
+    result = probe_host(_candidate(), config=ProbeConfig())
+
+    assert result.category == "offline"
+    assert result.canonical_url == ""
+    assert result.failure_reason == "certificate_untrusted"
+
+
 def test_probe_tries_all_addresses_until_https_authenticates(monkeypatch):
     dns_result = DnsProbeResult(
         status="resolved",

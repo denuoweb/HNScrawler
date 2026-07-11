@@ -25,7 +25,6 @@ from .live_models import (
     CATEGORY_HTTP_ONLY,
     CATEGORY_HTTPS,
     CATEGORY_OFFLINE,
-    CATEGORY_REPAIR,
     DnsProbeResult,
     HostProbeResult,
     WebProbeResult,
@@ -696,7 +695,7 @@ def _classify_web(
     if http_responded:
         return CATEGORY_HTTP_ONLY, f"http://{host}/", ("untrusted" if https_responded else "failed")
     if https_responded:
-        return CATEGORY_REPAIR, f"https://{host}/", "untrusted"
+        return CATEGORY_OFFLINE, "", "untrusted"
     return CATEGORY_OFFLINE, "", "failed"
 
 
@@ -711,8 +710,6 @@ def _failure_reason(
         return ""
     if category == CATEGORY_HTTP_ONLY:
         return https_result.failure_reason or "https_unavailable"
-    if category == CATEGORY_REPAIR:
-        return https_result.failure_reason or "https_not_authenticated"
     return (
         dns_result.failure_reason
         or https_result.failure_reason

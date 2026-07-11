@@ -33,7 +33,10 @@ def test_online_host_survives_one_failure_then_is_unlisted(tmp_path):
 
         with conn:
             store_probe_result(conn, _result(category="offline", checked_at="2026-07-09T00:00:00Z"))
-        assert directory_rows(conn) == []
+        unlisted = directory_rows(conn)
+        assert len(unlisted) == 1
+        assert unlisted[0]["category"] == "offline"
+        assert unlisted[0]["listing_state"] == "unlisted"
         status = conn.execute("SELECT * FROM host_status").fetchone()
         assert status["listing_state"] == "unlisted"
         assert status["consecutive_failures"] == 2

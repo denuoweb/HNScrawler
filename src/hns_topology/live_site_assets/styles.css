@@ -340,7 +340,7 @@ td time,
   background: #fff8e8;
 }
 
-.badge-repair {
+.badge-offline {
   border-color: rgba(161, 61, 56, 0.3);
   color: var(--red);
   background: #fff2f1;

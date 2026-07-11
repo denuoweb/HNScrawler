@@ -15,6 +15,7 @@ from .live_db import (
     directory_rows,
     get_live_meta,
     latest_probe_run,
+    live_dane_evidence_summary,
     live_summary_counts,
 )
 from .timeutil import utc_now
@@ -98,9 +99,10 @@ def _export_into(conn: sqlite3.Connection, out: Path) -> dict[str, Any]:
         "online_count": https_count + http_only_count,
         "https_count": https_count,
         "http_only_count": http_only_count,
-        "repair_count": sum(1 for row in rows if row["category"] == "repair"),
+        "offline_count": sum(1 for row in rows if row["category"] == "offline"),
         "degraded_count": sum(1 for row in rows if row["listing_state"] == "degraded"),
         "status_counts": counts,
+        "live_dane_evidence": live_dane_evidence_summary(conn),
         "candidate_plan": plan,
         "latest_probe_run": latest_run,
     }

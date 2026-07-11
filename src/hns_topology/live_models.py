@@ -5,7 +5,6 @@ from typing import Any
 
 CATEGORY_HTTPS = "https"
 CATEGORY_HTTP_ONLY = "http_only"
-CATEGORY_REPAIR = "repair"
 CATEGORY_OFFLINE = "offline"
 
 ONLINE_CATEGORIES = (CATEGORY_HTTPS, CATEGORY_HTTP_ONLY)

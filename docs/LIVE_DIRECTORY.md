@@ -20,7 +20,7 @@ The live service reads that snapshot and owns separate state:
 
 Replacing the weekly topology database or `/mnt/hns-topology/site` does not replace live probe history or the `/hns-live/` public tree.
 
-The live-directory deployment also installs an explicit `hns.denuoweb.com` Nginx location for `/hns-live/` and refreshes only the topology directory `index.html` navigation. It does not run the topology build or replace its data files.
+The live-directory deployment also installs an explicit `hns.denuoweb.com` Nginx location for `/hns-live/` and refreshes the topology directory `index.html` plus its application asset. This lets the overview consume current live DNS/TLSA evidence without running the topology build or replacing its data files.
 
 Daily cycles compare the topology tip, height, provider-rule hash, and generation timestamp first. Candidate roots are refreshed only when that fingerprint changes; unchanged daily runs do not scan the multi-gigabyte topology database. Full refreshes select indexed promising on-chain classes before joining resource details and stream rows into the live database instead of retaining the topology candidate set in memory.
 
@@ -38,7 +38,7 @@ Within the same due tier, the initial discovery order is:
 
 The overview's aggregated Delegation Hosts table is useful for infrastructure analysis, but it is not itself website evidence. TLSA-unobserved is a broad remediation queue rather than a high-confidence liveness signal.
 
-`DS + TLSA observed` means the topology database has DNSSEC and stored TLSA evidence. It does not prove that an HTTPS server is currently answering, and its absence does not rule out either an HTTP-only site or a WebPKI HTTPS site. Public liveness categories are assigned only by the active probes below.
+The topology overview's `DS + TLSA observed by live scan` card is sourced from the live-directory export. It counts only active roots whose current live authoritative DNS result has a matching parent DS, valid DNSSEC, and a secure TLSA response. Its coverage is shown alongside the count; it is not a whole-chain TLSA total and does not prove certificate matching.
 
 Subdomain candidates require concrete evidence:
 
@@ -65,11 +65,11 @@ Public categories are:
 
 - `https`: an HTTP response was received over authenticated HTTPS;
 - `http_only`: HTTP responded but authenticated HTTPS did not;
-- `repair`: HTTPS responded but could not be authenticated and HTTP did not respond.
+- `offline`: neither authenticated HTTPS nor HTTP responded, including HTTPS-only responses that could not be authenticated.
 
 `LIVE_FALLBACK_RESOLVER` may name a trusted recursive resolver IP for NS-host and external CNAME resolution. When unset, the VM's system resolver is used. Resolved addresses are still restricted to global unicast before any authoritative DNS or web connection is attempted.
 
-Offline hosts are not listed. A previously listed host remains degraded after one failed cycle and is removed after a second consecutive failure. Confirmed offline candidates use increasing retry intervals, while listed sites are checked every seven days. A changed resource and candidates first seen in the newest topology refresh run ahead of routine weekly rechecks and the older discovery backlog.
+The public directory separates HTTPS, HTTP-only, and no-website targets. A previously listed host remains degraded after one failed cycle and moves to the no-website category after a second consecutive failure. Confirmed offline candidates use increasing retry intervals, while listed sites are checked every seven days. A changed resource and candidates first seen in the newest topology refresh run ahead of routine weekly rechecks and the older discovery backlog.
 
 ## Local Commands
 
