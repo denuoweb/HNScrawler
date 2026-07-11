@@ -84,7 +84,39 @@ function loadApp(search = "") {
 
 {
   const app = loadApp("");
-  const commands = app.targetProbeCommands("secure", "192.0.2.53");
-  assert.equal(commands.includes("dig @192.0.2.53 _443._tcp.secure. TLSA +norecurse +dnssec"), true);
-  assert.equal(commands.includes("dig @192.0.2.53 _443._tcp.www.secure. TLSA +norecurse +dnssec"), true);
+  assert.equal(
+    app.ipFieldCountsCell({field_counts: {GLUE4: 12, Names: 12, names_count: 12, total_names: 12}}),
+    "GLUE4 12"
+  );
+  assert.equal(app.providerLabel("namebase/default"), "Namebase");
+  assert.equal(app.providerRuleBucketLabel("namebase/default"), "Namebase NS suffix matches");
+  assert.equal(app.providerRuleBucketLabel("bulk/default"), "BNS study glue IP matches");
+}
+
+{
+  const app = loadApp("");
+  const html = app.topologySignals(
+    {top_resource_ips: []},
+    {
+      resourceIps: {
+        collection: {page_count: 2, path_template: "overview-pages/resource_ips/page-{page}.json"},
+        page: 1,
+        rows: [{ip: "203.0.113.10", names_count: 1, field_counts: {SYNTH4: 1}, role: "unknown"}]
+      },
+      nameservers: {
+        collection: {page_count: 1},
+        page: 1,
+        rows: []
+      },
+      resolvers: {
+        collection: {page_count: 1},
+        page: 1,
+        rows: []
+      }
+    }
+  );
+  assert.equal(html.includes("Generator Handoffs"), false);
+  assert.equal(html.includes("Provider Classification"), false);
+  assert.equal(html.includes('data-overview-key="resourceIps"'), true);
+  assert.equal(html.includes('data-overview-page="2"'), true);
 }

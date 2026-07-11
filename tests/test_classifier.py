@@ -6,6 +6,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 from hns_topology.classifier import classify_onchain, summarize_resource
+from hns_topology.infra import resource_ip_role
 from hns_topology.provider_rules import ProviderRules
 
 
@@ -166,6 +167,15 @@ def test_provider_rules_mark_shared_default_glue_before_self_hosted():
 
     assert provider == "bulk/default"
     assert classify_onchain(summary, expired=False, provider_guess=provider) == "PARKED_OR_DEFAULT"
+
+
+def test_resource_ip_role_uses_source_backed_glue_labels():
+    assert resource_ip_role("44.231.6.183")["label"] == "Namebase glue cluster"
+    assert (
+        resource_ip_role("34.123.215.203")["label"]
+        == "BNS collision study identified glue cluster"
+    )
+    assert resource_ip_role("203.0.113.10")["role"] == "unknown"
 
 
 def test_provider_rules_mark_known_public_resolver_ips():

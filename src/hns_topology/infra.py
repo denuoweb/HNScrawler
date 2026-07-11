@@ -4,28 +4,28 @@ NON_ACTIONABLE_PROVIDER_TYPES = ("default_parking", "public_resolver")
 
 BULK_DEFAULT_RESOURCE_IPS: dict[str, dict[str, str]] = {
     "44.231.6.183": {
-        "role": "bulk_default_glue",
-        "label": "Namebase/default glue cluster",
+        "role": "namebase_glue",
+        "label": "Namebase glue cluster",
         "source": "WWW 2024 BNS collision study Table 8",
     },
     "54.214.136.246": {
-        "role": "bulk_default_glue",
-        "label": "Namebase/default glue cluster",
+        "role": "namebase_glue",
+        "label": "Namebase glue cluster",
         "source": "WWW 2024 BNS collision study Table 8",
     },
     "34.123.215.203": {
-        "role": "bulk_default_glue",
-        "label": "High-frequency shared glue cluster",
+        "role": "bns_collision_study_glue",
+        "label": "BNS collision study identified glue cluster",
         "source": "WWW 2024 BNS collision study Table 8",
     },
     "45.79.95.228": {
-        "role": "bulk_default_glue",
-        "label": "High-frequency shared glue cluster",
+        "role": "bns_collision_study_glue",
+        "label": "BNS collision study identified glue cluster",
         "source": "WWW 2024 BNS collision study Table 8",
     },
     "45.79.214.114": {
-        "role": "bulk_default_glue",
-        "label": "High-frequency shared glue cluster",
+        "role": "bns_collision_study_glue",
+        "label": "BNS collision study identified glue cluster",
         "source": "WWW 2024 BNS collision study Table 8",
     },
 }

@@ -584,7 +584,6 @@ main {
 }
 
 .resource-records,
-.dns-probes,
 .dns-evidence-list {
   display: grid;
   gap: 7px;
@@ -610,7 +609,6 @@ main {
 }
 
 .resource-record code,
-.dns-probes code,
 .evidence-lines code {
   display: block;
   min-width: 0;
@@ -829,48 +827,6 @@ th {
   border-color: var(--blue);
   color: var(--blue);
   background: var(--surface);
-}
-
-.next-action-list {
-  display: grid;
-  gap: 8px;
-}
-
-.next-action {
-  display: grid;
-  grid-template-columns: minmax(120px, 1fr) minmax(56px, max-content);
-  gap: 4px 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 10px;
-  color: inherit;
-  background: #fbfcfe;
-  text-decoration: none;
-}
-
-.next-action:hover {
-  border-color: var(--blue);
-  background: var(--panel);
-}
-
-.next-action span {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 760;
-  text-transform: uppercase;
-}
-
-.next-action strong {
-  color: var(--blue);
-  font-size: 20px;
-  line-height: 1;
-}
-
-.next-action small {
-  grid-column: 1 / -1;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.35;
 }
 
 .downloads a {

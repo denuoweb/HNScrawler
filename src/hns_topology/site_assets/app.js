@@ -12,6 +12,7 @@ const IP_FIELD_MAP = {
   4: "SYNTH4",
   8: "SYNTH6"
 };
+const IP_FIELD_AGGREGATE_KEYS = new Set(["name", "names", "names_count", "row_count", "total", "total_names"]);
 let nextPageFetchAt = 0;
 const collectionRowsCache = new Map();
 const collectionPageRowsCache = new Map();
@@ -143,7 +144,7 @@ function hasNsHandoff(row) {
 }
 
 function filterName(filter) {
-  if (filter.startsWith(PROVIDER_FILTER_PREFIX)) return `provider ${filter.slice(PROVIDER_FILTER_PREFIX.length)}`;
+  if (filter.startsWith(PROVIDER_FILTER_PREFIX)) return `provider ${providerRuleBucketLabel(filter.slice(PROVIDER_FILTER_PREFIX.length))}`;
   if (filter.startsWith(COMPLIANCE_STAGE_FILTER_PREFIX)) return stageLabel(filter.slice(COMPLIANCE_STAGE_FILTER_PREFIX.length));
   return ({
     direct_ip_records: "SYNTH nameservers",
@@ -292,6 +293,24 @@ function providerFilterHref(row) {
   return row.provider_key ? `names.html?filter=${encodeURIComponent(`${PROVIDER_FILTER_PREFIX}${row.provider_key}`)}` : "";
 }
 
+function providerLabel(value) {
+  return ({
+    "bulk/default": "BNS collision study glue",
+    "impervious/default": "Impervious",
+    "namebase/default": "Namebase"
+  })[value] || value;
+}
+
+function providerRuleBucketLabel(value) {
+  return ({
+    "bulk/default": "BNS study glue IP matches",
+    "hns-resolver/plain-dns": "Public HNS resolver IP matches",
+    "namebase/default": "Namebase NS suffix matches",
+    "self-hosted": "Self-hosted/custom NS matches",
+    "unknown/custom": "No provider rule matched"
+  })[value] || `${providerLabel(value)} rule matches`;
+}
+
 function aggregateSearchLink(value, href = "") {
   const label = String(value || "");
   const target = href || namesSearchHref(label, {filter: ""});
@@ -318,6 +337,7 @@ function resolverIpCell(row) {
 function ipFieldCountsCell(row) {
   const counts = row.field_counts || {};
   const parts = Object.entries(counts)
+    .filter(([field]) => !IP_FIELD_AGGREGATE_KEYS.has(String(field).toLowerCase()))
     .sort((a, b) => a[0].localeCompare(b[0]))
     .map(([field, count]) => `${field} ${fmt.format(count || 0)}`);
   return escapeHtml(parts.join(", "));
@@ -332,20 +352,20 @@ function resolverSoftwareCell(row) {
   return row.hnsdoh_software ? "HNSDoH" : "plain DNS";
 }
 
-function overviewPageLink(label, targetPage, disabled, pageParam) {
+function overviewPageLink(label, targetPage, disabled, pageParam, collectionKey) {
   if (disabled) return `<span class="page-link disabled">${escapeHtml(label)}</span>`;
-  return `<a class="page-link" href="${escapeHtml(hrefWithPageParam(targetPage, pageParam))}">${escapeHtml(label)}</a>`;
+  return `<a class="page-link" href="${escapeHtml(hrefWithPageParam(targetPage, pageParam))}" data-overview-key="${escapeHtml(collectionKey)}" data-overview-page="${escapeHtml(String(targetPage))}" data-overview-page-param="${escapeHtml(pageParam)}">${escapeHtml(label)}</a>`;
 }
 
-function overviewPagination(state, pageParam, label) {
+function overviewPagination(state, pageParam, label, collectionKey) {
   const collection = state?.collection || {};
   const pageCount = Number(collection.page_count || 0);
   if (pageCount <= 1) return "";
   const safePage = Math.min(Math.max(1, state.page || 1), pageCount);
   return `<nav class="pagination overview-pagination" aria-label="${escapeHtml(label)}">
-    ${overviewPageLink("Previous", safePage - 1, safePage <= 1, pageParam)}
+    ${overviewPageLink("Previous", safePage - 1, safePage <= 1, pageParam, collectionKey)}
     <span class="page-status">${fmt.format(safePage)} / ${fmt.format(pageCount)}</span>
-    ${overviewPageLink("Next", safePage + 1, safePage >= pageCount, pageParam)}
+    ${overviewPageLink("Next", safePage + 1, safePage >= pageCount, pageParam, collectionKey)}
   </nav>`;
 }
 
@@ -384,27 +404,117 @@ async function loadOverviewCollection(index, key, pageParam, fallbackRows) {
   };
 }
 
-function topologySignals(summary, overview = {}) {
-  const topIps = overview.resourceIps?.rows || summary.top_resource_ips || [];
-  const topNameservers = overview.nameservers?.rows || summary.top_nameservers || [];
-  const resolvers = overview.resolvers?.rows || summary.known_hns_resolvers || [];
-  return `
-    <article class="panel"><div class="panel-heading"><h2>Nameserver IP Evidence</h2>${overviewPagination(overview.resourceIps, "resource_ip_page", "Nameserver IP Evidence pages")}</div>${table(topIps, [
+async function loadOverviewCollectionPage(state, page) {
+  const collection = state?.collection || {};
+  const pageCount = Number(collection.page_count || 0);
+  const safePage = pageCount > 0 ? Math.min(Math.max(1, page), pageCount) : 1;
+  const data = pageCount > 0 && collection.path_template
+    ? await loadPageJson(pagePath(collection.path_template, safePage))
+    : {rows: []};
+  return {
+    collection,
+    page: safePage,
+    rows: rowsFromPage(data, collection)
+  };
+}
+
+function overviewCollectionConfig(collectionKey) {
+  return {
+    resourceIps: {
+      title: "Nameserver IP Evidence",
+      pageParam: "resource_ip_page",
+      pageLabel: "Nameserver IP Evidence pages",
+      fallbackRows: "top_resource_ips",
+      emptyMessage: "No resource IPs in this snapshot.",
+      columns: [
       {key: "ip", label: "IP", render: topIpCell, width: "30%"},
       {key: "names_count", label: "Names", width: "18%"},
       {key: "field_counts", label: "Fields", render: ipFieldCountsCell, width: "27%"},
       {key: "role", label: "Role", render: ipRoleCell, width: "25%"}
-    ], "No resource IPs in this snapshot.", {wrapClass: "compact-table-wrap"})}</article>
-    <article class="panel"><div class="panel-heading"><h2>Delegation Hosts</h2>${overviewPagination(overview.nameservers, "nameserver_page", "Delegation Host pages")}</div>${table(topNameservers, [
+      ]
+    },
+    nameservers: {
+      title: "Delegation Hosts",
+      pageParam: "nameserver_page",
+      pageLabel: "Delegation Host pages",
+      fallbackRows: "top_nameservers",
+      emptyMessage: "No nameservers in this snapshot.",
+      columns: [
       {key: "nameserver", label: "Nameserver", render: nameserverCell, width: "70%"},
       {key: "names_count", label: "Names", width: "30%"}
-    ], "No nameservers in this snapshot.", {wrapClass: "compact-table-wrap"})}</article>
-    <article class="panel"><div class="panel-heading"><h2>HNS Resolver Inventory</h2>${overviewPagination(overview.resolvers, "resolver_page", "HNS Resolver Inventory pages")}</div>${table(resolvers, [
+      ]
+    },
+    resolvers: {
+      title: "HNS Resolver Inventory",
+      pageParam: "resolver_page",
+      pageLabel: "HNS Resolver Inventory pages",
+      fallbackRows: "known_hns_resolvers",
+      emptyMessage: "No resolver inventory configured.",
+      columns: [
       {key: "ip", label: "IP", render: resolverIpCell, width: "26%"},
       {key: "names_count", label: "Names", width: "16%"},
       {key: "provider", label: "Provider", width: "34%"},
       {key: "hnsdoh_software", label: "Software", render: resolverSoftwareCell, width: "24%"}
-    ], "No resolver inventory configured.", {wrapClass: "compact-table-wrap"})}</article>`;
+      ]
+    }
+  }[collectionKey];
+}
+
+function overviewRows(summary, overview, collectionKey) {
+  const config = overviewCollectionConfig(collectionKey);
+  return overview[collectionKey]?.rows || summary[config.fallbackRows] || [];
+}
+
+function overviewCollectionCard(collectionKey, state, rows) {
+  const config = overviewCollectionConfig(collectionKey);
+  return `<article class="panel overview-collection" data-overview-key="${escapeHtml(collectionKey)}">
+    <div class="panel-heading"><h2>${escapeHtml(config.title)}</h2>${overviewPagination(state, config.pageParam, config.pageLabel, collectionKey)}</div>
+    ${table(rows, config.columns, config.emptyMessage, {wrapClass: "compact-table-wrap"})}
+  </article>`;
+}
+
+function topologySignals(summary, overview = {}) {
+  return ["resourceIps", "nameservers", "resolvers"]
+    .map((collectionKey) => overviewCollectionCard(collectionKey, overview[collectionKey], overviewRows(summary, overview, collectionKey)))
+    .join("");
+}
+
+function updateOverviewPageParam(pageParam, page) {
+  if (!window.history || typeof window.history.replaceState !== "function") return;
+  const params = new URLSearchParams(window.location.search);
+  if (page <= 1) params.delete(pageParam);
+  else params.set(pageParam, String(page));
+  const query = params.toString();
+  const path = currentPageName();
+  window.history.replaceState({}, "", sitePath(query ? `${path}?${query}` : path));
+}
+
+function wireOverviewPagination(app, summary, overview) {
+  app.addEventListener("click", async (event) => {
+    const link = event.target.closest?.("a[data-overview-page]");
+    if (!link || !app.contains(link)) return;
+    event.preventDefault();
+    const collectionKey = link.dataset.overviewKey || "";
+    const pageParam = link.dataset.overviewPageParam || "";
+    const targetPage = Number.parseInt(link.dataset.overviewPage || "1", 10);
+    const currentState = overview[collectionKey];
+    const article = link.closest("[data-overview-key]");
+    if (!currentState || !article || !Number.isFinite(targetPage)) return;
+
+    article.setAttribute("aria-busy", "true");
+    try {
+      overview[collectionKey] = await loadOverviewCollectionPage(currentState, targetPage);
+      article.outerHTML = overviewCollectionCard(
+        collectionKey,
+        overview[collectionKey],
+        overviewRows(summary, overview, collectionKey)
+      );
+      updateOverviewPageParam(pageParam, overview[collectionKey].page);
+    } catch (error) {
+      article.removeAttribute("aria-busy");
+      console.error(error);
+    }
+  });
 }
 
 function daneGeneratorUrl(row, intent) {
@@ -1239,7 +1349,7 @@ function namesFilterControls({summary, providers, active}) {
     .sort((a, b) => Number(b.names_count || 0) - Number(a.names_count || 0) || String(a.provider_key).localeCompare(String(b.provider_key)))
     .map((row) => ({
       value: `${PROVIDER_FILTER_PREFIX}${row.provider_key}`,
-      label: `${row.provider_key} (${fmt.format(row.names_count || 0)})`
+      label: `${providerRuleBucketLabel(row.provider_key)} (${fmt.format(row.names_count || 0)})`
     }));
   const complianceOptions = (summary.compliance_stages || [])
     .filter((row) => Number(row.count || 0) > 0 || `${COMPLIANCE_STAGE_FILTER_PREFIX}${row.stage}` === active)
@@ -1306,19 +1416,6 @@ function adoptionFunnel(summary) {
   </section>`;
 }
 
-function nextActionsPanel(actions = []) {
-  if (!actions.length) return "";
-  return `<article class="panel next-actions-panel">
-    <h2>Generator Handoffs</h2>
-    <div class="next-action-list">${actions.map((action) => `
-      <a class="next-action" href="${escapeHtml(sitePath(action.filter_link || "names.html"))}">
-        <span>${escapeHtml(action.label)}</span>
-        <strong>${fmt.format(action.count ?? 0)}</strong>
-        <small>${escapeHtml(action.definition || "")}</small>
-      </a>`).join("")}</div>
-  </article>`;
-}
-
 function filterFromLink(link) {
   try {
     return new URL(sitePath(link || "names.html"), window.location.origin).searchParams.get("filter") || "";
@@ -1354,14 +1451,14 @@ async function renderOverview(app) {
   const classes = summary.classes || [];
   app.innerHTML = `${adoptionFunnel(summary)}
     <section class="grid">
-      ${nextActionsPanel(summary.next_actions || [])}
       ${topologySignals(summary, overview)}
-      <article class="panel"><h2>Provider Concentration</h2>${bars(providers, "provider_key", "names_count", 12, (value) => value, providerFilterHref)}</article>
+      <article class="panel"><h2>Infrastructure Rule Buckets</h2><p class="meta">Each value is active names whose current resource matched that rule in this snapshot, not a provider total. Rules use nameserver suffixes, shared glue IPs, public resolver IPs, and self-hosted patterns.</p>${bars(providers, "provider_key", "names_count", 12, providerRuleBucketLabel, providerFilterHref)}</article>
       <article class="panel"><h2>Parent-Side State</h2>${bars(classes, "class", "count", 12, classLabel, (row) => classFilterHref(row.class))}</article>
       <article class="panel"><h2>Run Metadata</h2>
       <p class="meta">Height ${summary.last_indexed_height ?? ""} generated ${summary.generated_at ?? ""}</p>
       <p class="meta">Source ${escapeHtml(summary.source_type || "unknown")} - rules v${summary.provider_rules_version ?? ""} ${escapeHtml((summary.provider_rules_hash || "").slice(0, 12))}</p></article>
     </section>`;
+  wireOverviewPagination(app, summary, overview);
 }
 
 function pageLink(label, targetPage, disabled) {
@@ -1627,45 +1724,6 @@ function tlsaOwnerCheck(row) {
   return {label: "TLSA evidence", status: "pending", detail: "No qualifying TLSA answer is stored yet."};
 }
 
-function dnsProbeCommands(row) {
-  const name = String(row.name || "").replace(/\.+$/, "");
-  const server = firstValue(row.synth4) || firstValue(row.glue4) || row.first_synth4 || row.first_glue4
-    || firstValue(row.synth6) || firstValue(row.glue6) || row.first_synth6 || row.first_glue6;
-  const nsHost = trailingDot(firstValue(row.ns_names) || row.first_ns || row.ns_handoff_ns);
-  if (!name) return [];
-  if (!server && hasNsHandoff(row)) {
-    return [
-      ...dnsTransportCommands(row.ns_handoff_bootstrap_ip, nsHost, "A"),
-      ...dnsTransportCommands(row.ns_handoff_bootstrap_ip, nsHost, "AAAA"),
-      ...dnsTransportCommands(row.ns_handoff_bootstrap_ip, `_dns.${nsHost}`, "SVCB"),
-      ...targetProbeCommands(name, "<resolved-ns-ip>")
-    ];
-  }
-  if (!server) return [];
-  return [
-    ...(nsHost ? dnsTransportCommands(server, `_dns.${nsHost}`, "SVCB") : []),
-    ...targetProbeCommands(name, server)
-  ];
-}
-
-function targetProbeCommands(name, server) {
-  return [
-    ...dnsTransportCommands(server, `${name}.`, "A"),
-    ...dnsTransportCommands(server, `${name}.`, "AAAA"),
-    ...dnsTransportCommands(server, `_443._tcp.${name}.`, "TLSA"),
-    ...dnsTransportCommands(server, `_443._tcp.www.${name}.`, "TLSA"),
-    ...dnsTransportCommands(server, `${name}.`, "DNSKEY")
-  ];
-}
-
-function dnsTransportCommands(server, qname, rrtype) {
-  if (!server || !qname || !rrtype) return [];
-  return [
-    `dig @${server} ${qname} ${rrtype} +norecurse +dnssec`,
-    `dig @${server} ${qname} ${rrtype} +tcp +norecurse +dnssec`
-  ];
-}
-
 function dnsEvidenceSection(row) {
   const path = row.dns_evidence_path || "";
   if (!path) return `<section><h3>Observed DNS</h3><p class="meta">No stored DNS evidence for this name yet.</p></section>`;
@@ -1733,7 +1791,6 @@ function nameDetailRow(row, colspan) {
   const displayName = name || String(row.domain || row.normalized || "Selected name");
   const records = resourceRecordSections(row);
   const recordTypesText = recordTypes(row).join(", ");
-  const commands = dnsProbeCommands(row);
   const compactNotice = !Array.isArray(row.ds_records) && hasRecordType(row, "DS")
     ? `<p class="meta">Compact row: DS payload is not embedded in this collection.</p>`
     : "";
@@ -1755,7 +1812,6 @@ function nameDetailRow(row, colspan) {
         <section>
           <h3>Static Analysis</h3>
           ${staticDiagnosticStatus(row)}
-          ${commands.length ? `<div class="dns-probes">${commands.map(codeLine).join("")}</div>` : ""}
         </section>
         ${dnsEvidenceSection(row)}
       </div>
