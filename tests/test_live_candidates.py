@@ -1,6 +1,7 @@
 from hns_topology.db import connect, insert_dns_evidence
 from hns_topology.indexer import bootstrap_from_fixture
 from hns_topology.live_candidates import (
+    _distinct_resource_ips,
     _is_actionable_bootstrap_ip,
     _is_public_ip,
     _topology_root_rows,
@@ -22,6 +23,28 @@ def test_bootstrap_ip_filter_requires_global_unicast():
     assert _is_public_ip("127.0.0.1") is False
     assert _is_actionable_bootstrap_ip("93.184.216.34") is True
     assert _is_actionable_bootstrap_ip("44.231.6.183") is False
+
+
+def test_distinct_resource_ips_uses_indexed_key_seeks():
+    with connect(":memory:") as conn:
+        conn.execute("CREATE TABLE resource_ip (name TEXT NOT NULL, ip TEXT NOT NULL)")
+        conn.execute("CREATE INDEX idx_resource_ip_ip_name ON resource_ip(ip, name)")
+        conn.executemany(
+            "INSERT INTO resource_ip(name, ip) VALUES(?, ?)",
+            [
+                ("alpha", "192.0.2.1"),
+                ("beta", "192.0.2.1"),
+                ("gamma", "198.51.100.2"),
+            ],
+        )
+        statements = []
+        conn.set_trace_callback(statements.append)
+
+        addresses = list(_distinct_resource_ips(conn))
+
+    assert addresses == ["192.0.2.1", "198.51.100.2"]
+    assert not any("SELECT DISTINCT" in statement for statement in statements)
+    assert any("WHERE ip >" in statement for statement in statements)
 
 
 def test_root_detail_query_starts_from_materialized_candidate_names():

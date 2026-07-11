@@ -193,16 +193,7 @@ def _prepare_candidate_names(conn: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """
     )
-    resource_ips = [
-        str(row["ip"])
-        for row in conn.execute(
-            """
-            SELECT DISTINCT ip
-            FROM resource_ip INDEXED BY idx_resource_ip_ip_name
-            """
-        )
-    ]
-    for address in resource_ips:
+    for address in _distinct_resource_ips(conn):
         if not _is_actionable_bootstrap_ip(address):
             continue
         conn.execute(
@@ -239,6 +230,30 @@ def _prepare_candidate_names(conn: sqlite3.Connection) -> None:
             """,
             (provider_key,),
         )
+
+
+def _distinct_resource_ips(conn: sqlite3.Connection) -> Iterator[str]:
+    row = conn.execute(
+        """
+        SELECT ip
+        FROM resource_ip INDEXED BY idx_resource_ip_ip_name
+        ORDER BY ip
+        LIMIT 1
+        """
+    ).fetchone()
+    while row is not None:
+        address = str(row["ip"])
+        yield address
+        row = conn.execute(
+            """
+            SELECT ip
+            FROM resource_ip INDEXED BY idx_resource_ip_ip_name
+            WHERE ip > ?
+            ORDER BY ip
+            LIMIT 1
+            """,
+            (address,),
+        ).fetchone()
 
 
 def _topology_root_rows(conn: sqlite3.Connection):
