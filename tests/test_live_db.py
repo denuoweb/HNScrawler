@@ -70,10 +70,14 @@ def test_init_live_db_migrates_handoff_storage(tmp_path):
     with connect_live(db_path) as conn:
         init_live_db(conn)
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(roots)")}
+        handoff_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(hns_handoff_groups)")
+        }
         schema_version = get_live_meta(conn, "schema_version")
 
     assert "ns_handoffs_json" in columns
-    assert schema_version == "7"
+    assert "priority" in handoff_columns
+    assert schema_version == "8"
 
 
 def test_topology_hash_change_makes_candidate_immediately_due(tmp_path):

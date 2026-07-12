@@ -16,7 +16,7 @@ from .live_models import (
 )
 from .timeutil import utc_now
 
-LIVE_SCHEMA_VERSION = "7"
+LIVE_SCHEMA_VERSION = "8"
 HNS_HANDOFF_NOT_BEFORE_META_KEY = "sweep.not_before.hns_handoff"
 
 SCHEMA_SQL = """
@@ -156,6 +156,7 @@ CREATE TABLE IF NOT EXISTS hns_handoff_groups (
   root_name TEXT NOT NULL,
   bootstrap_ip TEXT NOT NULL,
   bootstrap_field TEXT NOT NULL,
+  priority INTEGER NOT NULL DEFAULT 0,
   member_count INTEGER NOT NULL,
   members_json TEXT NOT NULL,
   source_signature TEXT NOT NULL,
@@ -175,7 +176,7 @@ CREATE INDEX IF NOT EXISTS idx_authority_health_due
 CREATE INDEX IF NOT EXISTS idx_delegation_groups_priority
   ON delegation_groups(member_count DESC, nameserver);
 CREATE INDEX IF NOT EXISTS idx_hns_handoff_groups_priority
-  ON hns_handoff_groups(member_count DESC, nameserver, root_name, bootstrap_ip);
+  ON hns_handoff_groups(priority DESC, member_count DESC, nameserver, root_name, bootstrap_ip);
 """
 
 
@@ -196,6 +197,11 @@ def init_live_db(conn: sqlite3.Connection) -> None:
         conn,
         "roots",
         {"ns_handoffs_json": "TEXT NOT NULL DEFAULT '[]'"},
+    )
+    _ensure_columns(
+        conn,
+        "hns_handoff_groups",
+        {"priority": "INTEGER NOT NULL DEFAULT 0"},
     )
     conn.execute("UPDATE host_status SET listing_state = 'unlisted' WHERE listing_state = 'repair'")
     if previous_schema_version != LIVE_SCHEMA_VERSION:

@@ -637,6 +637,7 @@ def _candidate_from_handoff_member(
         (
             root.resource_hash,
             "hns-handoff-v1",
+            "ds-priority" if group.get("priority") else "cohort",
             nameserver,
             root_name,
             bootstrap_ip,
@@ -671,6 +672,7 @@ def _candidate_from_handoff_member(
             "root_name": root_name,
             "bootstrap_ip": bootstrap_ip,
             "bootstrap_field": str(group["bootstrap_field"]),
+            "priority": bool(group.get("priority")),
         },
     }
 

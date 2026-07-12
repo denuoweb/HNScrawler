@@ -38,7 +38,7 @@ Within the same due tier, the initial discovery order is:
 4. unsigned roots with a global SYNTH/GLUE bootstrap;
 5. recognized external-provider delegations whose NS address must be resolved at probe time.
 
-Two compact priority indexes are refreshed independently on `denuoweb-vm`: shared delegation groups from the published nameserver shards, and HNS nameserver-handoff cohorts from `data/hns-handoff-groups.json`. A handoff cohort groups roots by the same nameserver, HNS root, bootstrap address, and bootstrap field, retaining only groups with 2–250 members. This lets the scanner target like-resource HNS delegations without scanning the full topology SQLite database. TLSA-unobserved remains a broad remediation queue rather than a high-confidence liveness signal.
+Two compact priority indexes are refreshed independently on `denuoweb-vm`: shared delegation groups from the published nameserver shards, and HNS nameserver-handoff routes from `data/hns-handoff-groups.json`. A handoff cohort groups roots by the same nameserver, HNS root, bootstrap address, and bootstrap field, retaining only groups with 2–250 members. Separately, DNSSEC-signed HNS handoff routes that are singleton or part of an unbounded group are retained as priority routes. This lets the scanner target both like-resource HNS delegations and high-confidence singleton routes such as `shakeshift` without scanning the full topology SQLite database. TLSA-unobserved remains a broad remediation queue rather than a high-confidence liveness signal.
 
 The topology overview's `DS + TLSA observed by live scan` card is sourced from the live-directory export. It counts only active roots whose current live authoritative DNS result has a matching parent DS, valid DNSSEC, and a secure TLSA response. Its coverage is shown alongside the count; it is not a whole-chain TLSA total and does not prove certificate matching.
 
@@ -56,12 +56,13 @@ Known parking infrastructure, public HNS resolvers, expired roots, private names
 
 The broad sweep is separate from the evidence queue. Compact priority cohorts are read from published artifacts; only the generic fallback tiers stream roots from the read-only topology snapshot with persistent cursors. It does not create one `candidates` or `host_status` row for every root. Its priority order is:
 
-1. members of HNS nameserver-handoff cohorts with 2–250 roots;
-2. members of shared delegation hosts with 2–250 roots;
-3. DS roots with direct SYNTH or GLUE bootstrap;
-4. other direct SYNTH or GLUE bootstrap roots;
-5. DS delegations whose nameserver address must be resolved;
-6. other delegations whose nameserver address must be resolved.
+1. DNSSEC-signed singleton or unbounded HNS handoff routes;
+2. members of HNS nameserver-handoff cohorts with 2–250 roots;
+3. members of shared delegation hosts with 2–250 roots;
+4. DS roots with direct SYNTH or GLUE bootstrap;
+5. other direct SYNTH or GLUE bootstrap roots;
+6. DS delegations whose nameserver address must be resolved;
+7. other delegations whose nameserver address must be resolved.
 
 The sweep records one compact `sweep_coverage` row per root: resource hash, signal tier, checked time, outcome, and next-review time. A root is promoted to the detailed queue and public directory only after an HTTP or authenticated HTTPS endpoint responds. This preserves full liveness coverage without turning the live database or static directory into a second multi-gigabyte topology snapshot.
 

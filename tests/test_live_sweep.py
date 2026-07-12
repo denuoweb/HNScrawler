@@ -300,6 +300,22 @@ def test_handoff_index_keeps_only_bounded_route_cohorts(tmp_path):
                         "members": [members[0]] * 251,
                     },
                 ],
+                "ds_priority_groups": [
+                    {
+                        "nameserver": "a.namenode",
+                        "root_name": "namenode",
+                        "bootstrap_addresses": ["138.199.197.111"],
+                        "bootstrap_field": "glue4",
+                        "member_count": 1,
+                        "members": [
+                            {
+                                **members[0],
+                                "name": "shakeshift",
+                                "resource_hash": "hash-shakeshift",
+                            }
+                        ],
+                    }
+                ],
             }
         )
     )
@@ -314,16 +330,110 @@ def test_handoff_index_keeps_only_bounded_route_cohorts(tmp_path):
         )
         artifact.write_text(artifact.read_text(encoding="utf-8") + "\n")
         third = refresh_hns_handoff_groups(conn, topology_site=topology_site)
-        groups = [dict(row) for row in conn.execute("SELECT * FROM hns_handoff_groups")]
+        groups = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT * FROM hns_handoff_groups ORDER BY priority DESC, nameserver"
+            )
+        ]
         not_before = get_live_meta(conn, HNS_HANDOFF_NOT_BEFORE_META_KEY)
 
     assert first["indexed"] is True
     assert second["indexed"] is False
     assert third["indexed"] is True
     assert not_before == ""
-    assert [(row["nameserver"], row["root_name"], row["member_count"]) for row in groups] == [
-        ("ns1.skyinclude", "skyinclude", 2)
+    assert first["ds_priority_groups"] == 1
+    assert [(row["nameserver"], row["root_name"], row["member_count"], row["priority"]) for row in groups] == [
+        ("a.namenode", "namenode", 1, 1),
+        ("ns1.skyinclude", "skyinclude", 2, 0),
     ]
+
+
+def test_ds_priority_handoff_singleton_precedes_bounded_cohorts(tmp_path):
+    live_db = tmp_path / "live.sqlite"
+    with connect_live(live_db) as conn:
+        init_live_db(conn)
+        conn.executemany(
+            """
+            INSERT INTO hns_handoff_groups(
+              nameserver, root_name, bootstrap_ip, bootstrap_field, priority, member_count,
+              members_json, source_signature, indexed_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "ns1.cohort",
+                    "cohort",
+                    "8.8.8.8",
+                    "glue4",
+                    0,
+                    2,
+                    json.dumps(
+                        [
+                            {
+                                "name": "alpha",
+                                "provider_guess": "self-hosted",
+                                "provider_type": "external_dns",
+                                "resource_hash": "hash-alpha",
+                                "last_seen_height": 100,
+                                "ns_names": ["ns1.cohort"],
+                                "ds_records": [],
+                                "has_ds": False,
+                            },
+                            {
+                                "name": "beta",
+                                "provider_guess": "self-hosted",
+                                "provider_type": "external_dns",
+                                "resource_hash": "hash-beta",
+                                "last_seen_height": 100,
+                                "ns_names": ["ns1.cohort"],
+                                "ds_records": [],
+                                "has_ds": False,
+                            },
+                        ]
+                    ),
+                    "test",
+                    "2026-07-12T00:00:00Z",
+                ),
+                (
+                    "a.namenode",
+                    "namenode",
+                    "138.199.197.111",
+                    "glue4",
+                    1,
+                    1,
+                    json.dumps(
+                        [
+                            {
+                                "name": "shakeshift",
+                                "provider_guess": "unknown/custom",
+                                "provider_type": "unknown",
+                                "resource_hash": "hash-shakeshift",
+                                "last_seen_height": 100,
+                                "ns_names": ["a.namenode"],
+                                "ds_records": [{"keyTag": 48942}],
+                                "has_ds": True,
+                            }
+                        ]
+                    ),
+                    "test",
+                    "2026-07-12T00:00:00Z",
+                ),
+            ],
+        )
+        selection = select_sweep_candidates(
+            conn,
+            topology_db=tmp_path / "not-needed.sqlite",
+            limit=1,
+            page_size=100,
+            tiers=("hns_handoff",),
+        )
+
+    candidate = selection["candidates"][0]
+    assert candidate["root_name"] == "shakeshift"
+    assert candidate["signal_tier"] == "ds_handoff"
+    assert candidate["handoff_cohort"]["priority"] is True
+    assert "ds-priority" in candidate["sweep_coverage_resource_hash"]
 
 
 def test_handoff_cohort_sweep_uses_compact_index_without_topology_database(tmp_path):

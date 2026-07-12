@@ -341,6 +341,7 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     providers = summary["providers"]
     overview_pages = json.loads((out / "data/overview-pages.json").read_text(encoding="utf-8"))
     names_pages = json.loads((out / "data/names-pages.json").read_text(encoding="utf-8"))
+    handoff_groups = json.loads((out / "data/hns-handoff-groups.json").read_text(encoding="utf-8"))
     names_page_rows = json.loads((out / "data/names-pages/all/page-1.json").read_text(encoding="utf-8"))["rows"]
     resource_ip_overview_page = json.loads(
         (
@@ -411,6 +412,8 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert "broken.json" not in manifest_artifacts
     assert "names-pages.json" in manifest_artifacts
     assert "hns-handoff-groups.json" in manifest_artifacts
+    assert handoff_groups["format"] == "hns-handoff-cohorts-v1"
+    assert "ds_priority_groups" in handoff_groups
     assert "names-pages/all/page-1.json" in manifest_artifacts
     assert "ip-addresses/198.51.100.2.json" in manifest_artifacts
     assert "ip-addresses/198.51.100.2/page-1.json" in manifest_artifacts

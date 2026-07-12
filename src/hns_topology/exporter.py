@@ -839,7 +839,7 @@ def write_dns_evidence(conn: sqlite3.Connection, out: Path) -> int:
 
 
 def write_hns_handoff_groups(conn: sqlite3.Connection, out: Path) -> int:
-    """Write bounded, scanner-ready cohorts sharing an indirect HNS NS route."""
+    """Write bounded cohorts and DS priority routes sharing an HNS NS handoff."""
 
     output_path = out / "hns-handoff-groups.json"
     prepare_temp_ns_handoff_table(
@@ -858,25 +858,28 @@ def write_hns_handoff_groups(conn: sqlite3.Connection, out: Path) -> int:
         """,
     )
     groups: list[dict[str, Any]] = []
+    ds_priority_groups: list[dict[str, Any]] = []
     current_key: tuple[str, str, str, str] | None = None
     current_members: list[dict[str, Any]] = []
 
     def finish_group() -> None:
         if current_key is None:
             return
-        if not HANDOFF_COHORT_MIN_MEMBERS <= len(current_members) <= HANDOFF_COHORT_MAX_MEMBERS:
-            return
         nameserver, root_name, bootstrap_ip, bootstrap_field = current_key
-        groups.append(
-            {
-                "nameserver": nameserver,
-                "root_name": root_name,
-                "bootstrap_addresses": [bootstrap_ip],
-                "bootstrap_field": bootstrap_field,
-                "member_count": len(current_members),
-                "members": current_members,
-            }
-        )
+        group = {
+            "nameserver": nameserver,
+            "root_name": root_name,
+            "bootstrap_addresses": [bootstrap_ip],
+            "bootstrap_field": bootstrap_field,
+        }
+        if HANDOFF_COHORT_MIN_MEMBERS <= len(current_members) <= HANDOFF_COHORT_MAX_MEMBERS:
+            groups.append({**group, "member_count": len(current_members), "members": current_members})
+            return
+        ds_members = [member for member in current_members if member["has_ds"]]
+        if ds_members:
+            ds_priority_groups.append(
+                {**group, "member_count": len(ds_members), "members": ds_members}
+            )
 
     try:
         rows = conn.execute(
@@ -947,9 +950,14 @@ def write_hns_handoff_groups(conn: sqlite3.Connection, out: Path) -> int:
             "group_count": len(groups),
             "member_count": sum(int(group["member_count"]) for group in groups),
             "groups": groups,
+            "ds_priority_group_count": len(ds_priority_groups),
+            "ds_priority_member_count": sum(
+                int(group["member_count"]) for group in ds_priority_groups
+            ),
+            "ds_priority_groups": ds_priority_groups,
         },
     )
-    return len(groups)
+    return len(groups) + len(ds_priority_groups)
 
 
 def _cohort_json_list(value: Any) -> list[Any]:
