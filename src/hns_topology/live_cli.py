@@ -11,6 +11,7 @@ from .live_db import (
     latest_sweep_run,
     sweep_coverage_summary,
 )
+from .live_delegations import refresh_delegation_groups
 from .live_exporter import export_live_site, validate_live_site
 from .live_runner import ProbeBatchConfig, run_probe_batch
 from .live_sweep import SweepBatchConfig, run_sweep_batch
@@ -51,6 +52,16 @@ def parser() -> argparse.ArgumentParser:
     sweep.add_argument("--topology-db", required=True)
     _add_sweep_options(sweep)
     sweep.set_defaults(func=cmd_sweep)
+
+    delegation_index = sub.add_parser(
+        "index-delegations",
+        help="Refresh the compact shared-delegation priority index from topology site shards.",
+    )
+    _add_db(delegation_index)
+    delegation_index.add_argument("--topology-site", required=True)
+    delegation_index.add_argument("--min-members", type=int, default=5)
+    delegation_index.add_argument("--max-members", type=int, default=250)
+    delegation_index.set_defaults(func=cmd_index_delegations)
 
     export = sub.add_parser("export", help="Generate the standalone live-directory static site.")
     _add_db(export)
@@ -118,6 +129,23 @@ def cmd_sweep(args: argparse.Namespace) -> int:
             conn,
             topology_db=args.topology_db,
             config=_sweep_config(args),
+        )
+    _print(result)
+    return 0
+
+
+def cmd_index_delegations(args: argparse.Namespace) -> int:
+    if args.min_members < 1:
+        raise SystemExit("--min-members must be at least one")
+    if args.max_members < args.min_members:
+        raise SystemExit("--max-members must be at least --min-members")
+    with connect_live(args.db) as conn:
+        init_live_db(conn)
+        result = refresh_delegation_groups(
+            conn,
+            topology_site=args.topology_site,
+            min_members=args.min_members,
+            max_members=args.max_members,
         )
     _print(result)
     return 0

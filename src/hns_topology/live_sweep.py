@@ -26,11 +26,13 @@ from .live_db import (
     upsert_discovered_hosts,
     upsert_root,
 )
+from .live_delegations import delegation_group_rows
 from .live_models import ONLINE_CATEGORIES, LiveCandidate, TopologyRoot
 from .live_probe import ProbeConfig, probe_host
 from .timeutil import utc_now
 
 SWEEP_TIERS = (
+    "shared_delegation",
     "ds_bootstrap",
     "bootstrap",
     "ds_delegated",
@@ -276,7 +278,18 @@ def select_sweep_candidates(
     uri = f"file:{source.resolve().as_posix()}?mode=ro"
     with sqlite3.connect(uri, uri=True) as topology:
         topology.row_factory = sqlite3.Row
+        if "shared_delegation" in tiers and get_live_meta(conn, _not_before_key("shared_delegation")) <= now:
+            selected.extend(
+                _select_shared_delegation_candidates(
+                    conn,
+                    topology=topology,
+                    limit=maximum,
+                    now=now,
+                )
+            )
         for tier in tiers:
+            if tier == "shared_delegation":
+                continue
             if tier not in _TIER_PREDICATES:
                 raise ValueError(f"unknown sweep tier: {tier}")
             if maximum is not None and len(selected) >= maximum:
@@ -401,13 +414,20 @@ def _promote_endpoint(conn: sqlite3.Connection, candidate: dict[str, Any], resul
             root_name=root.name,
             host=root.name,
             source="broad_sweep",
-            source_detail=f"{candidate['signal_tier']} endpoint sweep",
+            source_detail=_sweep_source_detail(candidate),
             priority=70 if root.has_ds else 60,
             topology_resource_hash=root.resource_hash,
         ),
         seen_at=result.checked_at,
     )
     store_probe_result(conn, result)
+
+
+def _sweep_source_detail(candidate: dict[str, Any]) -> str:
+    delegation_host = str(candidate.get("delegation_host") or "")
+    if delegation_host:
+        return f"shared delegation {delegation_host} endpoint sweep"
+    return f"{candidate['signal_tier']} endpoint sweep"
 
 
 def _store_selection_progress(conn: sqlite3.Connection, selection: dict[str, Any]) -> None:
@@ -447,6 +467,70 @@ def _topology_page(
         """,
         (after_name, *NON_ACTIONABLE_PROVIDER_TYPES, limit),
     )
+
+
+def _select_shared_delegation_candidates(
+    conn: sqlite3.Connection,
+    *,
+    topology: sqlite3.Connection,
+    limit: int | None,
+    now: str,
+) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    for group in delegation_group_rows(conn):
+        if limit is not None and len(selected) >= limit:
+            break
+        roots = [str(root) for root in group["member_roots"]]
+        rows = _topology_rows_for_names(topology, roots)
+        coverage = sweep_coverage_for_roots(conn, [str(row["name"]) for row in rows])
+        row_by_name = {str(row["name"]): row for row in rows}
+        for root_name in roots:
+            if limit is not None and len(selected) >= limit:
+                break
+            row = row_by_name.get(root_name)
+            if row is None:
+                continue
+            candidate = _candidate_from_row(row, tier="shared_delegation")
+            candidate["delegation_host"] = str(group["nameserver"])
+            candidate["ns_names"] = [str(group["nameserver"])]
+            candidate["authority_keys"] = [f"ns:{group['nameserver']}"]
+            candidate["authority_health_keys"] = []
+            if _coverage_is_due(
+                coverage.get(root_name),
+                resource_hash=str(candidate["topology_resource_hash"]),
+                now=now,
+            ):
+                selected.append(candidate)
+    return selected
+
+
+def _topology_rows_for_names(conn: sqlite3.Connection, names: list[str]) -> list[sqlite3.Row]:
+    normalized = sorted({str(name) for name in names if str(name)})
+    rows: list[sqlite3.Row] = []
+    excluded = ",".join("?" for _ in NON_ACTIONABLE_PROVIDER_TYPES)
+    for start in range(0, len(normalized), 500):
+        batch = normalized[start : start + 500]
+        placeholders = ",".join("?" for _ in batch)
+        rows.extend(
+            conn.execute(
+                f"""
+                SELECT
+                  n.name, n.provider_guess, n.last_seen_height, n.updated_at,
+                  COALESCE(rs.resource_hash, n.resource_hash, '') AS resource_hash,
+                  rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.ds_records,
+                  rs.has_ds, rs.has_ns, rs.has_glue, rs.has_synth,
+                  COALESCE(ps.provider_type, 'unknown') AS provider_type
+                FROM names n
+                CROSS JOIN resource_summary rs ON rs.name = n.name
+                LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
+                WHERE n.name IN ({placeholders})
+                  AND COALESCE(n.expired, 0) = 0
+                  AND COALESCE(ps.provider_type, 'unknown') NOT IN ({excluded})
+                """,
+                (*batch, *NON_ACTIONABLE_PROVIDER_TYPES),
+            )
+        )
+    return rows
 
 
 def _candidate_from_row(row: sqlite3.Row, *, tier: str) -> dict[str, Any]:

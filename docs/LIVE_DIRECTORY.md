@@ -28,7 +28,7 @@ The evidence queue compares the topology tip, height, provider-rule hash, and ge
 
 ## Candidate Policy
 
-The scanner imports active, actionable roots with direct HNS nameserver IP evidence from SYNTH or GLUE. It also admits lower-priority no-GLUE delegations when stored TLSA evidence or a recognized external DNS provider makes the root a useful candidate; the probe resolves those individual NS hostnames before issuing authoritative queries. DS raises the priority of a root that has another admission signal, but DS alone is too broad to establish likely website service. An aggregate delegation-host count alone is not treated as website evidence. The scanner creates only the root apex candidate by default.
+The scanner imports active, actionable roots with direct HNS nameserver IP evidence from SYNTH or GLUE. It also treats a moderate shared delegation host as a first-tier website signal: a host serving 5–250 current HNS roots contributes its member roots to the broad sweep, with per-host pacing. This catches hosted groups such as `ns1.trapify` without treating the largest generic parking clusters as likely websites. DS raises the priority of a root that has another admission signal, but DS alone is too broad to establish likely website service. The scanner creates only the root apex candidate by default.
 
 Within the same due tier, the initial discovery order is:
 
@@ -38,7 +38,7 @@ Within the same due tier, the initial discovery order is:
 4. unsigned roots with a global SYNTH/GLUE bootstrap;
 5. recognized external-provider delegations whose NS address must be resolved at probe time.
 
-The overview's aggregated Delegation Hosts table is useful for infrastructure analysis, but it is not itself website evidence. TLSA-unobserved is a broad remediation queue rather than a high-confidence liveness signal.
+The delegation index is refreshed independently from the published nameserver shards on `denuoweb-vm`; it does not run in the weekly indexer or deployment path. TLSA-unobserved remains a broad remediation queue rather than a high-confidence liveness signal.
 
 The topology overview's `DS + TLSA observed by live scan` card is sourced from the live-directory export. It counts only active roots whose current live authoritative DNS result has a matching parent DS, valid DNSSEC, and a secure TLSA response. Its coverage is shown alongside the count; it is not a whole-chain TLSA total and does not prove certificate matching.
 
@@ -56,16 +56,17 @@ Known parking infrastructure, public HNS resolvers, expired roots, private names
 
 The broad sweep is separate from the evidence queue. It streams roots from the read-only topology snapshot with persistent cursors, so it does not create one `candidates` or `host_status` row for every root. Its priority order is:
 
-1. DS roots with direct SYNTH or GLUE bootstrap;
-2. other direct SYNTH or GLUE bootstrap roots;
-3. DS delegations whose nameserver address must be resolved;
-4. other delegations whose nameserver address must be resolved.
+1. members of shared delegation hosts with 5–250 roots;
+2. DS roots with direct SYNTH or GLUE bootstrap;
+3. other direct SYNTH or GLUE bootstrap roots;
+4. DS delegations whose nameserver address must be resolved;
+5. other delegations whose nameserver address must be resolved.
 
 The sweep records one compact `sweep_coverage` row per root: resource hash, signal tier, checked time, outcome, and next-review time. A root is promoted to the detailed queue and public directory only after an HTTP or authenticated HTTPS endpoint responds. This preserves full liveness coverage without turning the live database or static directory into a second multi-gigabyte topology snapshot.
 
 Broad probes first resolve A/AAAA and try both HTTP and HTTPS. When either endpoint responds, the same probe performs DNSSEC and TLSA collection before storing the result. This keeps unreachable delegated roots inexpensive while ensuring endpoint scans supply current TLSA evidence.
 
-Production uses 50 workers, a global ceiling of ten target starts per second, and per-authority pacing. HTTP 429/503 responses or repeated authoritative DNS failures temporarily increase the delay only for the affected authority. The service runs another cycle 30 seconds after the prior one completes, independent of the weekly indexer and deploy jobs.
+Production uses 50 workers, a global ceiling of ten target starts per second, and per-authority pacing. HTTP 429/503 responses increase per-authority delay; repeated DNS failures place only shared authority groups on a compact cooldown. The delegation-index timer runs independently every hour and reads the published static shard data only when it has changed. The probe service runs another cycle 30 seconds after the prior one completes, independent of the weekly indexer and deploy jobs.
 
 ## Probe Semantics
 
@@ -98,6 +99,7 @@ hns-live-directory sync --topology-db data/topology.sqlite --db data/live.sqlite
 hns-live-directory plan --db data/live.sqlite
 hns-live-directory scan --db data/live.sqlite --limit 100
 hns-live-directory sweep --topology-db data/topology.sqlite --db data/live.sqlite --limit 500
+hns-live-directory index-delegations --db data/live.sqlite --topology-site public
 hns-live-directory export --db data/live.sqlite --out public-live
 hns-live-directory validate --public-dir public-live
 ```

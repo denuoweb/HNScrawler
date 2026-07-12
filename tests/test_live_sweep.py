@@ -7,6 +7,7 @@ from hns_topology.live_db import (
     init_live_db,
     record_authority_health,
 )
+from hns_topology.live_delegations import refresh_delegation_groups
 from hns_topology.live_models import HostProbeResult
 from hns_topology.live_sweep import SweepBatchConfig, run_sweep_batch, select_sweep_candidates
 
@@ -202,6 +203,78 @@ def test_sweep_excludes_known_generic_bootstrap_addresses(tmp_path):
 
     assert selection["candidates"] == []
     assert selection["completed_tiers"] == ["ds_bootstrap"]
+
+
+def test_delegation_index_keeps_only_bounded_shared_groups(tmp_path):
+    live_db = tmp_path / "live.sqlite"
+    topology_site = tmp_path / "site"
+    shard = topology_site / "data" / "nameservers" / "shards" / "001.jsonl"
+    shard.parent.mkdir(parents=True)
+    shard.write_text(
+        "\n".join(
+            [
+                json.dumps({"n": "ns1.trapify", "c": 5, "r": ["a", "b", "c", "d", "e"]}),
+                json.dumps({"n": "ns1.small", "c": 4, "r": ["a", "b", "c", "d"]}),
+                json.dumps({"n": "ns1.large", "c": 251, "r": ["a"] * 251}),
+            ]
+        )
+        + "\n"
+    )
+
+    with connect_live(live_db) as conn:
+        init_live_db(conn)
+        first = refresh_delegation_groups(conn, topology_site=topology_site)
+        second = refresh_delegation_groups(conn, topology_site=topology_site)
+        groups = [dict(row) for row in conn.execute("SELECT * FROM delegation_groups")]
+
+    assert first["indexed"] is True
+    assert second["indexed"] is False
+    assert [(row["nameserver"], row["member_count"]) for row in groups] == [
+        ("ns1.trapify", 5)
+    ]
+
+
+def test_sweep_prioritizes_members_of_a_shared_delegation_group(tmp_path):
+    topology_db = tmp_path / "topology.sqlite"
+    live_db = tmp_path / "live.sqlite"
+    _seed_shared_authority_topology(topology_db)
+
+    with connect_live(live_db) as conn:
+        init_live_db(conn)
+        conn.execute(
+            """
+            INSERT INTO delegation_groups(
+              nameserver, member_count, member_roots_json, source_signature, indexed_at
+            ) VALUES(?, ?, ?, ?, ?)
+            """,
+            (
+                "ns1.trapify",
+                4,
+                json.dumps(["aa-shared", "ab-shared", "ac-shared", "ad-shared"]),
+                "test",
+                "2026-07-12T00:00:00Z",
+            ),
+        )
+        selection = select_sweep_candidates(
+            conn,
+            topology_db=topology_db,
+            limit=10,
+            page_size=100,
+            tiers=("shared_delegation",),
+        )
+
+    assert [item["root_name"] for item in selection["candidates"]] == [
+        "aa-shared",
+        "ab-shared",
+        "ac-shared",
+        "ad-shared",
+    ]
+    assert {tuple(item["authority_keys"]) for item in selection["candidates"]} == {
+        ("ns:ns1.trapify",)
+    }
+    assert {tuple(item["ns_names"]) for item in selection["candidates"]} == {
+        ("ns1.trapify",)
+    }
 
 
 def _seed_topology(path):

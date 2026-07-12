@@ -16,7 +16,7 @@ from .live_models import (
 )
 from .timeutil import utc_now
 
-LIVE_SCHEMA_VERSION = "3"
+LIVE_SCHEMA_VERSION = "4"
 
 SCHEMA_SQL = """
 PRAGMA journal_mode = WAL;
@@ -141,6 +141,14 @@ CREATE TABLE IF NOT EXISTS authority_health (
   failure_reason TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS delegation_groups (
+  nameserver TEXT PRIMARY KEY,
+  member_count INTEGER NOT NULL,
+  member_roots_json TEXT NOT NULL,
+  source_signature TEXT NOT NULL,
+  indexed_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_roots_active ON roots(active, strict_ready, name);
 CREATE INDEX IF NOT EXISTS idx_candidates_active_priority
   ON candidates(active, suppressed, priority DESC, host);
@@ -150,6 +158,8 @@ CREATE INDEX IF NOT EXISTS idx_sweep_coverage_tier_due
   ON sweep_coverage(signal_tier, next_check_at, root_name);
 CREATE INDEX IF NOT EXISTS idx_authority_health_due
   ON authority_health(next_probe_at, state);
+CREATE INDEX IF NOT EXISTS idx_delegation_groups_priority
+  ON delegation_groups(member_count DESC, nameserver);
 """
 
 

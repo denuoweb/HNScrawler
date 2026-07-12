@@ -25,7 +25,10 @@ LIVE_SWEEP_AUTHORITY_DELAY_MS="${LIVE_SWEEP_AUTHORITY_DELAY_MS:-500}"
 LIVE_SWEEP_TIMEOUT="${LIVE_SWEEP_TIMEOUT:-2}"
 LIVE_SWEEP_MAX_NAMESERVERS="${LIVE_SWEEP_MAX_NAMESERVERS:-2}"
 LIVE_SWEEP_MAX_ADDRESSES="${LIVE_SWEEP_MAX_ADDRESSES:-2}"
+LIVE_DELEGATION_MIN_MEMBERS="${LIVE_DELEGATION_MIN_MEMBERS:-5}"
+LIVE_DELEGATION_MAX_MEMBERS="${LIVE_DELEGATION_MAX_MEMBERS:-250}"
 START_LIVE_TIMER="${START_LIVE_TIMER:-1}"
+START_LIVE_DELEGATION_INDEX_TIMER="${START_LIVE_DELEGATION_INDEX_TIMER:-1}"
 RUN_LIVE_DIRECTORY_NOW="${RUN_LIVE_DIRECTORY_NOW:-0}"
 
 mountpoint -q /mnt/hns-topology || {
@@ -52,6 +55,7 @@ sudo tee /etc/default/hns-live-directory >/dev/null <<EOF
 LIVE_ROOT=$LIVE_ROOT
 LIVE_REPO_DIR=$LIVE_REPO_DIR
 TOPOLOGY_DB=$TOPOLOGY_DB
+TOPOLOGY_SITE_DIR=$TOPOLOGY_SITE_DIR
 LIVE_DB=$LIVE_DB
 LIVE_PUBLIC_DIR=$LIVE_PUBLIC_DIR
 LIVE_LIMIT=$LIVE_LIMIT
@@ -69,6 +73,8 @@ LIVE_SWEEP_AUTHORITY_DELAY_MS=$LIVE_SWEEP_AUTHORITY_DELAY_MS
 LIVE_SWEEP_TIMEOUT=$LIVE_SWEEP_TIMEOUT
 LIVE_SWEEP_MAX_NAMESERVERS=$LIVE_SWEEP_MAX_NAMESERVERS
 LIVE_SWEEP_MAX_ADDRESSES=$LIVE_SWEEP_MAX_ADDRESSES
+LIVE_DELEGATION_MIN_MEMBERS=$LIVE_DELEGATION_MIN_MEMBERS
+LIVE_DELEGATION_MAX_MEMBERS=$LIVE_DELEGATION_MAX_MEMBERS
 EOF
 
 sudo tee /etc/systemd/system/hns-live-directory.service >/dev/null <<EOF
@@ -97,6 +103,32 @@ ReadWritePaths=$LIVE_ROOT
 TimeoutStartSec=6h
 EOF
 
+sudo tee /etc/systemd/system/hns-live-delegation-index.service >/dev/null <<EOF
+[Unit]
+Description=Refresh HNS shared delegation priority index
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=$TOPOLOGY_SITE_DIR/data/nameservers/index.json
+
+[Service]
+Type=oneshot
+User=$LIVE_SERVICE_USER
+Group=$LIVE_SERVICE_GROUP
+WorkingDirectory=$LIVE_REPO_DIR
+EnvironmentFile=/etc/default/hns-live-directory
+ExecStart=$LIVE_REPO_DIR/scripts/run-live-delegation-index.sh
+Nice=15
+IOSchedulingClass=idle
+CPUQuota=25%
+MemoryMax=512M
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=$LIVE_ROOT
+TimeoutStartSec=2h
+EOF
+
 sudo tee /etc/systemd/system/hns-live-directory.timer >/dev/null <<EOF
 [Unit]
 Description=Run the HNS live website directory sweep
@@ -107,6 +139,21 @@ OnUnitInactiveSec=30s
 RandomizedDelaySec=15s
 AccuracySec=1m
 Unit=hns-live-directory.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+sudo tee /etc/systemd/system/hns-live-delegation-index.timer >/dev/null <<EOF
+[Unit]
+Description=Refresh HNS shared delegation priority index
+
+[Timer]
+OnActiveSec=5m
+OnUnitInactiveSec=1h
+RandomizedDelaySec=5m
+AccuracySec=5m
+Unit=hns-live-delegation-index.service
 
 [Install]
 WantedBy=timers.target
@@ -130,12 +177,17 @@ LIVE_REPO_DIR="$LIVE_REPO_DIR" TOPOLOGY_SITE_DIR="$TOPOLOGY_SITE_DIR" \
 
 sudo systemctl daemon-reload
 sudo systemctl enable hns-live-directory.timer
+sudo systemctl enable hns-live-delegation-index.timer
 if [[ "$START_LIVE_TIMER" == "1" ]]; then
   sudo systemctl restart hns-live-directory.timer
+fi
+if [[ "$START_LIVE_DELEGATION_INDEX_TIMER" == "1" ]]; then
+  sudo systemctl restart hns-live-delegation-index.timer
 fi
 if [[ "$RUN_LIVE_DIRECTORY_NOW" == "1" ]]; then
   sudo systemctl start hns-live-directory.service
 fi
 
 systemctl status hns-live-directory.timer --no-pager || true
+systemctl status hns-live-delegation-index.timer --no-pager || true
 ls -ld "$LIVE_ROOT" "$LIVE_PUBLIC_DIR" "$LIVE_WEB_PATH"
