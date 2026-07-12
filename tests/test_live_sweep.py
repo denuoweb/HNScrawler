@@ -371,6 +371,22 @@ def test_handoff_cohort_sweep_uses_compact_index_without_topology_database(tmp_p
                 "2026-07-12T00:00:00Z",
             ),
         )
+        conn.execute(
+            """
+            INSERT INTO sweep_coverage(
+              root_name, resource_hash, signal_tier, outcome_code, endpoint_category,
+              checked_at, next_check_at, failure_reason
+            ) VALUES(?, ?, ?, ?, '', ?, ?, '')
+            """,
+            (
+                "alpha",
+                "hash-alpha",
+                "ds_handoff",
+                "no_endpoint",
+                "2026-07-12T00:00:00Z",
+                "2099-01-01T00:00:00Z",
+            ),
+        )
         selection = select_sweep_candidates(
             conn,
             topology_db=tmp_path / "not-needed.sqlite",
@@ -389,6 +405,7 @@ def test_handoff_cohort_sweep_uses_compact_index_without_topology_database(tmp_p
     }
     assert {tuple(item["authority_health_keys"]) for item in selection["candidates"]} == {()}
     assert {item["ns_handoffs"][0]["root_name"] for item in selection["candidates"]} == {"namenode"}
+    assert all("hns-handoff-v1" in item["sweep_coverage_resource_hash"] for item in selection["candidates"])
 
 
 def test_sweep_prioritizes_members_of_a_shared_delegation_group(tmp_path):

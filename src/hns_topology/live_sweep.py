@@ -224,7 +224,10 @@ def run_sweep_batch(
                     store_sweep_coverage(
                         conn,
                         root_name=result.root_name,
-                        resource_hash=result.topology_resource_hash,
+                        resource_hash=str(
+                            candidate.get("sweep_coverage_resource_hash")
+                            or result.topology_resource_hash
+                        ),
                         signal_tier=str(candidate["signal_tier"]),
                         result=result,
                     )
@@ -594,7 +597,7 @@ def _select_hns_handoff_candidates(
             previous = coverage.get(str(candidate["root_name"]))
             if not _coverage_is_due(
                 previous,
-                resource_hash=str(candidate["topology_resource_hash"]),
+                resource_hash=str(candidate["sweep_coverage_resource_hash"]),
                 now=now,
             ):
                 continue
@@ -630,10 +633,23 @@ def _candidate_from_handoff_member(
         strict_ready=False,
     )
     authority_key = f"hns-handoff:{nameserver}|{root_name}|{bootstrap_ip}"
+    coverage_hash = "|".join(
+        (
+            root.resource_hash,
+            "hns-handoff-v1",
+            nameserver,
+            root_name,
+            bootstrap_ip,
+            str(group["bootstrap_field"]),
+        )
+    )
     return {
         "root_name": root.name,
         "host": root.name,
         "topology_resource_hash": root.resource_hash,
+        # Coverage is route-specific: a previous generic delegated-root probe
+        # must not suppress the first HNS-aware route probe for this cohort.
+        "sweep_coverage_resource_hash": coverage_hash,
         "provider_guess": root.provider_guess,
         "provider_type": root.provider_type,
         "ns_names": root.ns_names,
