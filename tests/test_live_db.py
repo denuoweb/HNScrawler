@@ -1,4 +1,5 @@
 import sqlite3
+from dataclasses import replace
 
 from hns_topology.live_db import (
     begin_topology_sync,
@@ -43,6 +44,29 @@ def test_online_host_survives_one_failure_then_is_unlisted(tmp_path):
         status = conn.execute("SELECT * FROM host_status").fetchone()
         assert status["listing_state"] == "unlisted"
         assert status["consecutive_failures"] == 2
+
+
+def test_dnssec_validation_failure_unlists_a_previously_online_host_immediately(tmp_path):
+    with connect_live(tmp_path / "live.sqlite") as conn:
+        init_live_db(conn)
+        _seed_candidate(conn)
+        with conn:
+            store_probe_result(conn, _result(category="https", checked_at="2026-07-01T00:00:00Z"))
+            store_probe_result(
+                conn,
+                replace(
+                    _result(category="offline", checked_at="2026-07-02T00:00:00Z"),
+                    dnssec_status="dnskey_missing",
+                    failure_reason="dnssec_validation_failed",
+                ),
+            )
+
+        row = directory_rows(conn)[0]
+        status = conn.execute("SELECT * FROM host_status").fetchone()
+
+    assert row["category"] == "offline"
+    assert row["listing_state"] == "unlisted"
+    assert status["next_check_at"] == "2026-07-09T00:00:00Z"
 
 
 def test_init_live_db_migrates_handoff_storage(tmp_path):

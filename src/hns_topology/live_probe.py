@@ -99,12 +99,24 @@ def probe_host(
             https_result=https_result,
             dane_status=dane_status,
         )
-        failure_reason = _failure_reason(
-            category,
-            dns_result=dns_result,
-            http_result=http_result,
-            https_result=https_result,
-        )
+        if candidate.get("ds_records") and dns_result.dnssec_status not in {
+            "valid",
+            "resolver_validated",
+        }:
+            # A parent DS makes DNSSEC validation mandatory. A reachable web
+            # server is not a publishable HNS endpoint if HNS clients reject
+            # the delegation as bogus or incomplete.
+            category = CATEGORY_OFFLINE
+            canonical_url = ""
+            https_status = "blocked_dnssec"
+            failure_reason = "dnssec_validation_failed"
+        else:
+            failure_reason = _failure_reason(
+                category,
+                dns_result=dns_result,
+                http_result=http_result,
+                https_result=https_result,
+            )
         return HostProbeResult(
             root_name=root_name,
             host=host,

@@ -208,6 +208,35 @@ def test_probe_classifies_http_response_when_https_fails(monkeypatch):
     assert result.failure_reason == "connection_refused"
 
 
+def test_probe_rejects_web_response_when_parent_ds_cannot_validate_dnssec(monkeypatch):
+    monkeypatch.setattr(
+        "hns_topology.live_probe.probe_dns",
+        lambda *args, **kwargs: DnsProbeResult(
+            status="resolved",
+            addresses=["93.184.216.34"],
+            dnssec_status="dnskey_missing",
+            tlsa_status="missing",
+        ),
+    )
+
+    def web(_host, _addresses, *, scheme, config):
+        if scheme == "http":
+            return WebProbeResult(scheme="http", status="response", status_code=302)
+        return WebProbeResult(scheme="https", status="failed", failure_reason="certificate_untrusted")
+
+    monkeypatch.setattr("hns_topology.live_probe._probe_web", web)
+
+    result = probe_host(
+        {**_candidate(), "ds_records": [{"keyTag": 1}]},
+        config=ProbeConfig(),
+    )
+
+    assert result.category == "offline"
+    assert result.canonical_url == ""
+    assert result.https_status == "blocked_dnssec"
+    assert result.failure_reason == "dnssec_validation_failed"
+
+
 def test_probe_classifies_untrusted_https_without_http_as_offline(monkeypatch):
     monkeypatch.setattr(
         "hns_topology.live_probe.probe_dns",

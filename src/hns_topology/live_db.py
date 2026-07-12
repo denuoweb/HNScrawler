@@ -940,6 +940,16 @@ def _listing_state(result: HostProbeResult, previous: dict[str, Any]) -> dict[st
             "last_good_url": result.canonical_url,
             "consecutive_failures": 0,
         }
+    if result.failure_reason == "dnssec_validation_failed":
+        return {
+            "listing_state": "unlisted",
+            "next_check_at": _after(result.checked_at, days=7),
+            "first_online_at": first_online_at,
+            "last_online_at": last_online_at,
+            "last_good_category": last_good_category,
+            "last_good_url": last_good_url,
+            "consecutive_failures": failures + 1,
+        }
     failures += 1
     degraded = bool(last_good_category) and failures < 2
     backoff_days = 1 if degraded else min(90, 7 * (2 ** max(0, failures - 2)))
@@ -959,6 +969,8 @@ def _sweep_outcome(result: HostProbeResult) -> tuple[str, int]:
         return "https_endpoint", 30
     if result.category == "http_only":
         return "http_endpoint", 30
+    if result.failure_reason == "dnssec_validation_failed":
+        return "dnssec_validation_failed", 7
     if result.dns_status == "no_bootstrap":
         return "no_bootstrap", 90
     if result.dns_status == "no_address":
