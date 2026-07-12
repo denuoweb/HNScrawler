@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .jsonutil import dumps_json
-from .live_db import get_live_meta, set_live_meta
+from .live_db import HNS_HANDOFF_NOT_BEFORE_META_KEY, get_live_meta, set_live_meta
 from .ns_handoff import HANDOFF_COHORT_MAX_MEMBERS, HANDOFF_COHORT_MIN_MEMBERS
 from .timeutil import utc_now
 
@@ -82,6 +82,9 @@ def refresh_hns_handoff_groups(
             groups,
         )
         set_live_meta(conn, HANDOFF_GROUP_INDEX_META_KEY, signature)
+        # A new artifact can introduce a route that was absent during the
+        # previous empty pass, so do not leave it behind the weekly tier gate.
+        set_live_meta(conn, HNS_HANDOFF_NOT_BEFORE_META_KEY, "")
     return {"indexed": True, "groups": len(groups), "source_signature": signature}
 
 

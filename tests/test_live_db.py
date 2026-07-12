@@ -73,7 +73,7 @@ def test_init_live_db_migrates_handoff_storage(tmp_path):
         schema_version = get_live_meta(conn, "schema_version")
 
     assert "ns_handoffs_json" in columns
-    assert schema_version == "6"
+    assert schema_version == "7"
 
 
 def test_topology_hash_change_makes_candidate_immediately_due(tmp_path):

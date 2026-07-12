@@ -4,7 +4,9 @@ from dataclasses import replace
 
 from hns_topology.live_cli import parser
 from hns_topology.live_db import (
+    HNS_HANDOFF_NOT_BEFORE_META_KEY,
     connect_live,
+    get_live_meta,
     init_live_db,
     record_authority_health,
 )
@@ -306,10 +308,19 @@ def test_handoff_index_keeps_only_bounded_route_cohorts(tmp_path):
         init_live_db(conn)
         first = refresh_hns_handoff_groups(conn, topology_site=topology_site)
         second = refresh_hns_handoff_groups(conn, topology_site=topology_site)
+        conn.execute(
+            "INSERT INTO live_meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (HNS_HANDOFF_NOT_BEFORE_META_KEY, "2099-01-01T00:00:00Z"),
+        )
+        artifact.write_text(artifact.read_text(encoding="utf-8") + "\n")
+        third = refresh_hns_handoff_groups(conn, topology_site=topology_site)
         groups = [dict(row) for row in conn.execute("SELECT * FROM hns_handoff_groups")]
+        not_before = get_live_meta(conn, HNS_HANDOFF_NOT_BEFORE_META_KEY)
 
     assert first["indexed"] is True
     assert second["indexed"] is False
+    assert third["indexed"] is True
+    assert not_before == ""
     assert [(row["nameserver"], row["root_name"], row["member_count"]) for row in groups] == [
         ("ns1.skyinclude", "skyinclude", 2)
     ]

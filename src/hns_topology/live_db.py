@@ -16,7 +16,8 @@ from .live_models import (
 )
 from .timeutil import utc_now
 
-LIVE_SCHEMA_VERSION = "6"
+LIVE_SCHEMA_VERSION = "7"
+HNS_HANDOFF_NOT_BEFORE_META_KEY = "sweep.not_before.hns_handoff"
 
 SCHEMA_SQL = """
 PRAGMA journal_mode = WAL;
@@ -190,12 +191,17 @@ def connect_live(db_path: str | Path) -> sqlite3.Connection:
 
 def init_live_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
+    previous_schema_version = get_live_meta(conn, "schema_version")
     _ensure_columns(
         conn,
         "roots",
         {"ns_handoffs_json": "TEXT NOT NULL DEFAULT '[]'"},
     )
     conn.execute("UPDATE host_status SET listing_state = 'unlisted' WHERE listing_state = 'repair'")
+    if previous_schema_version != LIVE_SCHEMA_VERSION:
+        # A prior empty cohort pass may have deferred the tier before the
+        # artifact existed. Reopen it once after migration.
+        set_live_meta(conn, HNS_HANDOFF_NOT_BEFORE_META_KEY, "")
     set_live_meta(conn, "schema_version", LIVE_SCHEMA_VERSION)
     conn.commit()
 
