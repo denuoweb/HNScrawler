@@ -304,6 +304,61 @@ def test_sweep_prioritizes_members_of_a_shared_delegation_group(tmp_path):
     }
 
 
+def test_shared_delegation_selection_skips_covered_groups_without_topology_reads(tmp_path, monkeypatch):
+    topology_db = tmp_path / "topology.sqlite"
+    live_db = tmp_path / "live.sqlite"
+    _seed_shared_authority_topology(topology_db)
+
+    with connect_live(live_db) as conn:
+        init_live_db(conn)
+        conn.execute(
+            """
+            INSERT INTO delegation_groups(
+              nameserver, member_count, member_roots_json, source_signature, indexed_at
+            ) VALUES(?, ?, ?, ?, ?)
+            """,
+            (
+                "ns1.trapify",
+                4,
+                json.dumps(["aa-shared", "ab-shared", "ac-shared", "ad-shared"]),
+                "test",
+                "2026-07-12T00:00:00Z",
+            ),
+        )
+        conn.executemany(
+            """
+            INSERT INTO sweep_coverage(
+              root_name, resource_hash, signal_tier, outcome_code, endpoint_category,
+              checked_at, next_check_at, failure_reason
+            ) VALUES(?, ?, ?, ?, '', ?, ?, '')
+            """,
+            [
+                (
+                    name,
+                    f"hash-{name}",
+                    "shared_delegation",
+                    "no_endpoint",
+                    "2026-07-12T00:00:00Z",
+                    "2099-01-01T00:00:00Z",
+                )
+                for name in ("aa-shared", "ab-shared", "ac-shared", "ad-shared")
+            ],
+        )
+        monkeypatch.setattr(
+            "hns_topology.live_sweep._topology_rows_for_names",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected topology read")),
+        )
+        selection = select_sweep_candidates(
+            conn,
+            topology_db=topology_db,
+            limit=10,
+            page_size=100,
+            tiers=("shared_delegation",),
+        )
+
+    assert selection["candidates"] == []
+
+
 def test_probe_resolves_a_hns_nameserver_handoff_before_the_delegated_zone(monkeypatch):
     calls = []
 

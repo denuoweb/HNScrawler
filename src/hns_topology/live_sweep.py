@@ -488,22 +488,30 @@ def _select_shared_delegation_candidates(
     now: str,
 ) -> list[dict[str, Any]]:
     selected: list[dict[str, Any]] = []
-    groups = delegation_group_rows(conn)
-    handoffs = _delegation_handoffs(topology, groups)
-    groups.sort(
-        key=lambda group: (
-            str(group["nameserver"]) not in handoffs,
-            -(int(group["member_count"]) if int(group["member_count"]) <= 100 else 0),
-            -int(group["member_count"]),
-            str(group["nameserver"]),
+    pending_groups: list[tuple[dict[str, Any], list[str], dict[str, dict[str, Any]]]] = []
+    for group in delegation_group_rows(conn):
+        roots = [str(root) for root in group["member_roots"]]
+        coverage = sweep_coverage_for_roots(conn, roots)
+        due_roots = [
+            root_name
+            for root_name in roots
+            if _coverage_may_be_due(coverage.get(root_name), now=now)
+        ]
+        if due_roots:
+            pending_groups.append((group, due_roots, coverage))
+    handoffs = _delegation_handoffs(topology, [group for group, _, _ in pending_groups])
+    pending_groups.sort(
+        key=lambda item: (
+            str(item[0]["nameserver"]) not in handoffs,
+            -(int(item[0]["member_count"]) if int(item[0]["member_count"]) <= 100 else 0),
+            -int(item[0]["member_count"]),
+            str(item[0]["nameserver"]),
         )
     )
-    for group in groups:
+    for group, roots, coverage in pending_groups:
         if limit is not None and len(selected) >= limit:
             break
-        roots = [str(root) for root in group["member_roots"]]
         rows = _topology_rows_for_names(topology, roots)
-        coverage = sweep_coverage_for_roots(conn, [str(row["name"]) for row in rows])
         row_by_name = {str(row["name"]): row for row in rows}
         for root_name in roots:
             if limit is not None and len(selected) >= limit:
@@ -529,10 +537,16 @@ def _select_shared_delegation_candidates(
     return selected
 
 
+def _coverage_may_be_due(coverage: dict[str, Any] | None, *, now: str) -> bool:
+    return coverage is None or str(coverage.get("next_check_at") or "") <= now
+
+
 def _delegation_handoffs(
     topology: sqlite3.Connection,
     groups: list[dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
+    if not groups:
+        return {}
     root_by_nameserver = {
         str(group["nameserver"]): _nameserver_hns_root(str(group["nameserver"]))
         for group in groups
