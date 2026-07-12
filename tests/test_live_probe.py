@@ -237,6 +237,30 @@ def test_probe_rejects_web_response_when_parent_ds_cannot_validate_dnssec(monkey
     assert result.failure_reason == "dnssec_validation_failed"
 
 
+def test_probe_does_not_treat_unavailable_dns_as_a_dnssec_validation_failure(monkeypatch):
+    monkeypatch.setattr(
+        "hns_topology.live_probe.probe_dns",
+        lambda *args, **kwargs: DnsProbeResult(
+            status="no_bootstrap",
+            dnssec_status="unknown",
+            failure_reason="no_public_authoritative_address",
+        ),
+    )
+    monkeypatch.setattr(
+        "hns_topology.live_probe._probe_web",
+        lambda *args, **kwargs: WebProbeResult(scheme="http", status="not_checked"),
+    )
+
+    result = probe_host(
+        {**_candidate(), "ds_records": [{"keyTag": 1}]},
+        config=ProbeConfig(),
+    )
+
+    assert result.category == "offline"
+    assert result.https_status == "failed"
+    assert result.failure_reason == "no_public_authoritative_address"
+
+
 def test_probe_classifies_untrusted_https_without_http_as_offline(monkeypatch):
     monkeypatch.setattr(
         "hns_topology.live_probe.probe_dns",

@@ -99,13 +99,15 @@ def probe_host(
             https_result=https_result,
             dane_status=dane_status,
         )
-        if candidate.get("ds_records") and dns_result.dnssec_status not in {
-            "valid",
-            "resolver_validated",
-        }:
+        if (
+            candidate.get("ds_records")
+            and dns_result.status == "resolved"
+            and dns_result.dnssec_status not in {"valid", "resolver_validated"}
+        ):
             # A parent DS makes DNSSEC validation mandatory. A reachable web
             # server is not a publishable HNS endpoint if HNS clients reject
-            # the delegation as bogus or incomplete.
+            # the resolved delegation as bogus or incomplete. A failed or
+            # unavailable resolver is handled as a retryable probe failure.
             category = CATEGORY_OFFLINE
             canonical_url = ""
             https_status = "blocked_dnssec"
