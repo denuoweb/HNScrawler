@@ -178,7 +178,7 @@ def _add_probe_options(command: argparse.ArgumentParser) -> None:
 
 
 def _add_sweep_options(command: argparse.ArgumentParser) -> None:
-    command.add_argument("--limit", type=int, default=3000)
+    command.add_argument("--limit", type=int, default=500)
     command.add_argument("--page-size", type=int, default=1000)
     command.add_argument("--concurrency", type=int, default=50)
     command.add_argument("--min-delay-ms", type=int, default=100)
@@ -190,7 +190,7 @@ def _add_sweep_options(command: argparse.ArgumentParser) -> None:
 
 
 def _add_cycle_sweep_options(command: argparse.ArgumentParser) -> None:
-    command.add_argument("--sweep-limit", type=int, default=3000)
+    command.add_argument("--sweep-limit", type=int, default=500)
     command.add_argument("--sweep-page-size", type=int, default=1000)
     command.add_argument("--sweep-concurrency", type=int, default=50)
     command.add_argument("--sweep-min-delay-ms", type=int, default=100)

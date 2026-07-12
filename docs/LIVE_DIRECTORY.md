@@ -97,7 +97,7 @@ hns-live-directory init --db data/live.sqlite
 hns-live-directory sync --topology-db data/topology.sqlite --db data/live.sqlite
 hns-live-directory plan --db data/live.sqlite
 hns-live-directory scan --db data/live.sqlite --limit 100
-hns-live-directory sweep --topology-db data/topology.sqlite --db data/live.sqlite --limit 3000
+hns-live-directory sweep --topology-db data/topology.sqlite --db data/live.sqlite --limit 500
 hns-live-directory export --db data/live.sqlite --out public-live
 hns-live-directory validate --public-dir public-live
 ```
@@ -108,7 +108,7 @@ The service command combines them:
 scripts/run-live-directory.sh
 ```
 
-`plan` is the no-network evidence-queue audit. A scan limit of zero is explicitly unlimited; production probes up to 100 detailed candidates and a 3,000-root streamed sweep batch per cycle.
+`plan` is the no-network evidence-queue audit. A scan limit of zero is explicitly unlimited; production probes up to 100 detailed candidates and a 500-root streamed sweep batch per cycle.
 
 ## Denuoweb VM Deployment
 

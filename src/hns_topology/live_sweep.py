@@ -61,7 +61,7 @@ _TIER_PREDICATES = {
 
 @dataclass(frozen=True)
 class SweepBatchConfig:
-    limit: int | None = 3000
+    limit: int | None = 500
     page_size: int = 1000
     concurrency: int = 50
     min_delay_ms: int = 100
