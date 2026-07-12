@@ -13,6 +13,14 @@ LIVE_TIMEOUT="${LIVE_TIMEOUT:-5}"
 LIVE_MAX_NAMESERVERS="${LIVE_MAX_NAMESERVERS:-3}"
 LIVE_MAX_ADDRESSES="${LIVE_MAX_ADDRESSES:-4}"
 LIVE_FALLBACK_RESOLVER="${LIVE_FALLBACK_RESOLVER:-}"
+LIVE_SWEEP_LIMIT="${LIVE_SWEEP_LIMIT:-3000}"
+LIVE_SWEEP_PAGE_SIZE="${LIVE_SWEEP_PAGE_SIZE:-1000}"
+LIVE_SWEEP_CONCURRENCY="${LIVE_SWEEP_CONCURRENCY:-50}"
+LIVE_SWEEP_MIN_DELAY_MS="${LIVE_SWEEP_MIN_DELAY_MS:-100}"
+LIVE_SWEEP_AUTHORITY_DELAY_MS="${LIVE_SWEEP_AUTHORITY_DELAY_MS:-500}"
+LIVE_SWEEP_TIMEOUT="${LIVE_SWEEP_TIMEOUT:-2}"
+LIVE_SWEEP_MAX_NAMESERVERS="${LIVE_SWEEP_MAX_NAMESERVERS:-2}"
+LIVE_SWEEP_MAX_ADDRESSES="${LIVE_SWEEP_MAX_ADDRESSES:-2}"
 
 mountpoint -q /mnt/hns-topology || {
   echo "/mnt/hns-topology is not mounted; refusing to use the web VM boot disk" >&2
@@ -43,7 +51,15 @@ args=(cycle
   --min-delay-ms "$LIVE_MIN_DELAY_MS"
   --timeout "$LIVE_TIMEOUT"
   --max-nameservers "$LIVE_MAX_NAMESERVERS"
-  --max-addresses "$LIVE_MAX_ADDRESSES")
+  --max-addresses "$LIVE_MAX_ADDRESSES"
+  --sweep-limit "$LIVE_SWEEP_LIMIT"
+  --sweep-page-size "$LIVE_SWEEP_PAGE_SIZE"
+  --sweep-concurrency "$LIVE_SWEEP_CONCURRENCY"
+  --sweep-min-delay-ms "$LIVE_SWEEP_MIN_DELAY_MS"
+  --sweep-authority-delay-ms "$LIVE_SWEEP_AUTHORITY_DELAY_MS"
+  --sweep-timeout "$LIVE_SWEEP_TIMEOUT"
+  --sweep-max-nameservers "$LIVE_SWEEP_MAX_NAMESERVERS"
+  --sweep-max-addresses "$LIVE_SWEEP_MAX_ADDRESSES")
 if [[ -n "$LIVE_FALLBACK_RESOLVER" ]]; then
   args+=(--fallback-resolver "$LIVE_FALLBACK_RESOLVER")
 fi

@@ -72,7 +72,8 @@ def test_live_directory_runner_uses_web_vm_snapshot_and_separate_state():
     assert 'TOPOLOGY_DB="${TOPOLOGY_DB:-/mnt/hns-topology/topology.sqlite}"' in runner
     assert 'LIVE_DB="${LIVE_DB:-$LIVE_ROOT/data/live.sqlite}"' in runner
     assert '.venv/bin/hns-live-directory "${args[@]}"' in runner
-    assert "OnUnitActiveSec=1d" in setup
+    assert "OnUnitInactiveSec=30s" in setup
+    assert 'LIVE_SWEEP_CONCURRENCY="${LIVE_SWEEP_CONCURRENCY:-50}"' in runner
     assert "hns-live-directory.timer" in setup
     assert "configure-live-directory-nginx.sh" in setup
     assert "publish-hns-topology-navigation.sh" in setup

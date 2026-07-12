@@ -76,7 +76,7 @@ TLSA is not part of Handshake's on-chain Resource format. HTTPS TLSA presence is
 
 ## Live Website Directory
 
-The independent live scanner has its own database, CLI, static output, runner, and web-VM timer. It checks apex hosts by default, discovers subdomains only from DNS evidence, and separates authenticated HTTPS websites from HTTP-only websites. See `docs/LIVE_DIRECTORY.md`.
+The independent live scanner has its own database, CLI, static output, runner, and web-VM timer. Its detailed evidence queue checks apex hosts and DNS-evidenced subdomains, while a separate cursor-based broad sweep covers DS and delegated roots without materializing millions of candidates. It separates authenticated HTTPS endpoints from HTTP-only endpoints. See `docs/LIVE_DIRECTORY.md`.
 
 ## Published Artifacts
 

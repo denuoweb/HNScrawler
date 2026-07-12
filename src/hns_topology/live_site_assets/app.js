@@ -127,11 +127,13 @@ function categoryTabs(summary, active) {
 
 function metrics(summary) {
   const due = Number(summary.candidate_plan?.due_total || 0);
+  const sweep = summary.sweep_coverage || {};
   return `<section class="metrics">
     <div><span>Reachable endpoints</span><strong>${numberFormat.format(summary.online_count || 0)}</strong></div>
     <div><span>HTTPS endpoints</span><strong>${numberFormat.format(summary.https_count || 0)}</strong></div>
     <div><span>HTTP endpoints</span><strong>${numberFormat.format(summary.http_only_count || 0)}</strong></div>
-    <div><span>Probe queue</span><strong>${numberFormat.format(due)}</strong></div>
+    <div><span>Evidence queue</span><strong>${numberFormat.format(due)}</strong></div>
+    <div><span>Broad roots checked</span><strong>${numberFormat.format(sweep.checked || 0)}</strong></div>
   </section>`;
 }
 

@@ -16,7 +16,7 @@ from .live_models import (
 )
 from .timeutil import utc_now
 
-LIVE_SCHEMA_VERSION = "1"
+LIVE_SCHEMA_VERSION = "2"
 
 SCHEMA_SQL = """
 PRAGMA journal_mode = WAL;
@@ -107,11 +107,38 @@ CREATE TABLE IF NOT EXISTS probe_runs (
   status TEXT NOT NULL DEFAULT 'running'
 );
 
+CREATE TABLE IF NOT EXISTS sweep_coverage (
+  root_name TEXT PRIMARY KEY,
+  resource_hash TEXT NOT NULL,
+  signal_tier TEXT NOT NULL,
+  outcome_code TEXT NOT NULL,
+  endpoint_category TEXT NOT NULL DEFAULT '',
+  checked_at TEXT NOT NULL,
+  next_check_at TEXT NOT NULL,
+  failure_reason TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS sweep_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  candidate_count INTEGER NOT NULL DEFAULT 0,
+  checked_count INTEGER NOT NULL DEFAULT 0,
+  online_count INTEGER NOT NULL DEFAULT 0,
+  error_count INTEGER NOT NULL DEFAULT 0,
+  concurrency INTEGER NOT NULL,
+  min_delay_ms INTEGER NOT NULL,
+  authority_delay_ms INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'running'
+);
+
 CREATE INDEX IF NOT EXISTS idx_roots_active ON roots(active, strict_ready, name);
 CREATE INDEX IF NOT EXISTS idx_candidates_active_priority
   ON candidates(active, suppressed, priority DESC, host);
 CREATE INDEX IF NOT EXISTS idx_host_status_due ON host_status(next_check_at, listing_state);
 CREATE INDEX IF NOT EXISTS idx_host_status_category ON host_status(category, listing_state, host);
+CREATE INDEX IF NOT EXISTS idx_sweep_coverage_tier_due
+  ON sweep_coverage(signal_tier, next_check_at, root_name);
 """
 
 
@@ -416,6 +443,105 @@ def finish_probe_run(
     )
 
 
+def begin_sweep_run(
+    conn: sqlite3.Connection,
+    *,
+    candidate_count: int,
+    concurrency: int,
+    min_delay_ms: int,
+    authority_delay_ms: int,
+) -> int:
+    cursor = conn.execute(
+        """
+        INSERT INTO sweep_runs(
+          started_at, candidate_count, concurrency, min_delay_ms, authority_delay_ms
+        ) VALUES(?, ?, ?, ?, ?)
+        """,
+        (
+            utc_now(),
+            candidate_count,
+            concurrency,
+            min_delay_ms,
+            authority_delay_ms,
+        ),
+    )
+    return int(cursor.lastrowid)
+
+
+def finish_sweep_run(
+    conn: sqlite3.Connection,
+    run_id: int,
+    *,
+    checked_count: int,
+    online_count: int,
+    error_count: int,
+    status: str = "complete",
+) -> None:
+    conn.execute(
+        """
+        UPDATE sweep_runs
+        SET finished_at = ?, checked_count = ?, online_count = ?, error_count = ?, status = ?
+        WHERE id = ?
+        """,
+        (utc_now(), checked_count, online_count, error_count, status, run_id),
+    )
+
+
+def sweep_coverage_for_roots(
+    conn: sqlite3.Connection,
+    root_names: Iterable[str],
+) -> dict[str, dict[str, Any]]:
+    names = sorted({str(name) for name in root_names if str(name)})
+    result: dict[str, dict[str, Any]] = {}
+    for start in range(0, len(names), 500):
+        batch = names[start : start + 500]
+        placeholders = ",".join("?" for _ in batch)
+        for row in conn.execute(
+            f"SELECT * FROM sweep_coverage WHERE root_name IN ({placeholders})",
+            batch,
+        ):
+            result[str(row["root_name"])] = dict(row)
+    return result
+
+
+def store_sweep_coverage(
+    conn: sqlite3.Connection,
+    *,
+    root_name: str,
+    resource_hash: str,
+    signal_tier: str,
+    result: HostProbeResult,
+) -> str:
+    outcome, review_days = _sweep_outcome(result)
+    conn.execute(
+        """
+        INSERT INTO sweep_coverage(
+          root_name, resource_hash, signal_tier, outcome_code, endpoint_category,
+          checked_at, next_check_at, failure_reason
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(root_name) DO UPDATE SET
+          resource_hash=excluded.resource_hash,
+          signal_tier=excluded.signal_tier,
+          outcome_code=excluded.outcome_code,
+          endpoint_category=excluded.endpoint_category,
+          checked_at=excluded.checked_at,
+          next_check_at=excluded.next_check_at,
+          failure_reason=excluded.failure_reason
+        """,
+        (
+            root_name,
+            resource_hash,
+            signal_tier,
+            outcome,
+            result.category if result.category in ONLINE_CATEGORIES else "",
+            result.checked_at,
+            _after(result.checked_at, days=review_days),
+            str(result.failure_reason or "")[:240],
+        ),
+    )
+    return outcome
+
+
 def store_probe_result(conn: sqlite3.Connection, result: HostProbeResult) -> None:
     previous = conn.execute(
         "SELECT * FROM host_status WHERE root_name = ? AND host = ?",
@@ -624,6 +750,42 @@ def latest_probe_run(conn: sqlite3.Connection) -> dict[str, Any]:
     return dict(row) if row else {}
 
 
+def latest_sweep_run(conn: sqlite3.Connection) -> dict[str, Any]:
+    row = conn.execute("SELECT * FROM sweep_runs ORDER BY id DESC LIMIT 1").fetchone()
+    return dict(row) if row else {}
+
+
+def sweep_coverage_summary(conn: sqlite3.Connection) -> dict[str, Any]:
+    rows = conn.execute(
+        """
+        SELECT
+          signal_tier,
+          COUNT(*) AS checked,
+          SUM(CASE WHEN endpoint_category = 'https' THEN 1 ELSE 0 END) AS https,
+          SUM(CASE WHEN endpoint_category = 'http_only' THEN 1 ELSE 0 END) AS http_only,
+          MAX(checked_at) AS last_checked_at
+        FROM sweep_coverage
+        GROUP BY signal_tier
+        ORDER BY signal_tier
+        """
+    )
+    tiers = {
+        str(row["signal_tier"]): {
+            "checked": int(row["checked"] or 0),
+            "https": int(row["https"] or 0),
+            "http_only": int(row["http_only"] or 0),
+            "last_checked_at": str(row["last_checked_at"] or ""),
+        }
+        for row in rows
+    }
+    return {
+        "checked": sum(item["checked"] for item in tiers.values()),
+        "https": sum(item["https"] for item in tiers.values()),
+        "http_only": sum(item["http_only"] for item in tiers.values()),
+        "tiers": tiers,
+    }
+
+
 def _candidate_row(row: sqlite3.Row) -> dict[str, Any]:
     result = dict(row)
     for key in (
@@ -668,6 +830,22 @@ def _listing_state(result: HostProbeResult, previous: dict[str, Any]) -> dict[st
         "last_good_url": last_good_url,
         "consecutive_failures": failures,
     }
+
+
+def _sweep_outcome(result: HostProbeResult) -> tuple[str, int]:
+    if result.category == "https":
+        return "https_endpoint", 30
+    if result.category == "http_only":
+        return "http_endpoint", 30
+    if result.dns_status == "no_bootstrap":
+        return "no_bootstrap", 90
+    if result.dns_status == "no_address":
+        return "no_address", 90
+    if result.https_status == "untrusted":
+        return "untrusted_https", 30
+    if result.dns_status == "unreachable" or result.failure_reason.startswith("probe_error:"):
+        return "transient_failure", 7
+    return "no_endpoint", 90
 
 
 def _directory_row(row: sqlite3.Row) -> dict[str, Any]:

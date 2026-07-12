@@ -15,9 +15,11 @@ from .live_db import (
     directory_rows,
     get_live_meta,
     latest_probe_run,
+    latest_sweep_run,
     live_dane_evidence_summary,
     live_status_lookup_rows,
     live_summary_counts,
+    sweep_coverage_summary,
 )
 from .timeutil import utc_now
 
@@ -88,6 +90,8 @@ def _export_into(conn: sqlite3.Connection, out: Path) -> dict[str, Any]:
     counts = live_summary_counts(conn)
     plan = candidate_plan(conn)
     latest_run = latest_probe_run(conn)
+    sweep_coverage = sweep_coverage_summary(conn)
+    latest_sweep = latest_sweep_run(conn)
     generated_at = utc_now()
     https_count = sum(1 for row in rows if row["category"] == "https")
     http_only_count = sum(1 for row in rows if row["category"] == "http_only")
@@ -107,6 +111,8 @@ def _export_into(conn: sqlite3.Connection, out: Path) -> dict[str, Any]:
         "live_dane_evidence": live_dane_evidence_summary(conn),
         "candidate_plan": plan,
         "latest_probe_run": latest_run,
+        "sweep_coverage": sweep_coverage,
+        "latest_sweep_run": latest_sweep,
     }
     sites = {
         "generated_at": generated_at,

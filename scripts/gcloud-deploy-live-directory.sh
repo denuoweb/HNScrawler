@@ -21,7 +21,7 @@ Refusing to deploy the standalone live directory without CONFIRM_LIVE_DIRECTORY_
 Review the remote plan first:
   DRY_RUN=1 $0
 
-Deploy and start its daily timer:
+Deploy and start its continuous timer:
   CONFIRM_LIVE_DIRECTORY_DEPLOY=1 $0
 
 Deploy without running an immediate probe batch:

@@ -62,6 +62,7 @@ def probe_host(
     *,
     config: ProbeConfig,
     limiter: RateLimiter | None = None,
+    include_dns_details: bool = True,
 ) -> HostProbeResult:
     started = time.monotonic()
     checked_at = utc_now()
@@ -71,13 +72,24 @@ def probe_host(
     try:
         if limiter is not None:
             limiter.wait()
-        dns_result = probe_dns(candidate, config=config)
+        dns_result = probe_dns(
+            candidate,
+            config=config,
+            include_dns_details=include_dns_details,
+        )
         http_result = _probe_web(host, dns_result.addresses, scheme="http", config=config)
-        https_result, dane_status = _probe_authenticated_https(
+        https_result, _ = _probe_authenticated_https(
             host,
             dns_result,
             config=config,
         )
+        if not include_dns_details and (
+            http_result.status == "response" or https_result.status == "response"
+        ):
+            # Keep broad sweeps fast for unreachable roots, but collect the full
+            # DNSSEC/TLSA observation whenever a web endpoint responds.
+            dns_result = probe_dns(candidate, config=config, include_dns_details=True)
+        dane_status = _dane_status(dns_result, https_result)
         category, canonical_url, https_status = _classify_web(
             host,
             http_result=http_result,
@@ -147,7 +159,12 @@ def probe_host(
         )
 
 
-def probe_dns(candidate: dict[str, Any], *, config: ProbeConfig) -> DnsProbeResult:
+def probe_dns(
+    candidate: dict[str, Any],
+    *,
+    config: ProbeConfig,
+    include_dns_details: bool = True,
+) -> DnsProbeResult:
     root_name = str(candidate["root_name"])
     host = str(candidate["host"])
     servers = [
@@ -166,7 +183,7 @@ def probe_dns(candidate: dict[str, Any], *, config: ProbeConfig) -> DnsProbeResu
         )
 
     ds_records = candidate.get("ds_records", [])
-    if ds_records:
+    if include_dns_details and ds_records:
         dnskey_rrset, dnskey_response, dnskey_server = _dnskey_response(
             servers,
             root_name,
@@ -174,11 +191,15 @@ def probe_dns(candidate: dict[str, Any], *, config: ProbeConfig) -> DnsProbeResu
         )
     else:
         dnskey_rrset, dnskey_response, dnskey_server = None, None, ""
-    dnssec_status = _dnssec_status(
-        root_name,
-        ds_records,
-        dnskey_rrset,
-        dnskey_response,
+    dnssec_status = (
+        _dnssec_status(
+            root_name,
+            ds_records,
+            dnskey_rrset,
+            dnskey_response,
+        )
+        if include_dns_details
+        else "not_checked"
     )
     addresses, address_responses, discovered, server = _resolve_addresses(
         servers,
@@ -187,20 +208,25 @@ def probe_dns(candidate: dict[str, Any], *, config: ProbeConfig) -> DnsProbeResu
         timeout=config.timeout,
         fallback_resolver=config.fallback_resolver,
     )
-    tlsa_records, tlsa_secure, tlsa_response, tlsa_server = _resolve_tlsa(
-        servers,
-        host,
-        root_name,
-        dnskey_rrset=dnskey_rrset,
-        dnssec_status=dnssec_status,
-        timeout=config.timeout,
-    )
+    if include_dns_details:
+        tlsa_records, tlsa_secure, tlsa_response, tlsa_server = _resolve_tlsa(
+            servers,
+            host,
+            root_name,
+            dnskey_rrset=dnskey_rrset,
+            dnssec_status=dnssec_status,
+            timeout=config.timeout,
+        )
+    else:
+        tlsa_records, tlsa_secure, tlsa_response, tlsa_server = [], False, None, ""
     for response in [*address_responses, tlsa_response]:
         if response is not None:
             discovered.update(_discovered_hosts(response, root_name))
 
     addresses = [address for address in _dedupe(addresses) if _public_ip(address)]
-    if tlsa_records:
+    if not include_dns_details:
+        tlsa_status = "not_checked"
+    elif tlsa_records:
         tlsa_status = "present_secure" if tlsa_secure else "present_insecure"
     else:
         tlsa_status = "missing"
@@ -392,10 +418,7 @@ def _authoritative_query(
             except (dns.exception.DNSException, OSError, TimeoutError):
                 continue
         except (dns.exception.DNSException, OSError, TimeoutError):
-            try:
-                response = dns.query.tcp(query, server, timeout=timeout)
-            except (dns.exception.DNSException, OSError, TimeoutError):
-                continue
+            continue
         if response.rcode() not in {dns.rcode.NOERROR, dns.rcode.NXDOMAIN}:
             continue
         if not response.flags & dns.flags.AA:

@@ -4,9 +4,16 @@ import argparse
 
 from .jsonutil import dumps_pretty
 from .live_candidates import sync_topology, sync_topology_if_changed
-from .live_db import candidate_plan, connect_live, init_live_db
+from .live_db import (
+    candidate_plan,
+    connect_live,
+    init_live_db,
+    latest_sweep_run,
+    sweep_coverage_summary,
+)
 from .live_exporter import export_live_site, validate_live_site
 from .live_runner import ProbeBatchConfig, run_probe_batch
+from .live_sweep import SweepBatchConfig, run_sweep_batch
 
 
 def parser() -> argparse.ArgumentParser:
@@ -36,6 +43,15 @@ def parser() -> argparse.ArgumentParser:
     _add_probe_options(scan)
     scan.set_defaults(func=cmd_scan)
 
+    sweep = sub.add_parser(
+        "sweep",
+        help="Probe a streamed broad-root batch without materializing roots as candidates.",
+    )
+    _add_db(sweep)
+    sweep.add_argument("--topology-db", required=True)
+    _add_sweep_options(sweep)
+    sweep.set_defaults(func=cmd_sweep)
+
     export = sub.add_parser("export", help="Generate the standalone live-directory static site.")
     _add_db(export)
     export.add_argument("--out", required=True)
@@ -50,6 +66,7 @@ def parser() -> argparse.ArgumentParser:
     cycle.add_argument("--topology-db", required=True)
     cycle.add_argument("--out", required=True)
     _add_probe_options(cycle)
+    _add_cycle_sweep_options(cycle)
     cycle.set_defaults(func=cmd_cycle)
     return result
 
@@ -77,7 +94,11 @@ def cmd_sync(args: argparse.Namespace) -> int:
 def cmd_plan(args: argparse.Namespace) -> int:
     with connect_live(args.db) as conn:
         init_live_db(conn)
-        result = candidate_plan(conn)
+        result = {
+            **candidate_plan(conn),
+            "sweep_coverage": sweep_coverage_summary(conn),
+            "latest_sweep_run": latest_sweep_run(conn),
+        }
     _print(result)
     return 0
 
@@ -86,6 +107,18 @@ def cmd_scan(args: argparse.Namespace) -> int:
     with connect_live(args.db) as conn:
         init_live_db(conn)
         result = run_probe_batch(conn, config=_probe_config(args))
+    _print(result)
+    return 0
+
+
+def cmd_sweep(args: argparse.Namespace) -> int:
+    with connect_live(args.db) as conn:
+        init_live_db(conn)
+        result = run_sweep_batch(
+            conn,
+            topology_db=args.topology_db,
+            config=_sweep_config(args),
+        )
     _print(result)
     return 0
 
@@ -110,12 +143,18 @@ def cmd_cycle(args: argparse.Namespace) -> int:
         synced = sync_topology_if_changed(conn, args.topology_db)
         before = candidate_plan(conn)
         probed = run_probe_batch(conn, config=_probe_config(args))
+        sweep = run_sweep_batch(
+            conn,
+            topology_db=args.topology_db,
+            config=_cycle_sweep_config(args),
+        )
         summary = export_live_site(conn, args.out)
     errors = validate_live_site(args.out)
     result = {
         "sync": synced,
         "plan_before": before,
         "probe": probed,
+        "sweep": sweep,
         "directory_count": summary["directory_count"],
         "valid": not errors,
         "errors": errors,
@@ -138,6 +177,29 @@ def _add_probe_options(command: argparse.ArgumentParser) -> None:
     command.add_argument("--fallback-resolver")
 
 
+def _add_sweep_options(command: argparse.ArgumentParser) -> None:
+    command.add_argument("--limit", type=int, default=3000)
+    command.add_argument("--page-size", type=int, default=1000)
+    command.add_argument("--concurrency", type=int, default=50)
+    command.add_argument("--min-delay-ms", type=int, default=100)
+    command.add_argument("--authority-delay-ms", type=int, default=500)
+    command.add_argument("--timeout", type=float, default=2.0)
+    command.add_argument("--max-nameservers", type=int, default=2)
+    command.add_argument("--max-addresses", type=int, default=2)
+    command.add_argument("--fallback-resolver")
+
+
+def _add_cycle_sweep_options(command: argparse.ArgumentParser) -> None:
+    command.add_argument("--sweep-limit", type=int, default=3000)
+    command.add_argument("--sweep-page-size", type=int, default=1000)
+    command.add_argument("--sweep-concurrency", type=int, default=50)
+    command.add_argument("--sweep-min-delay-ms", type=int, default=100)
+    command.add_argument("--sweep-authority-delay-ms", type=int, default=500)
+    command.add_argument("--sweep-timeout", type=float, default=2.0)
+    command.add_argument("--sweep-max-nameservers", type=int, default=2)
+    command.add_argument("--sweep-max-addresses", type=int, default=2)
+
+
 def _probe_config(args: argparse.Namespace) -> ProbeBatchConfig:
     if args.limit < 0:
         raise SystemExit("--limit must be zero or greater")
@@ -153,6 +215,67 @@ def _probe_config(args: argparse.Namespace) -> ProbeBatchConfig:
         max_nameservers=max(1, args.max_nameservers),
         max_addresses=max(1, args.max_addresses),
         fallback_resolver=args.fallback_resolver,
+    )
+
+
+def _sweep_config(args: argparse.Namespace) -> SweepBatchConfig:
+    return _build_sweep_config(
+        limit=args.limit,
+        page_size=args.page_size,
+        concurrency=args.concurrency,
+        min_delay_ms=args.min_delay_ms,
+        authority_delay_ms=args.authority_delay_ms,
+        timeout=args.timeout,
+        max_nameservers=args.max_nameservers,
+        max_addresses=args.max_addresses,
+        fallback_resolver=args.fallback_resolver,
+    )
+
+
+def _cycle_sweep_config(args: argparse.Namespace) -> SweepBatchConfig:
+    return _build_sweep_config(
+        limit=args.sweep_limit,
+        page_size=args.sweep_page_size,
+        concurrency=args.sweep_concurrency,
+        min_delay_ms=args.sweep_min_delay_ms,
+        authority_delay_ms=args.sweep_authority_delay_ms,
+        timeout=args.sweep_timeout,
+        max_nameservers=args.sweep_max_nameservers,
+        max_addresses=args.sweep_max_addresses,
+        fallback_resolver=args.fallback_resolver,
+    )
+
+
+def _build_sweep_config(
+    *,
+    limit: int,
+    page_size: int,
+    concurrency: int,
+    min_delay_ms: int,
+    authority_delay_ms: int,
+    timeout: float,
+    max_nameservers: int,
+    max_addresses: int,
+    fallback_resolver: str | None,
+) -> SweepBatchConfig:
+    if limit < 0:
+        raise SystemExit("--sweep-limit must be zero or greater")
+    if page_size < 1:
+        raise SystemExit("--sweep-page-size must be at least one")
+    if concurrency < 1:
+        raise SystemExit("--sweep-concurrency must be at least one")
+    if timeout <= 0:
+        raise SystemExit("--sweep-timeout must be positive")
+    return SweepBatchConfig(
+        limit=None if limit == 0 else limit,
+        page_size=page_size,
+        concurrency=concurrency,
+        min_delay_ms=max(0, min_delay_ms),
+        authority_delay_ms=max(0, authority_delay_ms),
+        timeout=timeout,
+        max_nameservers=max(1, max_nameservers),
+        max_addresses=max(1, max_addresses),
+        fallback_resolver=fallback_resolver,
     )
 
 

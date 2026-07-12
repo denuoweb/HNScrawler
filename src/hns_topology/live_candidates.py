@@ -73,6 +73,7 @@ def sync_topology(live_conn: sqlite3.Connection, topology_db: str | Path) -> dic
     synced_at = utc_now()
     root_count = 0
     changed_roots = 0
+    promoted_sweep_roots = _promoted_sweep_root_names(live_conn)
     uri = f"file:{source.resolve().as_posix()}?mode=ro"
     with sqlite3.connect(uri, uri=True) as topology:
         topology.row_factory = sqlite3.Row
@@ -85,6 +86,7 @@ def sync_topology(live_conn: sqlite3.Connection, topology_db: str | Path) -> dic
         topology.execute("PRAGMA temp_store = FILE")
         _require_topology_tables(topology)
         _prepare_candidate_names(topology)
+        _prepare_promoted_sweep_names(topology, promoted_sweep_roots)
         meta = {
             row["key"]: row["value"]
             for row in topology.execute("SELECT key, value FROM snapshot_meta")
@@ -115,6 +117,22 @@ def sync_topology(live_conn: sqlite3.Connection, topology_db: str | Path) -> dic
                             ),
                             seen_at=synced_at,
                         )
+            for row in _promoted_sweep_root_rows(topology):
+                root = _root_from_row(row)
+                root_count += 1
+                changed_roots += int(upsert_root(live_conn, root, synced_at=synced_at))
+                upsert_candidate(
+                    live_conn,
+                    LiveCandidate(
+                        root_name=root.name,
+                        host=root.name,
+                        source="broad_sweep",
+                        source_detail="previous broad-sweep endpoint",
+                        priority=70 if root.has_ds else 60,
+                        topology_resource_hash=root.resource_hash,
+                    ),
+                    seen_at=synced_at,
+                )
             for candidate in _dns_evidence_candidates(topology):
                 upsert_candidate(live_conn, candidate, seen_at=synced_at)
             finish_topology_sync(live_conn, synced_at=synced_at)
@@ -232,6 +250,38 @@ def _prepare_candidate_names(conn: sqlite3.Connection) -> None:
         )
 
 
+def _promoted_sweep_root_names(live_conn: sqlite3.Connection) -> list[str]:
+    rows = live_conn.execute(
+        """
+        SELECT DISTINCT c.root_name
+        FROM candidates c
+        JOIN host_status hs ON hs.root_name = c.root_name AND hs.host = c.host
+        WHERE EXISTS (
+          SELECT 1 FROM json_each(c.sources_json) source
+          WHERE source.value = 'broad_sweep'
+        )
+          AND hs.last_good_category IN ('https', 'http_only')
+        ORDER BY c.root_name
+        """
+    )
+    return [str(row["root_name"]) for row in rows]
+
+
+def _prepare_promoted_sweep_names(conn: sqlite3.Connection, names: list[str]) -> None:
+    conn.execute("DROP TABLE IF EXISTS temp.live_promoted_sweep_names")
+    conn.execute(
+        """
+        CREATE TEMP TABLE live_promoted_sweep_names (
+          name TEXT PRIMARY KEY
+        ) WITHOUT ROWID
+        """
+    )
+    conn.executemany(
+        "INSERT OR IGNORE INTO live_promoted_sweep_names(name) VALUES(?)",
+        ((name,) for name in names),
+    )
+
+
 def _distinct_resource_ips(conn: sqlite3.Connection) -> Iterator[str]:
     row = conn.execute(
         """
@@ -276,6 +326,33 @@ def _topology_root_rows(conn: sqlite3.Connection):
           AND n.onchain_class IN ({ROOT_CLASSES_SQL})
           AND COALESCE(ps.provider_type, 'unknown') NOT IN ({excluded})
           AND {ROOT_SELECTION_SQL}
+        """,
+        NON_ACTIONABLE_PROVIDER_TYPES,
+    )
+
+
+def _promoted_sweep_root_rows(conn: sqlite3.Connection):
+    excluded = ",".join("?" for _ in NON_ACTIONABLE_PROVIDER_TYPES)
+    return conn.execute(
+        f"""
+        SELECT
+          n.name, n.provider_guess, n.last_seen_height, rs.resource_hash,
+          rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.ds_records,
+          rs.has_ds, rs.has_ns, rs.has_glue, rs.has_synth,
+          COALESCE(ps.provider_type, 'unknown') AS provider_type,
+          0 AS has_tlsa,
+          '[]' AS tlsa_owners
+        FROM live_promoted_sweep_names candidate
+        CROSS JOIN names n ON n.name = candidate.name
+        JOIN resource_summary rs ON rs.name = n.name
+        LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
+        WHERE COALESCE(n.expired, 0) = 0
+          AND COALESCE(ps.provider_type, 'unknown') NOT IN ({excluded})
+          AND (
+            COALESCE(rs.has_synth, 0) = 1
+            OR COALESCE(rs.has_glue, 0) = 1
+            OR COALESCE(rs.has_ns, 0) = 1
+          )
         """,
         NON_ACTIONABLE_PROVIDER_TYPES,
     )

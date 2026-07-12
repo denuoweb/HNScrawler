@@ -1,0 +1,170 @@
+import json
+import sqlite3
+
+from hns_topology.live_db import connect_live, init_live_db
+from hns_topology.live_models import HostProbeResult
+from hns_topology.live_sweep import SweepBatchConfig, run_sweep_batch, select_sweep_candidates
+
+
+def test_sweep_prioritizes_ds_bootstrap_before_other_root_signals(tmp_path):
+    topology_db = tmp_path / "topology.sqlite"
+    live_db = tmp_path / "live.sqlite"
+    _seed_topology(topology_db)
+
+    with connect_live(live_db) as conn:
+        init_live_db(conn)
+        selection = select_sweep_candidates(
+            conn,
+            topology_db=topology_db,
+            limit=4,
+            page_size=2,
+        )
+
+    assert [item["root_name"] for item in selection["candidates"]] == [
+        "a-ds-bootstrap",
+        "b-bootstrap",
+        "c-ds-delegated",
+        "d-delegated",
+    ]
+    assert [item["signal_tier"] for item in selection["candidates"]] == [
+        "ds_bootstrap",
+        "bootstrap",
+        "ds_delegated",
+        "delegated",
+    ]
+
+
+def test_sweep_promotes_http_endpoint_but_keeps_offline_root_compact(tmp_path, monkeypatch):
+    topology_db = tmp_path / "topology.sqlite"
+    live_db = tmp_path / "live.sqlite"
+    _seed_topology(topology_db)
+
+    def fake_probe(candidate, *, config, include_dns_details):
+        assert include_dns_details is False
+        host = candidate["host"]
+        return _result(
+            root_name=host,
+            resource_hash=candidate["topology_resource_hash"],
+            category="http_only" if host == "a-ds-bootstrap" else "offline",
+        )
+
+    monkeypatch.setattr("hns_topology.live_sweep.probe_host", fake_probe)
+    with connect_live(live_db) as conn:
+        init_live_db(conn)
+        result = run_sweep_batch(
+            conn,
+            topology_db=topology_db,
+            config=SweepBatchConfig(
+                limit=2,
+                page_size=2,
+                concurrency=1,
+                min_delay_ms=0,
+                authority_delay_ms=0,
+            ),
+        )
+        coverage = {
+            row["root_name"]: dict(row)
+            for row in conn.execute("SELECT * FROM sweep_coverage ORDER BY root_name")
+        }
+        endpoints = [
+            dict(row)
+            for row in conn.execute("SELECT root_name, host, category FROM host_status ORDER BY root_name")
+        ]
+
+    assert result["checked"] == 2
+    assert result["online"] == 1
+    assert coverage["a-ds-bootstrap"]["outcome_code"] == "http_endpoint"
+    assert coverage["b-bootstrap"]["outcome_code"] == "no_address"
+    assert endpoints == [
+        {"root_name": "a-ds-bootstrap", "host": "a-ds-bootstrap", "category": "http_only"}
+    ]
+
+
+def _seed_topology(path):
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE names (
+              name TEXT PRIMARY KEY,
+              expired INTEGER DEFAULT 0,
+              provider_guess TEXT,
+              last_seen_height INTEGER,
+              updated_at TEXT,
+              resource_hash TEXT
+            );
+            CREATE TABLE resource_summary (
+              name TEXT PRIMARY KEY,
+              ns_names TEXT,
+              glue4 TEXT,
+              glue6 TEXT,
+              synth4 TEXT,
+              synth6 TEXT,
+              ds_records TEXT,
+              has_ds INTEGER,
+              has_ns INTEGER,
+              has_glue INTEGER,
+              has_synth INTEGER,
+              resource_hash TEXT
+            );
+            CREATE TABLE provider_summary (provider_key TEXT PRIMARY KEY, provider_type TEXT);
+            """
+        )
+        for name, has_ds, has_ns, has_synth in (
+            ("a-ds-bootstrap", 1, 1, 1),
+            ("b-bootstrap", 0, 1, 1),
+            ("c-ds-delegated", 1, 1, 0),
+            ("d-delegated", 0, 1, 0),
+        ):
+            conn.execute(
+                "INSERT INTO names(name, provider_guess, last_seen_height, resource_hash) VALUES(?, ?, ?, ?)",
+                (name, "self-hosted", 100, f"hash-{name}"),
+            )
+            conn.execute(
+                """
+                INSERT INTO resource_summary(
+                  name, ns_names, glue4, glue6, synth4, synth6, ds_records,
+                  has_ds, has_ns, has_glue, has_synth, resource_hash
+                ) VALUES(?, ?, '[]', '[]', ?, '[]', ?, ?, ?, 0, ?, ?)
+                """,
+                (
+                    name,
+                    json.dumps([f"ns1.{name}"]),
+                    json.dumps(["93.184.216.34"] if has_synth else []),
+                    json.dumps([{"keyTag": 1}] if has_ds else []),
+                    has_ds,
+                    has_ns,
+                    has_synth,
+                    f"hash-{name}",
+                ),
+            )
+
+
+def _result(*, root_name, resource_hash, category):
+    online = category == "http_only"
+    return HostProbeResult(
+        root_name=root_name,
+        host=root_name,
+        topology_resource_hash=resource_hash,
+        category=category,
+        canonical_url=f"http://{root_name}/" if online else "",
+        dns_status="resolved" if online else "no_address",
+        addresses=["93.184.216.34"] if online else [],
+        dnssec_status="not_checked",
+        tlsa_status="not_checked",
+        tlsa_records=[],
+        dane_status="missing",
+        http_status="response" if online else "failed",
+        http_status_code=200 if online else None,
+        http_location="",
+        https_status="failed",
+        https_status_code=None,
+        https_location="",
+        webpki_status="not_checked",
+        certificate_sha256="",
+        spki_sha256="",
+        certificate_not_valid_after="",
+        failure_reason="" if online else "no_public_a_or_aaaa",
+        discovered_hosts=[],
+        checked_at="2026-07-11T00:00:00Z",
+        duration_ms=10,
+    )

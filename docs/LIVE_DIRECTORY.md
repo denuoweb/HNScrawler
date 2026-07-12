@@ -24,7 +24,7 @@ The live-directory deployment also installs an explicit `hns.denuoweb.com` Nginx
 
 The live database keeps one current status row per discovered root/host pair and upserts it on later checks; it does not retain raw DNS packets, HTTP bodies, certificates, or a row per probe attempt. Name details use compact sharded static lookups regenerated on export from those existing rows, so the detail view adds no SQLite tables or probe-history growth.
 
-Daily cycles compare the topology tip, height, provider-rule hash, and generation timestamp first. Candidate roots are refreshed only when that fingerprint changes; unchanged daily runs do not scan the multi-gigabyte topology database. Full refreshes select indexed promising on-chain classes before joining resource details and stream rows into the live database instead of retaining the topology candidate set in memory.
+The evidence queue compares the topology tip, height, provider-rule hash, and generation timestamp first. Candidate roots are refreshed only when that fingerprint changes; unchanged cycles do not scan the multi-gigabyte topology database. Full refreshes select indexed promising on-chain classes before joining resource details and stream rows into the live database instead of retaining the topology candidate set in memory.
 
 ## Candidate Policy
 
@@ -51,6 +51,21 @@ Subdomain candidates require concrete evidence:
 `www.<root>` is not guessed. It is scanned only if DNS evidence names it. The service does not attempt zone transfers, NSEC walking, word lists, or recursive subdomain crawling.
 
 Known parking infrastructure, public HNS resolvers, expired roots, private nameserver bootstrap addresses, and non-global website addresses are excluded from active probing.
+
+## Broad Sweep
+
+The broad sweep is separate from the evidence queue. It streams roots from the read-only topology snapshot with persistent cursors, so it does not create one `candidates` or `host_status` row for every root. Its priority order is:
+
+1. DS roots with direct SYNTH or GLUE bootstrap;
+2. other direct SYNTH or GLUE bootstrap roots;
+3. DS delegations whose nameserver address must be resolved;
+4. other delegations whose nameserver address must be resolved.
+
+The sweep records one compact `sweep_coverage` row per root: resource hash, signal tier, checked time, outcome, and next-review time. A root is promoted to the detailed queue and public directory only after an HTTP or authenticated HTTPS endpoint responds. This preserves full liveness coverage without turning the live database or static directory into a second multi-gigabyte topology snapshot.
+
+Broad probes first resolve A/AAAA and try both HTTP and HTTPS. When either endpoint responds, the same probe performs DNSSEC and TLSA collection before storing the result. This keeps unreachable delegated roots inexpensive while ensuring endpoint scans supply current TLSA evidence.
+
+Production uses 50 workers, a global ceiling of ten target starts per second, and per-authority pacing. HTTP 429/503 responses or repeated authoritative DNS failures temporarily increase the delay only for the affected authority. The service runs another cycle 30 seconds after the prior one completes, independent of the weekly indexer and deploy jobs.
 
 ## Probe Semantics
 
@@ -82,6 +97,7 @@ hns-live-directory init --db data/live.sqlite
 hns-live-directory sync --topology-db data/topology.sqlite --db data/live.sqlite
 hns-live-directory plan --db data/live.sqlite
 hns-live-directory scan --db data/live.sqlite --limit 100
+hns-live-directory sweep --topology-db data/topology.sqlite --db data/live.sqlite --limit 3000
 hns-live-directory export --db data/live.sqlite --out public-live
 hns-live-directory validate --public-dir public-live
 ```
@@ -92,7 +108,7 @@ The service command combines them:
 scripts/run-live-directory.sh
 ```
 
-`plan` is the no-network candidate and due-queue audit. A scan limit of zero is explicitly unlimited; production defaults to 100 candidates per daily cycle.
+`plan` is the no-network evidence-queue audit. A scan limit of zero is explicitly unlimited; production probes up to 100 detailed candidates and a 3,000-root streamed sweep batch per cycle.
 
 ## Denuoweb VM Deployment
 
@@ -102,13 +118,13 @@ Review without changing the VM:
 DRY_RUN=1 scripts/gcloud-deploy-live-directory.sh
 ```
 
-Install or update the standalone repository, venv, static path, service, and daily timer:
+Install or update the standalone repository, venv, static path, service, and continuous timer:
 
 ```bash
 CONFIRM_LIVE_DIRECTORY_DEPLOY=1 scripts/gcloud-deploy-live-directory.sh
 ```
 
-Deployment initializes and exports an empty/current directory without issuing website probes. The timer's first probe cycle is delayed by one hour. To run a bounded cycle immediately during an intentional rollout:
+Deployment initializes and exports an empty/current directory without issuing website probes. The timer's first probe cycle begins after two minutes. To start the configured sweep immediately during an intentional rollout:
 
 ```bash
 CONFIRM_LIVE_DIRECTORY_DEPLOY=1 RUN_LIVE_DIRECTORY_NOW=1 scripts/gcloud-deploy-live-directory.sh
