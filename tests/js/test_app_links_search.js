@@ -88,6 +88,19 @@ function loadOverviewApp(search = "") {
 
 {
   const app = loadApp("");
+  const row = {
+    name: "shakeshift",
+    ns_names: ["a.namenode"],
+    ns_handoff_ns: "a.namenode",
+    ns_handoff_root: "namenode",
+    ns_handoff_bootstrap_ip: "138.199.197.111"
+  };
+  assert.equal(app.complianceStage(row), "indirect_ns_handoff");
+  assert.equal(app.stageLabel("indirect_ns_handoff"), "Indirect NS handoff");
+}
+
+{
+  const app = loadApp("");
   assert.equal(app.normalizeIpQuery("2001:db8::10"), "2001:db8::10");
   assert.equal(app.normalizeIpQuery("[2001:db8::10]"), "2001:db8::10");
   assert.equal(

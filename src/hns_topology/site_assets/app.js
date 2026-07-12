@@ -162,6 +162,7 @@ function filterName(filter) {
     dnssec_candidates: "DNSSEC candidates",
     tlsa_present_names: "TLSA observed",
     strict_hns_ready: "strict HNS ready",
+    indirect_ns_handoffs: "indirect NS handoffs",
     likely_websites: "likely host roots",
     needs_dane: "TLSA unobserved",
     needs_fix: "needs fix",
@@ -173,6 +174,7 @@ function stageLabel(stage) {
   return ({
     tlsa_present: "DS + TLSA observed",
     tlsa_gap: "TLSA unobserved",
+    indirect_ns_handoff: "Indirect NS handoff",
     missing_glue: "Missing GLUE",
     bootstrap_ready: "Bootstrap ready",
     non_actionable: "Non-actionable"
@@ -183,7 +185,8 @@ function stageDefinition(stage) {
   return ({
     tlsa_present: "Parent DS and authoritative or authenticated TLSA evidence are present.",
     tlsa_gap: "Parent DS is present, but stored DNS evidence does not prove TLSA presence.",
-    missing_glue: "Parent-side nameserver bootstrap is missing.",
+    indirect_ns_handoff: "A delegated nameserver can be bootstrapped through another HNS root; verify that handoff authority.",
+    missing_glue: "Neither direct parent-side GLUE nor an indexed HNS nameserver handoff is available.",
     bootstrap_ready: "HNS bootstrap exists; publish DNSSEC and TLSA.",
     non_actionable: "Expired, parked, resolver, empty, or unsupported."
   })[stage] || "";
@@ -276,7 +279,7 @@ function classLabel(value) {
     TXT_ONLY: "TXT only",
     DIRECT_SYNTH: "SYNTH nameserver",
     DELEGATED_WITH_GLUE: "Delegated with glue",
-    DELEGATED_NO_GLUE: "Delegated missing glue",
+    DELEGATED_NO_GLUE: "Delegated no direct glue",
     DNSSEC_CANDIDATE: "DNSSEC candidate",
     DANE_CANDIDATE: "DANE candidate",
     PARKED_OR_DEFAULT: "Parked/default",
@@ -289,7 +292,7 @@ function classFilterHref(value) {
   return ({
     DIRECT_SYNTH: "names.html?filter=direct_ip_records",
     DELEGATED_WITH_GLUE: "names.html?filter=strict_hns_ready",
-    DELEGATED_NO_GLUE: "names.html?filter=missing_glue_only",
+    DELEGATED_NO_GLUE: "names.html?filter=delegated_names",
     DNSSEC_CANDIDATE: "names.html?filter=dnssec_candidates",
     DANE_CANDIDATE: "names.html?filter=dnssec_candidates",
     PARKED_OR_DEFAULT: "names.html?filter=default_provider_names"
@@ -539,6 +542,7 @@ function complianceStage(row) {
   if (row.compliance_stage) return row.compliance_stage;
   if (row.expired) return "non_actionable";
   if (row.provider_type === "default_parking" || row.provider_type === "public_resolver") return "non_actionable";
+  if (hasNs(row) && !hasGlue(row) && hasNsHandoff(row)) return "indirect_ns_handoff";
   if (hasNs(row) && !hasGlue(row)) return "missing_glue";
   if (hasDs(row) && hasTlsa(row)) return "tlsa_present";
   if (hasDs(row)) return "tlsa_gap";
@@ -566,7 +570,14 @@ function rowAction(row) {
     }
     return {
       label: "Create NS/GLUE handoff",
-      detail: "Parent-side nameserver bootstrap is required before the signed TLSA zone is reachable.",
+      detail: "Publish direct GLUE or a resolvable HNS nameserver handoff before the signed TLSA zone is reachable.",
+      href: daneGeneratorUrl(row, "missing_glue")
+    };
+  }
+  if (stage === "indirect_ns_handoff") {
+    return {
+      label: "Verify NS handoff",
+      detail: `${trailingDot(row.ns_handoff_ns)} is bootstrapped through ${row.ns_handoff_root}/; verify the authority before treating the zone as reachable.`,
       href: daneGeneratorUrl(row, "missing_glue")
     };
   }
@@ -1378,6 +1389,7 @@ function namesFilterControls({summary, providers, active}) {
     {value: "default_provider_names", label: "Default providers", countKey: "default_provider_names"},
     {value: "likely_websites", label: "Likely host roots", countKey: "likely_websites"},
     {value: "strict_hns_ready", label: "Strict HNS ready", countKey: "strict_hns_ready"},
+    {value: "indirect_ns_handoffs", label: "Indirect NS handoffs", countKey: "indirect_ns_handoffs"},
     {value: "needs_fix", label: "Needs fix", countKey: "needs_fix"}
   ];
   const daneOptions = [

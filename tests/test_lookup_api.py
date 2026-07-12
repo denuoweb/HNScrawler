@@ -80,7 +80,7 @@ def test_lookup_name_includes_indirect_nameserver_handoff(tmp_path):
     result = lookup_name(db_path, "mercenary/")
 
     assert result["found"] is True
-    assert result["row"]["compliance_stage"] == "missing_glue"
+    assert result["row"]["compliance_stage"] == "indirect_ns_handoff"
     assert result["row"]["ns_handoff_ns"] == "ns1.skyinclude"
     assert result["row"]["ns_handoff_root"] == "skyinclude"
     assert result["row"]["ns_handoff_bootstrap_ip"] == "192.155.93.228"

@@ -1,8 +1,11 @@
+import sqlite3
+
 from hns_topology.live_db import (
     begin_topology_sync,
     connect_live,
     directory_rows,
     finish_topology_sync,
+    get_live_meta,
     init_live_db,
     select_due_candidates,
     set_live_meta,
@@ -40,6 +43,37 @@ def test_online_host_survives_one_failure_then_is_unlisted(tmp_path):
         status = conn.execute("SELECT * FROM host_status").fetchone()
         assert status["listing_state"] == "unlisted"
         assert status["consecutive_failures"] == 2
+
+
+def test_init_live_db_migrates_handoff_storage(tmp_path):
+    db_path = tmp_path / "live.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE roots (
+              name TEXT PRIMARY KEY,
+              provider_guess TEXT NOT NULL,
+              provider_type TEXT NOT NULL,
+              resource_hash TEXT NOT NULL,
+              last_seen_height INTEGER,
+              ns_names_json TEXT NOT NULL DEFAULT '[]',
+              bootstrap_addresses_json TEXT NOT NULL DEFAULT '[]',
+              ds_records_json TEXT NOT NULL DEFAULT '[]',
+              has_ds INTEGER NOT NULL DEFAULT 0,
+              strict_ready INTEGER NOT NULL DEFAULT 0,
+              active INTEGER NOT NULL DEFAULT 1,
+              topology_updated_at TEXT NOT NULL
+            )
+            """
+        )
+
+    with connect_live(db_path) as conn:
+        init_live_db(conn)
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(roots)")}
+        schema_version = get_live_meta(conn, "schema_version")
+
+    assert "ns_handoffs_json" in columns
+    assert schema_version == "5"
 
 
 def test_topology_hash_change_makes_candidate_immediately_due(tmp_path):

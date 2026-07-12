@@ -68,6 +68,7 @@ def lookup_name(db_path: str | Path, name: str) -> dict:
             has_ns="rs.has_ns",
             has_glue="rs.has_glue",
             has_synth="rs.has_synth",
+            has_ns_handoff="enh.ns_handoff_bootstrap_ip IS NOT NULL",
             has_tlsa="COALESCE(tes.has_tlsa, 0)",
         )
         try:

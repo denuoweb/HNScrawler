@@ -395,6 +395,41 @@ def test_probe_resolves_a_hns_nameserver_handoff_before_the_delegated_zone(monke
     ]
 
 
+def test_general_delegated_sweep_marks_and_uses_hns_handoff(tmp_path):
+    topology_db = tmp_path / "topology.sqlite"
+    live_db = tmp_path / "live.sqlite"
+    _seed_topology(topology_db)
+    _seed_handoff_root(topology_db, name="handoff")
+    with sqlite3.connect(topology_db) as conn:
+        conn.execute(
+            "UPDATE resource_summary SET ns_names = ? WHERE name = 'c-ds-delegated'",
+            (json.dumps(["ns1.handoff"]),),
+        )
+
+    with connect_live(live_db) as conn:
+        init_live_db(conn)
+        selection = select_sweep_candidates(
+            conn,
+            topology_db=topology_db,
+            limit=10,
+            page_size=10,
+            tiers=("ds_delegated",),
+        )
+
+    assert len(selection["candidates"]) == 1
+    candidate = selection["candidates"][0]
+    assert candidate["root_name"] == "c-ds-delegated"
+    assert candidate["signal_tier"] == "ds_handoff"
+    assert candidate["ns_handoffs"] == [
+        {
+            "nameserver": "ns1.handoff",
+            "root_name": "handoff",
+            "bootstrap_addresses": ["8.8.8.8"],
+        }
+    ]
+    assert candidate["topology_root"].ns_handoffs == candidate["ns_handoffs"]
+
+
 def _seed_topology(path):
     with sqlite3.connect(path) as conn:
         conn.executescript(

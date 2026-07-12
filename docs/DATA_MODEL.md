@@ -115,11 +115,12 @@ Reorg rollback snapshots:
 
 - `tlsa_present`
 - `tlsa_gap`
+- `indirect_ns_handoff`
 - `missing_glue`
 - `bootstrap_ready`
 - `non_actionable`
 
-The stage is not stored as source data; it is derived from expiration state, provider type, resource bootstrap flags, DS, and normalized TLSA evidence.
+The stage is not stored as source data; it is derived from expiration state, provider type, resource bootstrap flags, indexed HNS nameserver handoffs, DS, and normalized TLSA evidence.
 
 ## Public Export
 

@@ -139,11 +139,12 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     assert summary["tlsa_present_names"] == 0
     assert summary["tlsa_evidence_names"] == 0
     assert summary["needs_dane"] == 1
-    assert summary["needs_fix"] == 2
+    assert summary["needs_fix"] == 1
     assert [item["stage"] for item in summary["compliance_stages"]] == list(COMPLIANCE_STAGES)
     assert summary["compliance_stage_counts"] == {
         "tlsa_present": 0,
         "tlsa_gap": 1,
+        "indirect_ns_handoff": 0,
         "missing_glue": 1,
         "bootstrap_ready": 2,
         "non_actionable": 4,
@@ -172,7 +173,7 @@ def test_fixture_bootstrap_builds_expected_counts(tmp_path):
     assert explainers["direct_ip_records"]["filter_link"] == "names.html?filter=direct_ip_records"
     assert explainers["needs_dane"]["count"] == 1
     assert "stored authoritative or authenticated TLSA" in explainers["needs_dane"]["definition"]
-    assert explainers["needs_fix"]["count"] == 2
+    assert explainers["needs_fix"]["count"] == 1
     assert {item["ip"] for item in summary["top_resource_ips"]} >= {
         "198.51.100.2",
         "198.51.100.3",
@@ -433,9 +434,10 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert names_pages["collections"]["ds_records"]["row_count"] == 1
     assert names_pages["collections"]["strict_hns_ready"]["row_count"] == 3
     assert names_pages["collections"]["needs_dane"]["row_count"] == 1
-    assert names_pages["collections"]["needs_fix"]["row_count"] == 2
+    assert names_pages["collections"]["needs_fix"]["row_count"] == 1
     assert "tlsa_present_names" not in names_pages["collections"]
     assert names_pages["collections"]["stage:tlsa_gap"]["row_count"] == 1
+    assert "stage:indirect_ns_handoff" not in names_pages["collections"]
     assert names_pages["collections"]["stage:missing_glue"]["row_count"] == 1
     assert names_pages["collections"]["stage:bootstrap_ready"]["row_count"] == 2
     assert names_pages["collections"]["stage:non_actionable"]["row_count"] == 4
@@ -780,7 +782,7 @@ def test_missing_glue_exports_indirect_nameserver_handoff(tmp_path, monkeypatch)
         generate_site(conn, db_path=db_path, out_dir=out)
 
     full_mercenary = next(row for row in full_rows if row["name"] == "mercenary")
-    assert full_mercenary["compliance_stage"] == "missing_glue"
+    assert full_mercenary["compliance_stage"] == "indirect_ns_handoff"
     assert full_mercenary["ns_handoff_ns"] == "ns1.skyinclude"
     assert full_mercenary["ns_handoff_root"] == "skyinclude"
     assert full_mercenary["ns_handoff_glue4"] == "192.155.93.228"
@@ -793,9 +795,11 @@ def test_missing_glue_exports_indirect_nameserver_handoff(tmp_path, monkeypatch)
     rows = [dict(zip(page["columns"], row, strict=True)) for row in page["rows"]]
     compact_mercenary = next(row for row in rows if row["name"] == "mercenary")
 
+    assert names_pages["collections"]["indirect_ns_handoffs"]["row_count"] == 1
+    assert names_pages["collections"]["stage:indirect_ns_handoff"]["row_count"] == 1
     assert compact_mercenary["first_ns"] == "ns1.skyinclude"
     assert compact_mercenary["first_glue4"] is None
-    assert compact_mercenary["compliance_stage"] == "missing_glue"
+    assert compact_mercenary["compliance_stage"] == "indirect_ns_handoff"
     assert compact_mercenary["ns_handoff_ns"] == "ns1.skyinclude"
     assert compact_mercenary["ns_handoff_root"] == "skyinclude"
     assert compact_mercenary["ns_handoff_bootstrap_ip"] == "192.155.93.228"

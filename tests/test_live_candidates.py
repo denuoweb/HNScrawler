@@ -1,3 +1,5 @@
+import json
+
 from hns_topology.db import connect, insert_dns_evidence
 from hns_topology.indexer import bootstrap_from_fixture
 from hns_topology.live_candidates import (
@@ -9,7 +11,7 @@ from hns_topology.live_candidates import (
     sync_topology,
     sync_topology_if_changed,
 )
-from hns_topology.live_db import connect_live, init_live_db
+from hns_topology.live_db import connect_live, init_live_db, select_due_candidates
 from hns_topology.models import DnsEvidence
 from hns_topology.provider_rules import ProviderRules
 
@@ -149,6 +151,82 @@ def test_sync_retains_known_external_dns_delegations_without_glue(tmp_path):
         ).fetchone()
 
     assert dict(row) == {"provider_type": "external_dns", "strict_ready": 0}
+
+
+def test_sync_carries_hns_handoff_to_live_probe_candidates(tmp_path):
+    topology_db = tmp_path / "topology.sqlite"
+    live_db = tmp_path / "live.sqlite"
+    fixture_path = tmp_path / "handoff.json"
+    fixture_path.write_text(
+        json.dumps(
+            {
+                "chain": "fixture",
+                "height": 337132,
+                "tip_hash": "handoff-tip",
+                "hsd_version": "fixture",
+                "names": [
+                    {
+                        "name": "agent",
+                        "nameHash": "hash-agent",
+                        "state": "CLOSED",
+                        "renewal": 337000,
+                        "resource": {
+                            "records": [
+                                {
+                                    "type": "DS",
+                                    "keyTag": 1,
+                                    "algorithm": 13,
+                                    "digestType": 2,
+                                    "digest": "aa" * 32,
+                                },
+                                {"type": "NS", "ns": "ns1.handoff."},
+                            ]
+                        },
+                    },
+                    {
+                        "name": "handoff",
+                        "nameHash": "hash-handoff",
+                        "state": "CLOSED",
+                        "renewal": 337000,
+                        "resource": {
+                            "records": [
+                                {"type": "GLUE4", "ns": "ns1.handoff.", "address": "8.8.8.8"}
+                            ]
+                        },
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    rules = ProviderRules.from_file("configs/provider_rules.json")
+    with connect(topology_db) as conn:
+        bootstrap_from_fixture(conn, fixture_path=fixture_path, rules=rules)
+
+    with connect_live(live_db) as conn:
+        init_live_db(conn)
+        sync_topology(conn, topology_db)
+        root = conn.execute(
+            "SELECT strict_ready, ns_handoffs_json FROM roots WHERE name = 'agent'"
+        ).fetchone()
+        candidate = next(
+            item for item in select_due_candidates(conn, limit=10) if item["root_name"] == "agent"
+        )
+        sources = conn.execute(
+            "SELECT sources_json FROM candidates WHERE root_name = 'agent' AND host = 'agent'"
+        ).fetchone()["sources_json"]
+
+    assert root["strict_ready"] == 0
+    assert json.loads(root["ns_handoffs_json"]) == [
+        {
+            "bootstrap_addresses": ["8.8.8.8"],
+            "bootstrap_field": "GLUE4",
+            "nameserver": "ns1.handoff",
+            "root_name": "handoff",
+        }
+    ]
+    assert candidate["ns_handoffs"] == json.loads(root["ns_handoffs_json"])
+    assert "indirect_ns_handoff" in json.loads(sources)
 
 
 def test_dns_evidence_parser_accepts_named_subdomains_and_rejects_other_roots():

@@ -48,13 +48,15 @@ The canonical workflow state is the derived `compliance_stage`:
 
 - `tlsa_present`: parent DS and stored authoritative/authenticated TLSA evidence are both present. This does not prove a certificate match.
 - `tlsa_gap`: parent DS is present, but stored DNS evidence does not prove TLSA presence.
-- `missing_glue`: NS delegation exists but GLUE bootstrap is missing.
+- `indirect_ns_handoff`: direct GLUE is absent, but an active HNS root bootstraps a delegated nameserver host; authority verification remains pending.
+- `missing_glue`: NS delegation has neither direct GLUE nor an indexed HNS nameserver handoff.
 - `bootstrap_ready`: SYNTH or delegated GLUE bootstrap exists; DNSSEC/DS/TLSA planning is next.
 - `non_actionable`: expired, parked/default, resolver infrastructure, empty, or unsupported resources.
 
 Generator handoffs are produced from those stages:
 
 - `generate_tlsa`
+- `verify_ns_handoff`
 - `missing_glue`
 - `dnssec_dane`
 

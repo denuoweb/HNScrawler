@@ -94,8 +94,9 @@ NAME_FILTERS = {
         f"{ACTIONABLE_PROVIDER_SQL} AND "
         "rs.has_ds = 1 AND COALESCE(tes.has_tlsa, 0) = 0"
     ),
-    "needs_fix": "rs.has_ns = 1 AND rs.has_glue = 0",
-    "missing_glue_only": "rs.has_ns = 1 AND rs.has_glue = 0",
+    "indirect_ns_handoffs": "enh.ns_handoff_bootstrap_ip IS NOT NULL",
+    "needs_fix": "rs.has_ns = 1 AND rs.has_glue = 0 AND enh.ns_handoff_bootstrap_ip IS NULL",
+    "missing_glue_only": "rs.has_ns = 1 AND rs.has_glue = 0 AND enh.ns_handoff_bootstrap_ip IS NULL",
 }
 
 NEXT_ACTION_SPECS = (
@@ -105,6 +106,13 @@ NEXT_ACTION_SPECS = (
         stage="tlsa_gap",
         generator_intent="generate_tlsa",
         definition="Parent DS is present, but no authoritative or authenticated TLSA answer is stored.",
+    ),
+    NextActionSpec(
+        key="verify_ns_handoff",
+        label="Verify NS handoff",
+        stage="indirect_ns_handoff",
+        generator_intent="missing_glue",
+        definition="A delegated nameserver can be bootstrapped through another HNS root. Verify that handoff authority before treating the zone as reachable.",
     ),
     NextActionSpec(
         key="fix_ns_glue",
@@ -178,16 +186,22 @@ OVERVIEW_EXPLAINER_SPECS = (
         definition="Actionable active names with parent DS but no stored authoritative or authenticated TLSA answer. Verify before generating a replacement.",
     ),
     OverviewExplainerSpec(
+        key="indirect_ns_handoffs",
+        label="Indirect NS handoffs",
+        count_key="indirect_ns_handoffs",
+        definition="Delegated names whose nameserver host can be bootstrapped through another active HNS root. They do not need duplicate direct GLUE, but the handoff authority still needs verification.",
+    ),
+    OverviewExplainerSpec(
         key="needs_fix",
         label="Needs fix",
         count_key="needs_fix",
-        definition="Delegated names missing parent-side GLUE before strict HNS bootstrap can reach the zone.",
+        definition="Delegated names with neither direct GLUE nor an indexed HNS nameserver handoff.",
     ),
     OverviewExplainerSpec(
         key="missing_glue_only",
         label="Missing GLUE only",
         count_key="missing_glue_only",
-        definition="Delegated names with no GLUE4 or GLUE6.",
+        definition="Delegated names with no direct GLUE and no indexed HNS nameserver handoff.",
     ),
 )
 
@@ -197,6 +211,7 @@ EXPORTED_NAME_FILTERS = (
     "default_provider_names",
     "likely_websites",
     "strict_hns_ready",
+    "indirect_ns_handoffs",
     "needs_fix",
     "ds_records",
     "dnssec_candidates",
@@ -221,8 +236,9 @@ POSTING_NAME_FILTERS = {
         "(has_synth = 1 OR has_glue = 1 OR (has_ds = 1 AND has_ns = 1))"
     ),
     "needs_dane": f"{ACTIONABLE_EXPORT_SQL} AND has_ds = 1 AND has_tlsa = 0",
-    "needs_fix": "has_ns = 1 AND has_glue = 0",
-    "missing_glue_only": "has_ns = 1 AND has_glue = 0",
+    "indirect_ns_handoffs": "compliance_stage = 'indirect_ns_handoff'",
+    "needs_fix": "compliance_stage = 'missing_glue'",
+    "missing_glue_only": "compliance_stage = 'missing_glue'",
 }
 
 
@@ -234,6 +250,7 @@ def _name_compliance_stage_sql() -> str:
         has_ns="rs.has_ns",
         has_glue="rs.has_glue",
         has_synth="rs.has_synth",
+        has_ns_handoff="enh.ns_handoff_bootstrap_ip IS NOT NULL",
         has_tlsa="COALESCE(tes.has_tlsa, 0)",
     )
 
@@ -246,6 +263,7 @@ def _export_compliance_stage_sql() -> str:
         has_ns="has_ns",
         has_glue="has_glue",
         has_synth="has_synth",
+        has_ns_handoff="has_ns_handoff",
         has_tlsa="has_tlsa",
     )
 
@@ -355,15 +373,7 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
                     AND COALESCE(tes.has_tlsa, 0) = 0
                    THEN 1 ELSE 0 END) AS needs_dane,
           SUM(CASE WHEN COALESCE(n.expired, 0) = 0 AND ps.provider_type = 'default_parking'
-                   THEN 1 ELSE 0 END) AS default_provider_names,
-          SUM(CASE WHEN COALESCE(n.expired, 0) = 0
-                    AND COALESCE(rs.has_ns, 0) = 1
-                    AND COALESCE(rs.has_glue, 0) = 0
-                   THEN 1 ELSE 0 END) AS needs_fix,
-          SUM(CASE WHEN COALESCE(n.expired, 0) = 0
-                    AND COALESCE(rs.has_ns, 0) = 1
-                    AND COALESCE(rs.has_glue, 0) = 0
-                   THEN 1 ELSE 0 END) AS missing_glue_only
+                   THEN 1 ELSE 0 END) AS default_provider_names
         FROM names n
         LEFT JOIN resource_summary rs ON rs.name = n.name
         LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
@@ -400,8 +410,9 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
         "likely_websites": _row_int(resource_counts, "likely_websites"),
         "strict_hns_ready": _row_int(resource_counts, "strict_hns_ready"),
         "needs_dane": _row_int(resource_counts, "needs_dane"),
-        "needs_fix": _row_int(resource_counts, "needs_fix"),
-        "missing_glue_only": _row_int(resource_counts, "missing_glue_only"),
+        "needs_fix": 0,
+        "missing_glue_only": 0,
+        "indirect_ns_handoffs": 0,
     }
     summary["classes"] = build_classes(conn)
     summary["providers"] = build_providers(conn)
@@ -412,6 +423,11 @@ def build_summary(conn: sqlite3.Connection) -> dict[str, Any]:
     summary["compliance_stage_counts"] = {
         item["stage"]: int(item["count"]) for item in summary["compliance_stages"]
     }
+    summary["indirect_ns_handoffs"] = summary["compliance_stage_counts"].get(
+        "indirect_ns_handoff", 0
+    )
+    summary["needs_fix"] = summary["compliance_stage_counts"].get("missing_glue", 0)
+    summary["missing_glue_only"] = summary["needs_fix"]
     summary["next_actions"] = build_next_actions(summary)
     summary["overview_explainers"] = build_overview_explainers(summary)
     return summary
@@ -428,23 +444,31 @@ def build_next_actions(summary: dict[str, Any]) -> list[dict[str, Any]]:
 
 def build_compliance_stages(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     stage_sql = _name_compliance_stage_sql()
-    counts = {
-        row["compliance_stage"]: int(row["count"] or 0)
-        for row in conn.execute(
-            f"""
-            SELECT compliance_stage, COUNT(*) AS count
-            FROM (
-              SELECT {stage_sql} AS compliance_stage
-              FROM names n
-              JOIN resource_summary rs ON rs.name = n.name
-              LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
-              LEFT JOIN tlsa_evidence_summary tes ON tes.name = n.name
-              WHERE COALESCE(n.expired, 0) = 0
+    prepare_temp_ns_handoff_table(
+        conn,
+        "SELECT name FROM names WHERE COALESCE(expired, 0) = 0",
+    )
+    try:
+        counts = {
+            row["compliance_stage"]: int(row["count"] or 0)
+            for row in conn.execute(
+                f"""
+                SELECT compliance_stage, COUNT(*) AS count
+                FROM (
+                  SELECT {stage_sql} AS compliance_stage
+                  FROM names n
+                  JOIN resource_summary rs ON rs.name = n.name
+                  LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
+                  LEFT JOIN tlsa_evidence_summary tes ON tes.name = n.name
+                  LEFT JOIN {NS_HANDOFF_TABLE} enh ON enh.name = n.name
+                  WHERE COALESCE(n.expired, 0) = 0
+                )
+                GROUP BY compliance_stage
+                """
             )
-            GROUP BY compliance_stage
-            """
-        )
-    }
+        }
+    finally:
+        drop_temp_ns_handoff_table(conn)
     return [
         {
             "stage": stage,
@@ -1449,8 +1473,12 @@ def _write_names_pages_streamed(
     row_detail = "full" if total_names <= DETAILED_NAME_COLLECTION_ROW_LIMIT else "compact"
     output_keys = _name_output_keys(row_detail=row_detail)
     try:
+        prepare_temp_ns_handoff_table(
+            conn,
+            "SELECT name FROM names ORDER BY name LIMIT ?",
+            (exported_names,),
+        )
         _prepare_export_name_ordinals(conn, exported_names)
-        prepare_temp_ns_handoff_table(conn, "SELECT name FROM export_name_ordinals")
         collections: dict[str, Any] = {}
         keys = _name_collection_keys(conn)
         _log_export(
@@ -1510,6 +1538,7 @@ def _prepare_export_name_ordinals(conn: sqlite3.Connection, limit: int) -> None:
           has_ns INTEGER NOT NULL,
           has_glue INTEGER NOT NULL,
           has_synth INTEGER NOT NULL,
+          has_ns_handoff INTEGER NOT NULL,
           has_tlsa INTEGER NOT NULL,
           compliance_stage TEXT NOT NULL
         ) WITHOUT ROWID
@@ -1521,11 +1550,11 @@ def _prepare_export_name_ordinals(conn: sqlite3.Connection, limit: int) -> None:
         f"""
         INSERT INTO export_name_ordinals(
           name, ordinal, expired, provider_guess, provider_type, has_ds, has_ns,
-          has_glue, has_synth, has_tlsa, compliance_stage
+          has_glue, has_synth, has_ns_handoff, has_tlsa, compliance_stage
         )
         SELECT
           name, ordinal, expired, provider_guess, provider_type, has_ds, has_ns,
-          has_glue, has_synth, has_tlsa, {_export_compliance_stage_sql()} AS compliance_stage
+          has_glue, has_synth, has_ns_handoff, has_tlsa, {_export_compliance_stage_sql()} AS compliance_stage
         FROM (
           SELECT
             n.name,
@@ -1537,11 +1566,13 @@ def _prepare_export_name_ordinals(conn: sqlite3.Connection, limit: int) -> None:
             COALESCE(rs.has_ns, 0) AS has_ns,
             COALESCE(rs.has_glue, 0) AS has_glue,
             COALESCE(rs.has_synth, 0) AS has_synth,
+            CASE WHEN enh.ns_handoff_bootstrap_ip IS NOT NULL THEN 1 ELSE 0 END AS has_ns_handoff,
             COALESCE(tes.has_tlsa, 0) AS has_tlsa
           FROM names n
           JOIN resource_summary rs ON rs.name = n.name
           LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
           LEFT JOIN tlsa_evidence_summary tes ON tes.name = n.name
+          LEFT JOIN {NS_HANDOFF_TABLE} enh ON enh.name = n.name
           ORDER BY n.name
           LIMIT ?
         )
@@ -1891,6 +1922,13 @@ def _name_collection_where(key: str) -> tuple[str, tuple[Any, ...]]:
         return "COALESCE(n.expired, 0) = 0 AND n.provider_guess = ?", (
             key.removeprefix(PROVIDER_FILTER_PREFIX),
         )
+    if key in {"indirect_ns_handoffs", "needs_fix", "missing_glue_only"}:
+        stage = {
+            "indirect_ns_handoffs": "indirect_ns_handoff",
+            "needs_fix": "missing_glue",
+            "missing_glue_only": "missing_glue",
+        }[key]
+        return f"COALESCE(n.expired, 0) = 0 AND {_name_compliance_stage_sql()} = ?", (stage,)
     if key in NAME_FILTERS:
         return f"COALESCE(n.expired, 0) = 0 AND ({NAME_FILTERS[key]})", ()
     raise KeyError(f"unknown names collection: {key}")

@@ -6,7 +6,7 @@ import json
 import sqlite3
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -322,6 +322,7 @@ def select_sweep_candidates(
                     completed.append(tier)
                     break
                 page = [_candidate_from_row(row, tier=tier) for row in rows]
+                _attach_hns_handoffs(topology, page)
                 _mark_shared_authority_keys(page)
                 coverage = sweep_coverage_for_roots(
                     conn,
@@ -527,6 +528,9 @@ def _select_shared_delegation_candidates(
             handoff = handoffs.get(str(group["nameserver"]))
             if handoff:
                 candidate["ns_handoffs"] = [handoff]
+                candidate["topology_root"] = replace(
+                    candidate["topology_root"], ns_handoffs=[handoff]
+                )
                 candidate["signal_tier"] = "ds_handoff" if candidate["has_ds"] else "delegation_handoff"
             if _coverage_is_due(
                 coverage.get(root_name),
@@ -547,9 +551,48 @@ def _delegation_handoffs(
 ) -> dict[str, dict[str, Any]]:
     if not groups:
         return {}
+    return _hns_handoffs_for_nameservers(
+        topology,
+        [str(group["nameserver"]) for group in groups],
+    )
+
+
+def _attach_hns_handoffs(
+    topology: sqlite3.Connection,
+    candidates: list[dict[str, Any]],
+) -> None:
+    handoffs = _hns_handoffs_for_nameservers(
+        topology,
+        [
+            str(nameserver)
+            for candidate in candidates
+            for nameserver in candidate.get("ns_names", [])
+        ],
+    )
+    for candidate in candidates:
+        candidate_handoffs = [
+            handoffs[nameserver]
+            for nameserver in candidate.get("ns_names", [])
+            if nameserver in handoffs
+        ]
+        if not candidate_handoffs:
+            continue
+        candidate["ns_handoffs"] = candidate_handoffs
+        candidate["topology_root"] = replace(
+            candidate["topology_root"], ns_handoffs=candidate_handoffs
+        )
+        if candidate["signal_tier"] == "ds_delegated":
+            candidate["signal_tier"] = "ds_handoff"
+        elif candidate["signal_tier"] == "delegated":
+            candidate["signal_tier"] = "delegation_handoff"
+
+
+def _hns_handoffs_for_nameservers(
+    topology: sqlite3.Connection,
+    nameservers: list[str],
+) -> dict[str, dict[str, Any]]:
     root_by_nameserver = {
-        str(group["nameserver"]): _nameserver_hns_root(str(group["nameserver"]))
-        for group in groups
+        str(nameserver): _nameserver_hns_root(str(nameserver)) for nameserver in nameservers
     }
     rows = _topology_rows_for_names(topology, list(root_by_nameserver.values()))
     bootstrap_by_root: dict[str, list[str]] = {}

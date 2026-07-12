@@ -16,7 +16,7 @@ from .live_models import (
 )
 from .timeutil import utc_now
 
-LIVE_SCHEMA_VERSION = "4"
+LIVE_SCHEMA_VERSION = "5"
 
 SCHEMA_SQL = """
 PRAGMA journal_mode = WAL;
@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS roots (
   last_seen_height INTEGER,
   ns_names_json TEXT NOT NULL DEFAULT '[]',
   bootstrap_addresses_json TEXT NOT NULL DEFAULT '[]',
+  ns_handoffs_json TEXT NOT NULL DEFAULT '[]',
   ds_records_json TEXT NOT NULL DEFAULT '[]',
   has_ds INTEGER NOT NULL DEFAULT 0,
   strict_ready INTEGER NOT NULL DEFAULT 0,
@@ -175,6 +176,11 @@ def connect_live(db_path: str | Path) -> sqlite3.Connection:
 
 def init_live_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
+    _ensure_columns(
+        conn,
+        "roots",
+        {"ns_handoffs_json": "TEXT NOT NULL DEFAULT '[]'"},
+    )
     conn.execute("UPDATE host_status SET listing_state = 'unlisted' WHERE listing_state = 'repair'")
     set_live_meta(conn, "schema_version", LIVE_SCHEMA_VERSION)
     conn.commit()
@@ -209,9 +215,9 @@ def upsert_root(conn: sqlite3.Connection, root: TopologyRoot, *, synced_at: str)
         """
         INSERT INTO roots(
           name, provider_guess, provider_type, resource_hash, last_seen_height,
-          ns_names_json, bootstrap_addresses_json, ds_records_json, has_ds,
+          ns_names_json, bootstrap_addresses_json, ns_handoffs_json, ds_records_json, has_ds,
           strict_ready, active, topology_updated_at
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
         ON CONFLICT(name) DO UPDATE SET
           provider_guess=excluded.provider_guess,
           provider_type=excluded.provider_type,
@@ -219,6 +225,7 @@ def upsert_root(conn: sqlite3.Connection, root: TopologyRoot, *, synced_at: str)
           last_seen_height=excluded.last_seen_height,
           ns_names_json=excluded.ns_names_json,
           bootstrap_addresses_json=excluded.bootstrap_addresses_json,
+          ns_handoffs_json=excluded.ns_handoffs_json,
           ds_records_json=excluded.ds_records_json,
           has_ds=excluded.has_ds,
           strict_ready=excluded.strict_ready,
@@ -233,6 +240,7 @@ def upsert_root(conn: sqlite3.Connection, root: TopologyRoot, *, synced_at: str)
             root.last_seen_height,
             dumps_json(root.ns_names),
             dumps_json(root.bootstrap_addresses),
+            dumps_json(root.ns_handoffs),
             dumps_json(root.ds_records),
             int(root.has_ds),
             int(root.strict_ready),
@@ -338,7 +346,7 @@ def select_due_candidates(
           c.root_name, c.host, c.sources_json, c.source_details_json, c.priority,
           c.topology_resource_hash, c.first_seen_at,
           r.provider_guess, r.provider_type, r.resource_hash, r.last_seen_height,
-          r.ns_names_json, r.bootstrap_addresses_json, r.ds_records_json,
+          r.ns_names_json, r.bootstrap_addresses_json, r.ns_handoffs_json, r.ds_records_json,
           r.has_ds, r.strict_ready,
           hs.category AS previous_category,
           hs.listing_state AS previous_listing_state,
@@ -869,12 +877,24 @@ def _candidate_row(row: sqlite3.Row) -> dict[str, Any]:
         "source_details_json",
         "ns_names_json",
         "bootstrap_addresses_json",
+        "ns_handoffs_json",
         "ds_records_json",
     ):
         result[key.removesuffix("_json")] = _json_value(result.pop(key), [])
     result["has_ds"] = bool(result["has_ds"])
     result["strict_ready"] = bool(result["strict_ready"])
     return result
+
+
+def _ensure_columns(
+    conn: sqlite3.Connection,
+    table: str,
+    columns: dict[str, str],
+) -> None:
+    existing = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})")}
+    for name, column_type in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {column_type}")
 
 
 def _listing_state(result: HostProbeResult, previous: dict[str, Any]) -> dict[str, Any]:

@@ -21,6 +21,11 @@ from .live_db import (
     upsert_root,
 )
 from .live_models import LiveCandidate, TopologyRoot
+from .ns_handoff import (
+    NS_HANDOFF_TABLE,
+    drop_temp_ns_handoff_table,
+    prepare_temp_ns_handoff_table,
+)
 from .timeutil import utc_now
 
 HOST_RE = re.compile(
@@ -59,6 +64,7 @@ ROOT_SELECTION_SQL = f"""
     AND (
       COALESCE(tes.has_tlsa, 0) = 1
       OR COALESCE(ps.provider_type, 'unknown') = 'external_dns'
+      OR hns_live_actionable_ip(enh.ns_handoff_bootstrap_ip) = 1
     )
   )
 )
@@ -86,64 +92,69 @@ def sync_topology(live_conn: sqlite3.Connection, topology_db: str | Path) -> dic
         topology.execute("PRAGMA temp_store = FILE")
         _require_topology_tables(topology)
         _prepare_candidate_names(topology)
-        _prepare_promoted_sweep_names(topology, promoted_sweep_roots)
-        meta = {
-            row["key"]: row["value"]
-            for row in topology.execute("SELECT key, value FROM snapshot_meta")
-        }
-        with live_conn:
-            begin_topology_sync(live_conn)
-            for row in _topology_root_rows(topology):
-                root = _root_from_row(row)
-                root_count += 1
-                changed_roots += int(upsert_root(live_conn, root, synced_at=synced_at))
-                upsert_candidate(
-                    live_conn,
-                    _apex_candidate(root, has_tlsa=bool(row["has_tlsa"])),
-                    seen_at=synced_at,
+        _prepare_hns_handoff_table(topology)
+        try:
+            _add_handoff_candidate_names(topology)
+            _prepare_promoted_sweep_names(topology, promoted_sweep_roots)
+            meta = {
+                row["key"]: row["value"]
+                for row in topology.execute("SELECT key, value FROM snapshot_meta")
+            }
+            with live_conn:
+                begin_topology_sync(live_conn)
+                for row in _topology_root_rows(topology):
+                    root = _root_from_row(row)
+                    root_count += 1
+                    changed_roots += int(upsert_root(live_conn, root, synced_at=synced_at))
+                    upsert_candidate(
+                        live_conn,
+                        _apex_candidate(root, has_tlsa=bool(row["has_tlsa"])),
+                        seen_at=synced_at,
+                    )
+                    for owner in _json_list(row["tlsa_owners"]):
+                        host = host_from_dns_owner(root.name, str(owner), "TLSA")
+                        if host and host != root.name:
+                            upsert_candidate(
+                                live_conn,
+                                LiveCandidate(
+                                    root_name=root.name,
+                                    host=host,
+                                    source="tlsa_owner",
+                                    source_detail=str(owner),
+                                    priority=90,
+                                    topology_resource_hash=root.resource_hash,
+                                ),
+                                seen_at=synced_at,
+                            )
+                for row in _promoted_sweep_root_rows(topology):
+                    root = _root_from_row(row)
+                    root_count += 1
+                    changed_roots += int(upsert_root(live_conn, root, synced_at=synced_at))
+                    upsert_candidate(
+                        live_conn,
+                        LiveCandidate(
+                            root_name=root.name,
+                            host=root.name,
+                            source="broad_sweep",
+                            source_detail="previous broad-sweep endpoint",
+                            priority=70 if root.has_ds else 60,
+                            topology_resource_hash=root.resource_hash,
+                        ),
+                        seen_at=synced_at,
+                    )
+                for candidate in _dns_evidence_candidates(topology):
+                    upsert_candidate(live_conn, candidate, seen_at=synced_at)
+                finish_topology_sync(live_conn, synced_at=synced_at)
+                set_live_meta(live_conn, "topology_synced_at", synced_at)
+                set_live_meta(live_conn, "topology_source", str(source))
+                set_live_meta(live_conn, "topology_height", str(meta.get("last_indexed_height") or ""))
+                set_live_meta(
+                    live_conn, "topology_tip_hash", str(meta.get("last_indexed_tip_hash") or "")
                 )
-                for owner in _json_list(row["tlsa_owners"]):
-                    host = host_from_dns_owner(root.name, str(owner), "TLSA")
-                    if host and host != root.name:
-                        upsert_candidate(
-                            live_conn,
-                            LiveCandidate(
-                                root_name=root.name,
-                                host=host,
-                                source="tlsa_owner",
-                                source_detail=str(owner),
-                                priority=90,
-                                topology_resource_hash=root.resource_hash,
-                            ),
-                            seen_at=synced_at,
-                        )
-            for row in _promoted_sweep_root_rows(topology):
-                root = _root_from_row(row)
-                root_count += 1
-                changed_roots += int(upsert_root(live_conn, root, synced_at=synced_at))
-                upsert_candidate(
-                    live_conn,
-                    LiveCandidate(
-                        root_name=root.name,
-                        host=root.name,
-                        source="broad_sweep",
-                        source_detail="previous broad-sweep endpoint",
-                        priority=70 if root.has_ds else 60,
-                        topology_resource_hash=root.resource_hash,
-                    ),
-                    seen_at=synced_at,
-                )
-            for candidate in _dns_evidence_candidates(topology):
-                upsert_candidate(live_conn, candidate, seen_at=synced_at)
-            finish_topology_sync(live_conn, synced_at=synced_at)
-            set_live_meta(live_conn, "topology_synced_at", synced_at)
-            set_live_meta(live_conn, "topology_source", str(source))
-            set_live_meta(live_conn, "topology_height", str(meta.get("last_indexed_height") or ""))
-            set_live_meta(
-                live_conn, "topology_tip_hash", str(meta.get("last_indexed_tip_hash") or "")
-            )
-            set_live_meta(live_conn, "topology_generated_at", str(meta.get("generated_at") or ""))
-            set_live_meta(live_conn, "topology_fingerprint", _topology_fingerprint(meta, source))
+                set_live_meta(live_conn, "topology_generated_at", str(meta.get("generated_at") or ""))
+                set_live_meta(live_conn, "topology_fingerprint", _topology_fingerprint(meta, source))
+        finally:
+            drop_temp_ns_handoff_table(topology)
     candidate_count = int(
         live_conn.execute(
             "SELECT COUNT(*) FROM candidates WHERE active = 1 AND suppressed = 0"
@@ -250,6 +261,36 @@ def _prepare_candidate_names(conn: sqlite3.Connection) -> None:
         )
 
 
+def _prepare_hns_handoff_table(conn: sqlite3.Connection) -> None:
+    excluded = ",".join("?" for _ in NON_ACTIONABLE_PROVIDER_TYPES)
+    prepare_temp_ns_handoff_table(
+        conn,
+        f"""
+        SELECT n.name
+        FROM names n
+        JOIN resource_summary rs ON rs.name = n.name
+        LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
+        WHERE COALESCE(n.expired, 0) = 0
+          AND COALESCE(ps.provider_type, 'unknown') NOT IN ({excluded})
+          AND COALESCE(rs.has_ns, 0) = 1
+          AND COALESCE(rs.has_glue, 0) = 0
+          AND COALESCE(rs.has_synth, 0) = 0
+        """,
+        NON_ACTIONABLE_PROVIDER_TYPES,
+    )
+
+
+def _add_handoff_candidate_names(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        f"""
+        INSERT OR IGNORE INTO live_candidate_names(name)
+        SELECT name
+        FROM {NS_HANDOFF_TABLE}
+        WHERE hns_live_actionable_ip(ns_handoff_bootstrap_ip) = 1
+        """
+    )
+
+
 def _promoted_sweep_root_names(live_conn: sqlite3.Connection) -> list[str]:
     rows = live_conn.execute(
         """
@@ -314,6 +355,8 @@ def _topology_root_rows(conn: sqlite3.Connection):
           n.name, n.provider_guess, n.last_seen_height, rs.resource_hash,
           rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.ds_records,
           rs.has_ds, rs.has_ns, rs.has_glue, rs.has_synth,
+          enh.ns_handoff_ns, enh.ns_handoff_root,
+          enh.ns_handoff_bootstrap_ip, enh.ns_handoff_bootstrap_field,
           COALESCE(ps.provider_type, 'unknown') AS provider_type,
           COALESCE(tes.has_tlsa, 0) AS has_tlsa,
           COALESCE(tes.tlsa_owners, '[]') AS tlsa_owners
@@ -322,6 +365,7 @@ def _topology_root_rows(conn: sqlite3.Connection):
         JOIN resource_summary rs ON rs.name = n.name
         LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
         LEFT JOIN tlsa_evidence_summary tes ON tes.name = n.name
+        LEFT JOIN {NS_HANDOFF_TABLE} enh ON enh.name = n.name
         WHERE COALESCE(n.expired, 0) = 0
           AND n.onchain_class IN ({ROOT_CLASSES_SQL})
           AND COALESCE(ps.provider_type, 'unknown') NOT IN ({excluded})
@@ -339,6 +383,8 @@ def _promoted_sweep_root_rows(conn: sqlite3.Connection):
           n.name, n.provider_guess, n.last_seen_height, rs.resource_hash,
           rs.ns_names, rs.glue4, rs.glue6, rs.synth4, rs.synth6, rs.ds_records,
           rs.has_ds, rs.has_ns, rs.has_glue, rs.has_synth,
+          enh.ns_handoff_ns, enh.ns_handoff_root,
+          enh.ns_handoff_bootstrap_ip, enh.ns_handoff_bootstrap_field,
           COALESCE(ps.provider_type, 'unknown') AS provider_type,
           0 AS has_tlsa,
           '[]' AS tlsa_owners
@@ -346,6 +392,7 @@ def _promoted_sweep_root_rows(conn: sqlite3.Connection):
         CROSS JOIN names n ON n.name = candidate.name
         JOIN resource_summary rs ON rs.name = n.name
         LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
+        LEFT JOIN {NS_HANDOFF_TABLE} enh ON enh.name = n.name
         WHERE COALESCE(n.expired, 0) = 0
           AND COALESCE(ps.provider_type, 'unknown') NOT IN ({excluded})
           AND (
@@ -378,6 +425,7 @@ def _root_from_row(row: sqlite3.Row) -> TopologyRoot:
         ds_records=[item for item in _json_list(row["ds_records"]) if isinstance(item, dict)],
         has_ds=bool(row["has_ds"]),
         strict_ready=bool(bootstrap),
+        ns_handoffs=_ns_handoffs_from_row(row),
     )
 
 
@@ -388,6 +436,10 @@ def _apex_candidate(root: TopologyRoot, *, has_tlsa: bool) -> LiveCandidate:
         priority = 70
     elif root.strict_ready:
         priority = 60
+    elif root.ns_handoffs and root.has_ds:
+        priority = 65
+    elif root.ns_handoffs:
+        priority = 55
     elif root.has_ds:
         priority = 50
     elif root.provider_type == "external_dns":
@@ -397,10 +449,36 @@ def _apex_candidate(root: TopologyRoot, *, has_tlsa: bool) -> LiveCandidate:
     return LiveCandidate(
         root_name=root.name,
         host=root.name,
-        source="apex",
-        source_detail="root apex",
+        source="indirect_ns_handoff" if root.ns_handoffs else "apex",
+        source_detail=_apex_source_detail(root),
         priority=priority,
         topology_resource_hash=root.resource_hash,
+    )
+
+
+def _ns_handoffs_from_row(row: sqlite3.Row) -> list[dict[str, Any]]:
+    nameserver = str(row["ns_handoff_ns"] or "").strip().lower().rstrip(".")
+    root_name = str(row["ns_handoff_root"] or "").strip().lower().rstrip(".")
+    bootstrap = str(row["ns_handoff_bootstrap_ip"] or "").strip()
+    if not nameserver or not root_name or not _is_actionable_bootstrap_ip(bootstrap):
+        return []
+    return [
+        {
+            "nameserver": nameserver,
+            "root_name": root_name,
+            "bootstrap_addresses": [bootstrap],
+            "bootstrap_field": str(row["ns_handoff_bootstrap_field"] or ""),
+        }
+    ]
+
+
+def _apex_source_detail(root: TopologyRoot) -> str:
+    if not root.ns_handoffs:
+        return "root apex"
+    handoff = root.ns_handoffs[0]
+    return (
+        f"HNS handoff {handoff['nameserver']} via {handoff['root_name']} "
+        f"({handoff.get('bootstrap_field') or 'bootstrap'})"
     )
 
 
@@ -418,6 +496,7 @@ def _dns_evidence_candidates(
         JOIN resource_summary rs ON rs.name = n.name
         LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
         LEFT JOIN tlsa_evidence_summary tes ON tes.name = n.name
+        LEFT JOIN {NS_HANDOFF_TABLE} enh ON enh.name = n.name
         WHERE COALESCE(n.expired, 0) = 0
           AND LOWER(de.status) = 'ok'
           AND (

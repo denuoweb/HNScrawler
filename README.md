@@ -7,7 +7,7 @@ HNScrawler builds a compact SQLite database from HSD-derived root state, classif
 The current analysis answers:
 
 - Which active names publish SYNTH or delegated nameserver bootstrap material?
-- Which delegated names are missing parent-side GLUE?
+- Which delegated names have no direct GLUE, and which instead have an indexed HNS nameserver handoff?
 - Which active names publish DS records?
 - Which roots have an authoritative or authenticated HTTPS TLSA answer in stored DNS evidence?
 - Which DS names still lack stored TLSA proof and need verification before generator handoff?
@@ -17,7 +17,8 @@ The current analysis answers:
 
 - `tlsa_present`: parent DS is present and stored delegated-DNS evidence contains an authoritative or authenticated HTTPS TLSA answer.
 - `tlsa_gap`: parent DS is present, but stored DNS evidence does not prove TLSA presence.
-- `missing_glue`: delegation exists but parent-side GLUE bootstrap is missing.
+- `indirect_ns_handoff`: direct GLUE is absent, but an active HNS root can bootstrap a delegated nameserver host; the handoff still needs authority verification.
+- `missing_glue`: delegation has neither direct GLUE nor an indexed HNS nameserver handoff.
 - `bootstrap_ready`: SYNTH or delegated GLUE bootstrap exists; the next step is DNSSEC, DS, and TLSA.
 - `non_actionable`: expired, parked/default, resolver infrastructure, empty, or unsupported resources.
 
