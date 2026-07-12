@@ -107,6 +107,82 @@ def test_dns_probe_resolves_delegation_hosts_when_glue_is_missing(monkeypatch):
     assert result.addresses == ["93.184.216.34"]
 
 
+def test_dns_probe_uses_hns_doh_when_direct_bootstrap_is_unavailable(monkeypatch):
+    tlsa = dns.rrset.from_text(
+        "_443._tcp.example.",
+        300,
+        "IN",
+        "TLSA",
+        "3 1 1 " + "ab" * 32,
+    )
+    responses = {
+        ("example", "A"): _authenticated_response(_response_with_a("example", "93.184.216.34")),
+        ("example", "AAAA"): _authenticated_response(_empty_response("example", "AAAA")),
+        ("_443._tcp.example", "TLSA"): _authenticated_response(
+            _response_with_rrset(tlsa)
+        ),
+    }
+    doh_calls = []
+
+    def doh(qname, rrtype, *, resolver_url, timeout):
+        doh_calls.append((qname, rrtype, resolver_url, timeout))
+        return responses[(qname, rrtype)]
+
+    monkeypatch.setattr("hns_topology.live_probe._hns_doh_query", doh)
+    candidate = {
+        **_candidate(),
+        "bootstrap_addresses": [],
+        "ns_names": [],
+        "ns_handoffs": [],
+    }
+
+    result = probe_dns(
+        candidate,
+        config=ProbeConfig(hns_doh_url="https://resolver.example/dns-query"),
+    )
+
+    assert doh_calls == [
+        ("example", "A", "https://resolver.example/dns-query", 5.0),
+        ("example", "AAAA", "https://resolver.example/dns-query", 5.0),
+        ("_443._tcp.example", "TLSA", "https://resolver.example/dns-query", 5.0),
+    ]
+    assert result.status == "resolved"
+    assert result.addresses == ["93.184.216.34"]
+    assert result.dnssec_status == "resolver_validated"
+    assert result.tlsa_status == "present_secure"
+    assert result.tlsa_secure is True
+
+
+def test_dns_probe_falls_back_to_hns_doh_after_direct_authority_has_no_address(monkeypatch):
+    direct_queries = []
+
+    def authority(_servers, qname, rrtype, *, timeout):
+        direct_queries.append((qname, rrtype, timeout))
+        return _empty_response(qname, rrtype), "93.184.216.53"
+
+    def doh(qname, rrtype, *, resolver_url, timeout):
+        if rrtype == "A":
+            return _authenticated_response(_response_with_a(qname, "93.184.216.34"))
+        return _authenticated_response(_empty_response(qname, rrtype))
+
+    monkeypatch.setattr("hns_topology.live_probe._authoritative_query", authority)
+    monkeypatch.setattr("hns_topology.live_probe._hns_doh_query", doh)
+
+    result = probe_dns(
+        _candidate(),
+        config=ProbeConfig(hns_doh_url="https://resolver.example/dns-query"),
+    )
+
+    assert direct_queries == [
+        ("example", "A", 5.0),
+        ("example", "AAAA", 5.0),
+        ("_443._tcp.example", "TLSA", 5.0),
+    ]
+    assert result.status == "resolved"
+    assert result.addresses == ["93.184.216.34"]
+    assert result.dnssec_status == "resolver_validated"
+
+
 def test_probe_classifies_http_response_when_https_fails(monkeypatch):
     monkeypatch.setattr(
         "hns_topology.live_probe.probe_dns",
@@ -295,7 +371,16 @@ def _empty_response(qname, rrtype):
 
 def _response_with_a(qname: str, address: str):
     rrset = dns.rrset.from_text(f"{qname}.", 300, "IN", "A", address)
-    response = dns.message.make_response(dns.message.make_query(qname, "A"))
+    return _response_with_rrset(rrset)
+
+
+def _response_with_rrset(rrset):
+    response = dns.message.make_response(dns.message.make_query(rrset.name, rrset.rdtype))
     response.flags |= dns.flags.AA
     response.answer.append(rrset)
+    return response
+
+
+def _authenticated_response(response):
+    response.flags |= dns.flags.AD
     return response

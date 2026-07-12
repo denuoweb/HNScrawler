@@ -13,6 +13,7 @@ from .live_db import (
 )
 from .live_delegations import refresh_delegation_groups
 from .live_exporter import export_live_site, validate_live_site
+from .live_probe import DEFAULT_HNS_DOH_URL
 from .live_runner import ProbeBatchConfig, run_probe_batch
 from .live_sweep import (
     PRIORITY_SWEEP_TIERS,
@@ -218,6 +219,7 @@ def _add_probe_options(command: argparse.ArgumentParser) -> None:
     command.add_argument("--max-nameservers", type=int, default=2)
     command.add_argument("--max-addresses", type=int, default=2)
     command.add_argument("--fallback-resolver")
+    command.add_argument("--hns-doh-url", default=DEFAULT_HNS_DOH_URL)
 
 
 def _add_sweep_options(command: argparse.ArgumentParser) -> None:
@@ -230,6 +232,7 @@ def _add_sweep_options(command: argparse.ArgumentParser) -> None:
     command.add_argument("--max-nameservers", type=int, default=2)
     command.add_argument("--max-addresses", type=int, default=2)
     command.add_argument("--fallback-resolver")
+    command.add_argument("--hns-doh-url", default=DEFAULT_HNS_DOH_URL)
     command.add_argument("--tiers", default=",".join(SWEEP_TIERS))
 
 
@@ -260,6 +263,7 @@ def _probe_config(args: argparse.Namespace) -> ProbeBatchConfig:
         max_nameservers=max(1, args.max_nameservers),
         max_addresses=max(1, args.max_addresses),
         fallback_resolver=args.fallback_resolver,
+        hns_doh_url=args.hns_doh_url,
     )
 
 
@@ -274,6 +278,7 @@ def _sweep_config(args: argparse.Namespace) -> SweepBatchConfig:
         max_nameservers=args.max_nameservers,
         max_addresses=args.max_addresses,
         fallback_resolver=args.fallback_resolver,
+        hns_doh_url=args.hns_doh_url,
         tiers=args.tiers,
     )
 
@@ -289,6 +294,7 @@ def _cycle_sweep_config(args: argparse.Namespace) -> SweepBatchConfig:
         max_nameservers=args.sweep_max_nameservers,
         max_addresses=args.sweep_max_addresses,
         fallback_resolver=args.fallback_resolver,
+        hns_doh_url=args.hns_doh_url,
         tiers=args.sweep_tiers,
     )
 
@@ -304,6 +310,7 @@ def _build_sweep_config(
     max_nameservers: int,
     max_addresses: int,
     fallback_resolver: str | None,
+    hns_doh_url: str | None,
     tiers: str,
 ) -> SweepBatchConfig:
     if limit < 0:
@@ -328,6 +335,7 @@ def _build_sweep_config(
         max_nameservers=max(1, max_nameservers),
         max_addresses=max(1, max_addresses),
         fallback_resolver=fallback_resolver,
+        hns_doh_url=hns_doh_url,
         tiers=selected_tiers,
     )
 

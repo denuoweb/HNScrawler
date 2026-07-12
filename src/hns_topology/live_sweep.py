@@ -28,7 +28,7 @@ from .live_db import (
 )
 from .live_delegations import delegation_group_rows
 from .live_models import ONLINE_CATEGORIES, LiveCandidate, TopologyRoot
-from .live_probe import ProbeConfig, probe_host
+from .live_probe import DEFAULT_HNS_DOH_URL, ProbeConfig, probe_host
 from .timeutil import utc_now
 
 SWEEP_TIERS = (
@@ -77,6 +77,7 @@ class SweepBatchConfig:
     max_nameservers: int = 2
     max_addresses: int = 2
     fallback_resolver: str | None = None
+    hns_doh_url: str | None = DEFAULT_HNS_DOH_URL
     tiers: tuple[str, ...] = SWEEP_TIERS
 
 
@@ -184,6 +185,7 @@ def run_sweep_batch(
         max_nameservers=config.max_nameservers,
         max_addresses=config.max_addresses,
         fallback_resolver=config.fallback_resolver,
+        hns_doh_url=config.hns_doh_url,
     )
     limiter = AdaptiveAuthorityLimiter(
         min_delay_ms=config.min_delay_ms,

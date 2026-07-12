@@ -13,7 +13,7 @@ from .live_db import (
     upsert_discovered_hosts,
 )
 from .live_models import ONLINE_CATEGORIES
-from .live_probe import ProbeConfig, RateLimiter, probe_host
+from .live_probe import DEFAULT_HNS_DOH_URL, ProbeConfig, RateLimiter, probe_host
 
 
 @dataclass(frozen=True)
@@ -25,6 +25,7 @@ class ProbeBatchConfig:
     max_nameservers: int = 2
     max_addresses: int = 2
     fallback_resolver: str | None = None
+    hns_doh_url: str | None = DEFAULT_HNS_DOH_URL
 
 
 def run_probe_batch(conn: sqlite3.Connection, *, config: ProbeBatchConfig) -> dict[str, Any]:
@@ -34,6 +35,7 @@ def run_probe_batch(conn: sqlite3.Connection, *, config: ProbeBatchConfig) -> di
         max_nameservers=config.max_nameservers,
         max_addresses=config.max_addresses,
         fallback_resolver=config.fallback_resolver,
+        hns_doh_url=config.hns_doh_url,
     )
     with conn:
         run_id = begin_probe_run(

@@ -87,6 +87,8 @@ Public categories are:
 
 `LIVE_FALLBACK_RESOLVER` may name a trusted recursive resolver IP for NS-host and external CNAME resolution. When unset, the VM's system resolver is used. Resolved addresses are still restricted to global unicast before any authoritative DNS or web connection is attempted.
 
+`LIVE_HNS_DOH_URL` defaults to `https://hnsdoh.com/dns-query`. The scanner uses this HNS-aware DNS-over-HTTPS resolver only when direct authoritative bootstrap cannot produce an address. If its response carries the DNS `AD` bit, the scanner treats the returned TLSA record as resolver-validated DANE evidence; set the value empty to disable that fallback.
+
 The public directory separates HTTPS endpoints, HTTP endpoints, and no-endpoint targets. A previously listed host remains degraded after one failed cycle and moves to the no-endpoint category after a second consecutive failure. Confirmed offline candidates use increasing retry intervals, while listed sites are checked every seven days. A changed resource and candidates first seen in the newest topology refresh run ahead of routine weekly rechecks and the older discovery backlog.
 
 ## Local Commands

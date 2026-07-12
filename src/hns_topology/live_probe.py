@@ -8,6 +8,7 @@ import threading
 import time
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 import dns.dnssec
 import dns.exception
@@ -32,6 +33,7 @@ from .live_models import (
 from .timeutil import utc_now
 
 USER_AGENT = "Denuo-HNS-Live-Directory/0.1"
+DEFAULT_HNS_DOH_URL = "https://hnsdoh.com/dns-query"
 
 
 @dataclass(frozen=True)
@@ -40,6 +42,7 @@ class ProbeConfig:
     max_nameservers: int = 3
     max_addresses: int = 4
     fallback_resolver: str | None = None
+    hns_doh_url: str | None = DEFAULT_HNS_DOH_URL
     user_agent: str = USER_AGENT
 
 
@@ -185,6 +188,9 @@ def probe_dns(
             limit=config.max_nameservers,
         )
     if not servers:
+        doh_result = _resolve_hns_doh(candidate, config=config, include_dns_details=include_dns_details)
+        if doh_result is not None:
+            return doh_result
         return DnsProbeResult(
             status="no_bootstrap", failure_reason="no_public_authoritative_address"
         )
@@ -231,6 +237,10 @@ def probe_dns(
             discovered.update(_discovered_hosts(response, root_name))
 
     addresses = [address for address in _dedupe(addresses) if _public_ip(address)]
+    if not addresses:
+        doh_result = _resolve_hns_doh(candidate, config=config, include_dns_details=include_dns_details)
+        if doh_result is not None:
+            return doh_result
     if not include_dns_details:
         tlsa_status = "not_checked"
     elif tlsa_records:
@@ -256,6 +266,72 @@ def probe_dns(
         discovered_hosts=sorted(discovered),
         server=tlsa_server or server or dnskey_server,
         failure_reason=failure_reason,
+    )
+
+
+def _resolve_hns_doh(
+    candidate: dict[str, Any],
+    *,
+    config: ProbeConfig,
+    include_dns_details: bool,
+) -> DnsProbeResult | None:
+    """Resolve an HNS name through a trusted HNS-aware DoH recursive resolver.
+
+    Direct parent-side bootstrap remains the preferred path. This fallback is for
+    HNS roots whose listed nameserver is not reachable as conventional
+    authoritative DNS, while an HNS-aware recursive resolver can still validate
+    and resolve the name as browsers do.
+    """
+
+    resolver_url = str(config.hns_doh_url or "").strip()
+    if not resolver_url:
+        return None
+    root_name = str(candidate["root_name"])
+    host = str(candidate["host"])
+    addresses, address_responses, discovered = _resolve_hns_doh_addresses(
+        host,
+        root_name,
+        resolver_url=resolver_url,
+        timeout=config.timeout,
+    )
+    addresses = [address for address in _dedupe(addresses) if _public_ip(address)]
+    if not addresses:
+        return None
+
+    if include_dns_details:
+        tlsa_records, tlsa_secure, tlsa_response = _resolve_hns_doh_tlsa(
+            host,
+            resolver_url=resolver_url,
+            timeout=config.timeout,
+        )
+    else:
+        tlsa_records, tlsa_secure, tlsa_response = [], False, None
+    for response in [*address_responses, tlsa_response]:
+        if response is not None:
+            discovered.update(_discovered_hosts(response, root_name))
+
+    authenticated = bool(address_responses) and all(
+        response.flags & dns.flags.AD for response in address_responses
+    )
+    if include_dns_details:
+        tlsa_status = (
+            "present_secure"
+            if tlsa_records and tlsa_secure
+            else "present_insecure"
+            if tlsa_records
+            else "missing"
+        )
+    else:
+        tlsa_status = "not_checked"
+    return DnsProbeResult(
+        status="resolved",
+        addresses=addresses[: config.max_addresses],
+        dnssec_status="resolver_validated" if authenticated else "resolver_unverified",
+        tlsa_status=tlsa_status,
+        tlsa_records=tlsa_records,
+        tlsa_secure=tlsa_secure,
+        discovered_hosts=sorted(discovered),
+        server=resolver_url,
     )
 
 
@@ -368,6 +444,129 @@ def _resolve_addresses(
             server_used,
         )
     return [], responses, discovered, server_used
+
+
+def _resolve_hns_doh_addresses(
+    host: str,
+    root_name: str,
+    *,
+    resolver_url: str,
+    timeout: float,
+) -> tuple[list[str], list[dns.message.Message], set[str]]:
+    current = host
+    responses: list[dns.message.Message] = []
+    discovered: set[str] = set()
+    for _ in range(6):
+        addresses: list[str] = []
+        cname_target = ""
+        current_responses: list[dns.message.Message] = []
+        for rrtype in ("A", "AAAA"):
+            response = _hns_doh_query(
+                current,
+                rrtype,
+                resolver_url=resolver_url,
+                timeout=timeout,
+            )
+            if response is None:
+                continue
+            responses.append(response)
+            current_responses.append(response)
+            discovered.update(_discovered_hosts(response, root_name))
+            owner = dns.name.from_text(_fqdn(current))
+            rrset = _find_rrset(response, owner, dns.rdatatype.from_text(rrtype))
+            if rrset is not None:
+                addresses.extend(item.to_text() for item in rrset)
+            if not cname_target:
+                cname_target = _cname_target(response, owner)
+        if addresses:
+            return addresses, responses, discovered
+        if not cname_target:
+            return [], responses, discovered
+        discovered_host = host_from_dns_owner(root_name, cname_target, "A")
+        if discovered_host:
+            current = discovered_host
+            continue
+        return [], current_responses, discovered
+    return [], responses, discovered
+
+
+def _resolve_hns_doh_tlsa(
+    host: str,
+    *,
+    resolver_url: str,
+    timeout: float,
+) -> tuple[list[dict[str, Any]], bool, dns.message.Message | None]:
+    owner_text = f"_443._tcp.{host}"
+    response = _hns_doh_query(
+        owner_text,
+        "TLSA",
+        resolver_url=resolver_url,
+        timeout=timeout,
+    )
+    if response is None:
+        return [], False, None
+    owner = dns.name.from_text(_fqdn(owner_text))
+    rrset = _find_rrset(response, owner, dns.rdatatype.TLSA)
+    if rrset is None:
+        return [], False, response
+    records = [
+        {
+            "owner": owner.to_text(),
+            "usage": int(item.usage),
+            "selector": int(item.selector),
+            "matching_type": int(item.mtype),
+            "association": bytes(item.cert).hex(),
+        }
+        for item in rrset
+    ]
+    return records, bool(response.flags & dns.flags.AD), response
+
+
+def _hns_doh_query(
+    qname: str,
+    rrtype: str,
+    *,
+    resolver_url: str,
+    timeout: float,
+) -> dns.message.Message | None:
+    """Query an RFC 8484 HNS DoH endpoint without optional HTTP client deps."""
+
+    try:
+        parts = urlsplit(resolver_url)
+        if parts.scheme != "https" or not parts.hostname:
+            return None
+        path = parts.path or "/dns-query"
+        if parts.query:
+            path = f"{path}?{parts.query}"
+        query = dns.message.make_query(qname, rrtype, want_dnssec=True)
+        connection = http.client.HTTPSConnection(
+            parts.hostname,
+            parts.port or 443,
+            timeout=timeout,
+            context=ssl.create_default_context(),
+        )
+        try:
+            connection.request(
+                "POST",
+                path,
+                body=query.to_wire(),
+                headers={
+                    "Accept": "application/dns-message",
+                    "Content-Type": "application/dns-message",
+                },
+            )
+            response = connection.getresponse()
+            wire = response.read()
+        finally:
+            connection.close()
+        if response.status != 200:
+            return None
+        message = dns.message.from_wire(wire)
+    except (OSError, TimeoutError, ValueError, dns.exception.DNSException):
+        return None
+    if message.rcode() not in {dns.rcode.NOERROR, dns.rcode.NXDOMAIN}:
+        return None
+    return message
 
 
 def _resolve_tlsa(

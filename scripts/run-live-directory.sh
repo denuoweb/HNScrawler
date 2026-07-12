@@ -13,6 +13,7 @@ LIVE_TIMEOUT="${LIVE_TIMEOUT:-2}"
 LIVE_MAX_NAMESERVERS="${LIVE_MAX_NAMESERVERS:-2}"
 LIVE_MAX_ADDRESSES="${LIVE_MAX_ADDRESSES:-2}"
 LIVE_FALLBACK_RESOLVER="${LIVE_FALLBACK_RESOLVER:-}"
+LIVE_HNS_DOH_URL="${LIVE_HNS_DOH_URL:-https://hnsdoh.com/dns-query}"
 LIVE_SYNC_TOPOLOGY="${LIVE_SYNC_TOPOLOGY:-0}"
 LIVE_SWEEP_LIMIT="${LIVE_SWEEP_LIMIT:-500}"
 LIVE_SWEEP_PAGE_SIZE="${LIVE_SWEEP_PAGE_SIZE:-1000}"
@@ -65,6 +66,9 @@ args=(cycle
   --sweep-tiers "$LIVE_SWEEP_TIERS")
 if [[ -n "$LIVE_FALLBACK_RESOLVER" ]]; then
   args+=(--fallback-resolver "$LIVE_FALLBACK_RESOLVER")
+fi
+if [[ -n "$LIVE_HNS_DOH_URL" ]]; then
+  args+=(--hns-doh-url "$LIVE_HNS_DOH_URL")
 fi
 if [[ "$LIVE_SYNC_TOPOLOGY" == "1" ]]; then
   args+=(--sync-topology)
