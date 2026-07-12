@@ -436,7 +436,7 @@ def _topology_page(
           rs.has_ds, rs.has_ns, rs.has_glue, rs.has_synth,
           COALESCE(ps.provider_type, 'unknown') AS provider_type
         FROM names n
-        JOIN resource_summary rs ON rs.name = n.name
+        CROSS JOIN resource_summary rs ON rs.name = n.name
         LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
         WHERE COALESCE(n.expired, 0) = 0
           AND n.name > ?

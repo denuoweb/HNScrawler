@@ -39,6 +39,27 @@ def test_sweep_prioritizes_ds_bootstrap_before_other_root_signals(tmp_path):
     ]
 
 
+def test_sweep_pages_from_the_name_cursor(tmp_path):
+    topology_db = tmp_path / "topology.sqlite"
+    _seed_topology(topology_db)
+
+    with sqlite3.connect(topology_db) as conn:
+        plan = conn.execute(
+            """
+            EXPLAIN QUERY PLAN
+            SELECT n.name
+            FROM names n
+            CROSS JOIN resource_summary rs ON rs.name = n.name
+            WHERE n.name > ?
+            ORDER BY n.name
+            LIMIT ?
+            """,
+            ("", 10),
+        ).fetchall()
+
+    assert any("SEARCH n USING COVERING INDEX" in detail for *_, detail in plan)
+
+
 def test_sweep_promotes_http_endpoint_but_keeps_offline_root_compact(tmp_path, monkeypatch):
     topology_db = tmp_path / "topology.sqlite"
     live_db = tmp_path / "live.sqlite"
