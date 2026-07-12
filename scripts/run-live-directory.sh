@@ -21,6 +21,7 @@ LIVE_SWEEP_AUTHORITY_DELAY_MS="${LIVE_SWEEP_AUTHORITY_DELAY_MS:-500}"
 LIVE_SWEEP_TIMEOUT="${LIVE_SWEEP_TIMEOUT:-2}"
 LIVE_SWEEP_MAX_NAMESERVERS="${LIVE_SWEEP_MAX_NAMESERVERS:-2}"
 LIVE_SWEEP_MAX_ADDRESSES="${LIVE_SWEEP_MAX_ADDRESSES:-2}"
+LIVE_SWEEP_TIERS="${LIVE_SWEEP_TIERS:-shared_delegation}"
 
 mountpoint -q /mnt/hns-topology || {
   echo "/mnt/hns-topology is not mounted; refusing to use the web VM boot disk" >&2
@@ -59,7 +60,8 @@ args=(cycle
   --sweep-authority-delay-ms "$LIVE_SWEEP_AUTHORITY_DELAY_MS"
   --sweep-timeout "$LIVE_SWEEP_TIMEOUT"
   --sweep-max-nameservers "$LIVE_SWEEP_MAX_NAMESERVERS"
-  --sweep-max-addresses "$LIVE_SWEEP_MAX_ADDRESSES")
+  --sweep-max-addresses "$LIVE_SWEEP_MAX_ADDRESSES"
+  --sweep-tiers "$LIVE_SWEEP_TIERS")
 if [[ -n "$LIVE_FALLBACK_RESOLVER" ]]; then
   args+=(--fallback-resolver "$LIVE_FALLBACK_RESOLVER")
 fi

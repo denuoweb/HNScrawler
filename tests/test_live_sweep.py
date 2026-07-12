@@ -10,7 +10,13 @@ from hns_topology.live_db import (
 from hns_topology.live_delegations import refresh_delegation_groups
 from hns_topology.live_models import HostProbeResult
 from hns_topology.live_probe import ProbeConfig, probe_dns
-from hns_topology.live_sweep import SweepBatchConfig, run_sweep_batch, select_sweep_candidates
+from hns_topology.live_sweep import (
+    PRIORITY_SWEEP_TIERS,
+    SweepBatchConfig,
+    parse_sweep_tiers,
+    run_sweep_batch,
+    select_sweep_candidates,
+)
 
 
 def test_sweep_prioritizes_ds_bootstrap_before_other_root_signals(tmp_path):
@@ -39,6 +45,14 @@ def test_sweep_prioritizes_ds_bootstrap_before_other_root_signals(tmp_path):
         "ds_delegated",
         "delegated",
     ]
+
+
+def test_priority_sweep_tiers_exclude_unindexed_generic_backlog():
+    assert PRIORITY_SWEEP_TIERS == ("shared_delegation",)
+    assert parse_sweep_tiers("shared_delegation,ds_bootstrap") == (
+        "shared_delegation",
+        "ds_bootstrap",
+    )
 
 
 def test_sweep_pages_from_the_name_cursor(tmp_path):

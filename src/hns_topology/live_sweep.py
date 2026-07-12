@@ -38,6 +38,7 @@ SWEEP_TIERS = (
     "ds_delegated",
     "delegated",
 )
+PRIORITY_SWEEP_TIERS = ("shared_delegation",)
 UNKNOWN_AUTHORITY_SAMPLES = 3
 EXCLUDED_BOOTSTRAP_IPS = frozenset([*BULK_DEFAULT_RESOURCE_IPS, *KNOWN_HNS_RESOLVER_IPS])
 
@@ -77,6 +78,16 @@ class SweepBatchConfig:
     max_addresses: int = 2
     fallback_resolver: str | None = None
     tiers: tuple[str, ...] = SWEEP_TIERS
+
+
+def parse_sweep_tiers(value: str) -> tuple[str, ...]:
+    tiers = tuple(part.strip() for part in str(value).split(",") if part.strip())
+    if not tiers:
+        raise ValueError("at least one sweep tier is required")
+    unknown = sorted(set(tiers).difference(SWEEP_TIERS))
+    if unknown:
+        raise ValueError(f"unknown sweep tiers: {', '.join(unknown)}")
+    return tiers
 
 
 class AdaptiveAuthorityLimiter:

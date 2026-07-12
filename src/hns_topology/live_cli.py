@@ -14,7 +14,13 @@ from .live_db import (
 from .live_delegations import refresh_delegation_groups
 from .live_exporter import export_live_site, validate_live_site
 from .live_runner import ProbeBatchConfig, run_probe_batch
-from .live_sweep import SweepBatchConfig, run_sweep_batch
+from .live_sweep import (
+    PRIORITY_SWEEP_TIERS,
+    SWEEP_TIERS,
+    SweepBatchConfig,
+    parse_sweep_tiers,
+    run_sweep_batch,
+)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -215,6 +221,7 @@ def _add_sweep_options(command: argparse.ArgumentParser) -> None:
     command.add_argument("--max-nameservers", type=int, default=2)
     command.add_argument("--max-addresses", type=int, default=2)
     command.add_argument("--fallback-resolver")
+    command.add_argument("--tiers", default=",".join(SWEEP_TIERS))
 
 
 def _add_cycle_sweep_options(command: argparse.ArgumentParser) -> None:
@@ -226,6 +233,7 @@ def _add_cycle_sweep_options(command: argparse.ArgumentParser) -> None:
     command.add_argument("--sweep-timeout", type=float, default=2.0)
     command.add_argument("--sweep-max-nameservers", type=int, default=2)
     command.add_argument("--sweep-max-addresses", type=int, default=2)
+    command.add_argument("--sweep-tiers", default=",".join(PRIORITY_SWEEP_TIERS))
 
 
 def _probe_config(args: argparse.Namespace) -> ProbeBatchConfig:
@@ -257,6 +265,7 @@ def _sweep_config(args: argparse.Namespace) -> SweepBatchConfig:
         max_nameservers=args.max_nameservers,
         max_addresses=args.max_addresses,
         fallback_resolver=args.fallback_resolver,
+        tiers=args.tiers,
     )
 
 
@@ -271,6 +280,7 @@ def _cycle_sweep_config(args: argparse.Namespace) -> SweepBatchConfig:
         max_nameservers=args.sweep_max_nameservers,
         max_addresses=args.sweep_max_addresses,
         fallback_resolver=args.fallback_resolver,
+        tiers=args.sweep_tiers,
     )
 
 
@@ -285,6 +295,7 @@ def _build_sweep_config(
     max_nameservers: int,
     max_addresses: int,
     fallback_resolver: str | None,
+    tiers: str,
 ) -> SweepBatchConfig:
     if limit < 0:
         raise SystemExit("--sweep-limit must be zero or greater")
@@ -294,6 +305,10 @@ def _build_sweep_config(
         raise SystemExit("--sweep-concurrency must be at least one")
     if timeout <= 0:
         raise SystemExit("--sweep-timeout must be positive")
+    try:
+        selected_tiers = parse_sweep_tiers(tiers)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     return SweepBatchConfig(
         limit=None if limit == 0 else limit,
         page_size=page_size,
@@ -304,6 +319,7 @@ def _build_sweep_config(
         max_nameservers=max(1, max_nameservers),
         max_addresses=max(1, max_addresses),
         fallback_resolver=fallback_resolver,
+        tiers=selected_tiers,
     )
 
 
