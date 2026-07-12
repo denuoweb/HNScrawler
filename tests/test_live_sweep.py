@@ -2,6 +2,7 @@ import json
 import sqlite3
 from dataclasses import replace
 
+from hns_topology.live_cli import parser
 from hns_topology.live_db import (
     connect_live,
     init_live_db,
@@ -53,6 +54,12 @@ def test_priority_sweep_tiers_exclude_unindexed_generic_backlog():
         "shared_delegation",
         "ds_bootstrap",
     )
+
+
+def test_cycle_defers_full_topology_sync_by_default():
+    base = ["cycle", "--db", "live.sqlite", "--topology-db", "topology.sqlite", "--out", "public"]
+    assert parser().parse_args(base).sync_topology is False
+    assert parser().parse_args([*base, "--sync-topology"]).sync_topology is True
 
 
 def test_sweep_pages_from_the_name_cursor(tmp_path):

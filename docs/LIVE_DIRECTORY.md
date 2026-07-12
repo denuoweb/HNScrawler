@@ -24,7 +24,7 @@ The live-directory deployment also installs an explicit `hns.denuoweb.com` Nginx
 
 The live database keeps one current status row per discovered root/host pair and upserts it on later checks; it does not retain raw DNS packets, HTTP bodies, certificates, or a row per probe attempt. Name details use compact sharded static lookups regenerated on export from those existing rows, so the detail view adds no SQLite tables or probe-history growth.
 
-The evidence queue compares the topology tip, height, provider-rule hash, and generation timestamp first. Candidate roots are refreshed only when that fingerprint changes; unchanged cycles do not scan the multi-gigabyte topology database. Full refreshes select indexed promising on-chain classes before joining resource details and stream rows into the live database instead of retaining the topology candidate set in memory.
+The evidence queue compares the topology tip, height, provider-rule hash, and generation timestamp first. Its full candidate refresh is intentionally separate from the continuous probe cycle: `LIVE_SYNC_TOPOLOGY=1` requests it explicitly. This prevents a changed weekly snapshot from delaying shared-delegation and HNS-handoff probes while the multi-gigabyte topology database is traversed.
 
 ## Candidate Policy
 

@@ -82,6 +82,11 @@ def parser() -> argparse.ArgumentParser:
     _add_db(cycle)
     cycle.add_argument("--topology-db", required=True)
     cycle.add_argument("--out", required=True)
+    cycle.add_argument(
+        "--sync-topology",
+        action="store_true",
+        help="Run the full evidence-candidate topology sync before probing.",
+    )
     _add_probe_options(cycle)
     _add_cycle_sweep_options(cycle)
     cycle.set_defaults(func=cmd_cycle)
@@ -174,7 +179,11 @@ def cmd_validate(args: argparse.Namespace) -> int:
 def cmd_cycle(args: argparse.Namespace) -> int:
     with connect_live(args.db) as conn:
         init_live_db(conn)
-        synced = sync_topology_if_changed(conn, args.topology_db)
+        synced = (
+            sync_topology_if_changed(conn, args.topology_db)
+            if args.sync_topology
+            else {"roots": 0, "candidates": 0, "changed_roots": 0, "skipped": True, "deferred": True}
+        )
         before = candidate_plan(conn)
         sweep = run_sweep_batch(
             conn,
