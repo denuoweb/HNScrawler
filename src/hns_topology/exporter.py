@@ -876,7 +876,7 @@ def write_hns_handoff_groups(conn: sqlite3.Connection, out: Path) -> int:
             groups.append({**group, "member_count": len(current_members), "members": current_members})
             return
         ds_members = [member for member in current_members if member["has_ds"]]
-        if ds_members:
+        if len(current_members) == 1 and ds_members:
             ds_priority_groups.append(
                 {**group, "member_count": len(ds_members), "members": ds_members}
             )

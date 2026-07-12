@@ -314,7 +314,15 @@ def test_handoff_index_keeps_only_bounded_route_cohorts(tmp_path):
                                 "resource_hash": "hash-shakeshift",
                             }
                         ],
-                    }
+                    },
+                    {
+                        "nameserver": "ns1.unbounded",
+                        "root_name": "unbounded",
+                        "bootstrap_addresses": ["8.8.4.4"],
+                        "bootstrap_field": "glue4",
+                        "member_count": 2,
+                        "members": members,
+                    },
                 ],
             }
         )

@@ -54,7 +54,7 @@ def refresh_hns_handoff_groups(
             group,
             signature=signature,
             minimum=1,
-            maximum=None,
+            maximum=1,
             priority=True,
         )
         if item is not None:
