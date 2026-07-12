@@ -124,7 +124,7 @@ Install or update the standalone repository, venv, static path, service, and con
 CONFIRM_LIVE_DIRECTORY_DEPLOY=1 scripts/gcloud-deploy-live-directory.sh
 ```
 
-Deployment initializes and exports an empty/current directory without issuing website probes. The timer's first probe cycle begins after two minutes. To start the configured sweep immediately during an intentional rollout:
+Deployment only initializes and exports the existing live database; it does not run a topology sync or website probe. The timer's first dedicated cycle begins after two minutes. To start the configured sweep immediately during an intentional rollout:
 
 ```bash
 CONFIRM_LIVE_DIRECTORY_DEPLOY=1 RUN_LIVE_DIRECTORY_NOW=1 scripts/gcloud-deploy-live-directory.sh

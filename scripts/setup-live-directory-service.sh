@@ -114,9 +114,6 @@ EOF
 
 live_command=(sudo -u "$LIVE_SERVICE_USER" -g "$LIVE_SERVICE_GROUP" .venv/bin/hns-live-directory)
 "${live_command[@]}" init --db "$LIVE_DB"
-if sudo -u "$LIVE_SERVICE_USER" -g "$LIVE_SERVICE_GROUP" test -r "$TOPOLOGY_DB"; then
-  "${live_command[@]}" sync --topology-db "$TOPOLOGY_DB" --db "$LIVE_DB"
-fi
 "${live_command[@]}" export --db "$LIVE_DB" --out "$LIVE_PUBLIC_DIR"
 "${live_command[@]}" validate --public-dir "$LIVE_PUBLIC_DIR"
 
