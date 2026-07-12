@@ -48,6 +48,7 @@ REQUIRED_PUBLIC_FILES = (
     "data/manifest.json",
     "data/names-pages.json",
     "data/overview-pages.json",
+    "data/hns-handoff-groups.json",
 )
 
 PUBLIC_JSON_FILES = tuple(path for path in REQUIRED_PUBLIC_FILES if path.endswith(".json"))
@@ -56,6 +57,7 @@ REQUIRED_MANIFEST_ARTIFACTS = (
     "summary.json",
     "overview-pages.json",
     "names-pages.json",
+    "hns-handoff-groups.json",
 )
 OPTIONAL_MANIFEST_ARTIFACTS = (
     "names.json",

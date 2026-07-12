@@ -27,9 +27,11 @@ LIVE_SWEEP_AUTHORITY_DELAY_MS="${LIVE_SWEEP_AUTHORITY_DELAY_MS:-500}"
 LIVE_SWEEP_TIMEOUT="${LIVE_SWEEP_TIMEOUT:-2}"
 LIVE_SWEEP_MAX_NAMESERVERS="${LIVE_SWEEP_MAX_NAMESERVERS:-2}"
 LIVE_SWEEP_MAX_ADDRESSES="${LIVE_SWEEP_MAX_ADDRESSES:-2}"
-LIVE_SWEEP_TIERS="${LIVE_SWEEP_TIERS:-shared_delegation}"
+LIVE_SWEEP_TIERS="${LIVE_SWEEP_TIERS:-hns_handoff,shared_delegation}"
 LIVE_DELEGATION_MIN_MEMBERS="${LIVE_DELEGATION_MIN_MEMBERS:-2}"
 LIVE_DELEGATION_MAX_MEMBERS="${LIVE_DELEGATION_MAX_MEMBERS:-250}"
+LIVE_HANDOFF_MIN_MEMBERS="${LIVE_HANDOFF_MIN_MEMBERS:-2}"
+LIVE_HANDOFF_MAX_MEMBERS="${LIVE_HANDOFF_MAX_MEMBERS:-250}"
 START_LIVE_TIMER="${START_LIVE_TIMER:-1}"
 START_LIVE_DELEGATION_INDEX_TIMER="${START_LIVE_DELEGATION_INDEX_TIMER:-1}"
 RUN_LIVE_DIRECTORY_NOW="${RUN_LIVE_DIRECTORY_NOW:-0}"
@@ -81,6 +83,8 @@ LIVE_SWEEP_MAX_ADDRESSES=$LIVE_SWEEP_MAX_ADDRESSES
 LIVE_SWEEP_TIERS=$LIVE_SWEEP_TIERS
 LIVE_DELEGATION_MIN_MEMBERS=$LIVE_DELEGATION_MIN_MEMBERS
 LIVE_DELEGATION_MAX_MEMBERS=$LIVE_DELEGATION_MAX_MEMBERS
+LIVE_HANDOFF_MIN_MEMBERS=$LIVE_HANDOFF_MIN_MEMBERS
+LIVE_HANDOFF_MAX_MEMBERS=$LIVE_HANDOFF_MAX_MEMBERS
 EOF
 
 sudo tee /etc/systemd/system/hns-live-directory.service >/dev/null <<EOF
@@ -111,10 +115,10 @@ EOF
 
 sudo tee /etc/systemd/system/hns-live-delegation-index.service >/dev/null <<EOF
 [Unit]
-Description=Refresh HNS shared delegation priority index
+Description=Refresh HNS live sweep priority indexes
 After=network-online.target
 Wants=network-online.target
-ConditionPathExists=$TOPOLOGY_SITE_DIR/data/nameservers/index.json
+ConditionPathExists=$TOPOLOGY_SITE_DIR/data/hns-handoff-groups.json
 
 [Service]
 Type=oneshot
@@ -152,7 +156,7 @@ EOF
 
 sudo tee /etc/systemd/system/hns-live-delegation-index.timer >/dev/null <<EOF
 [Unit]
-Description=Refresh HNS shared delegation priority index
+Description=Refresh HNS live sweep priority indexes
 
 [Timer]
 OnActiveSec=5m

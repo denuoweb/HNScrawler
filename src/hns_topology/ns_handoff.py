@@ -15,6 +15,8 @@ NS_HANDOFF_COLUMNS = (
     "ns_handoff_bootstrap_ip",
     "ns_handoff_bootstrap_field",
 )
+HANDOFF_COHORT_MIN_MEMBERS = 2
+HANDOFF_COHORT_MAX_MEMBERS = 250
 
 
 def normalize_nameserver(value: Any) -> str:

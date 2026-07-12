@@ -27,6 +27,8 @@ from .infra import KNOWN_HNS_RESOLVERS, NON_ACTIONABLE_PROVIDER_TYPES, resource_
 from .jsonutil import dumps_json, dumps_pretty
 from .models import ONCHAIN_CLASSES
 from .ns_handoff import (
+    HANDOFF_COHORT_MAX_MEMBERS,
+    HANDOFF_COHORT_MIN_MEMBERS,
     NS_HANDOFF_COLUMNS,
     NS_HANDOFF_TABLE,
     drop_temp_ns_handoff_table,
@@ -39,6 +41,7 @@ DATA_ARTIFACTS = (
     "summary.json",
     "overview-pages.json",
     "names-pages.json",
+    "hns-handoff-groups.json",
 )
 
 PAGE_SIZE = 1000
@@ -59,6 +62,13 @@ ACTIONABLE_PROVIDER_SQL = (
     f"COALESCE(ps.provider_type, 'unknown') NOT IN ({NON_ACTIONABLE_PROVIDER_TYPES_SQL})"
 )
 ACTIONABLE_EXPORT_SQL = f"provider_type NOT IN ({NON_ACTIONABLE_PROVIDER_TYPES_SQL})"
+HANDOFF_COHORT_CLASSES = (
+    "DIRECT_SYNTH",
+    "DELEGATED_WITH_GLUE",
+    "DELEGATED_NO_GLUE",
+    "DNSSEC_CANDIDATE",
+)
+HANDOFF_COHORT_CLASSES_SQL = ", ".join(f"'{item}'" for item in HANDOFF_COHORT_CLASSES)
 
 
 class NextActionSpec(NamedTuple):
@@ -288,6 +298,8 @@ def export_all(
     _log_export("wrote overview-pages.json")
     write_json(out / "names-pages.json", write_names_pages(conn, out, limit=effective_names_limit, page_size=PAGE_SIZE))
     _log_export("wrote names-pages.json")
+    handoff_group_count = write_hns_handoff_groups(conn, out)
+    _log_export(f"wrote hns handoff groups={handoff_group_count}")
     ip_address_count = write_ip_address_names(conn, out, limit=effective_names_limit)
     _log_export(f"wrote ip address files={ip_address_count}")
     nameserver_count = write_nameserver_names(conn, out, limit=effective_names_limit)
@@ -824,6 +836,132 @@ def write_dns_evidence(conn: sqlite3.Connection, out: Path) -> int:
     for name in names:
         write_json(base_dir / f"{name}.json", build_dns_evidence(conn, name))
     return len(names)
+
+
+def write_hns_handoff_groups(conn: sqlite3.Connection, out: Path) -> int:
+    """Write bounded, scanner-ready cohorts sharing an indirect HNS NS route."""
+
+    output_path = out / "hns-handoff-groups.json"
+    prepare_temp_ns_handoff_table(
+        conn,
+        f"""
+        SELECT n.name
+        FROM names n
+        JOIN resource_summary rs ON rs.name = n.name
+        LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
+        WHERE COALESCE(n.expired, 0) = 0
+          AND n.onchain_class IN ({HANDOFF_COHORT_CLASSES_SQL})
+          AND COALESCE(ps.provider_type, 'unknown') NOT IN ({NON_ACTIONABLE_PROVIDER_TYPES_SQL})
+          AND COALESCE(rs.has_ns, 0) = 1
+          AND COALESCE(rs.has_glue, 0) = 0
+          AND COALESCE(rs.has_synth, 0) = 0
+        """,
+    )
+    groups: list[dict[str, Any]] = []
+    current_key: tuple[str, str, str, str] | None = None
+    current_members: list[dict[str, Any]] = []
+
+    def finish_group() -> None:
+        if current_key is None:
+            return
+        if not HANDOFF_COHORT_MIN_MEMBERS <= len(current_members) <= HANDOFF_COHORT_MAX_MEMBERS:
+            return
+        nameserver, root_name, bootstrap_ip, bootstrap_field = current_key
+        groups.append(
+            {
+                "nameserver": nameserver,
+                "root_name": root_name,
+                "bootstrap_addresses": [bootstrap_ip],
+                "bootstrap_field": bootstrap_field,
+                "member_count": len(current_members),
+                "members": current_members,
+            }
+        )
+
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT
+              enh.ns_handoff_ns,
+              enh.ns_handoff_root,
+              enh.ns_handoff_bootstrap_ip,
+              enh.ns_handoff_bootstrap_field,
+              n.name,
+              n.provider_guess,
+              n.last_seen_height,
+              COALESCE(rs.resource_hash, n.resource_hash, '') AS resource_hash,
+              rs.ns_names,
+              rs.ds_records,
+              rs.has_ds,
+              COALESCE(ps.provider_type, 'unknown') AS provider_type
+            FROM {NS_HANDOFF_TABLE} enh
+            JOIN names n ON n.name = enh.name
+            JOIN resource_summary rs ON rs.name = n.name
+            LEFT JOIN provider_summary ps ON ps.provider_key = n.provider_guess
+            WHERE enh.ns_handoff_bootstrap_ip IS NOT NULL
+              AND n.onchain_class IN ({HANDOFF_COHORT_CLASSES_SQL})
+              AND COALESCE(n.expired, 0) = 0
+              AND COALESCE(ps.provider_type, 'unknown') NOT IN ({NON_ACTIONABLE_PROVIDER_TYPES_SQL})
+            ORDER BY
+              enh.ns_handoff_ns,
+              enh.ns_handoff_root,
+              enh.ns_handoff_bootstrap_ip,
+              enh.ns_handoff_bootstrap_field,
+              n.name
+            """
+        )
+        for row in rows:
+            key = (
+                str(row["ns_handoff_ns"] or ""),
+                str(row["ns_handoff_root"] or ""),
+                str(row["ns_handoff_bootstrap_ip"] or ""),
+                str(row["ns_handoff_bootstrap_field"] or ""),
+            )
+            if key != current_key:
+                finish_group()
+                current_key = key
+                current_members = []
+            current_members.append(
+                {
+                    "name": str(row["name"]),
+                    "provider_guess": str(row["provider_guess"] or "unknown/custom"),
+                    "provider_type": str(row["provider_type"] or "unknown"),
+                    "resource_hash": str(row["resource_hash"] or ""),
+                    "last_seen_height": _cohort_int(row["last_seen_height"]),
+                    "ns_names": _cohort_json_list(row["ns_names"]),
+                    "ds_records": _cohort_json_list(row["ds_records"]),
+                    "has_ds": bool(row["has_ds"]),
+                }
+            )
+        finish_group()
+    finally:
+        drop_temp_ns_handoff_table(conn)
+
+    write_json(
+        output_path,
+        {
+            "format": "hns-handoff-cohorts-v1",
+            "generated_at": utc_now(),
+            "min_members": HANDOFF_COHORT_MIN_MEMBERS,
+            "max_members": HANDOFF_COHORT_MAX_MEMBERS,
+            "group_count": len(groups),
+            "member_count": sum(int(group["member_count"]) for group in groups),
+            "groups": groups,
+        },
+    )
+    return len(groups)
+
+
+def _cohort_json_list(value: Any) -> list[Any]:
+    try:
+        parsed = json.loads(str(value or "[]"))
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _cohort_int(value: Any) -> int | None:
+    return int(value) if value is not None else None
 
 
 def write_ip_address_names(conn: sqlite3.Connection, out: Path, *, limit: int) -> int:

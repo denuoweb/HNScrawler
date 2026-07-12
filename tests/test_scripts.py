@@ -7,6 +7,7 @@ def test_nightly_scripts_parse_as_bash():
         Path("scripts/full-nightly-job.sh"),
         Path("scripts/gcloud-run-indexer-pipeline.sh"),
         Path("scripts/run-live-directory.sh"),
+        Path("scripts/run-live-delegation-index.sh"),
         Path("scripts/setup-live-directory-service.sh"),
         Path("scripts/configure-live-directory-nginx.sh"),
         Path("scripts/publish-hns-topology-navigation.sh"),
@@ -74,6 +75,7 @@ def test_live_directory_runner_uses_web_vm_snapshot_and_separate_state():
     assert '.venv/bin/hns-live-directory "${args[@]}"' in runner
     assert "OnUnitInactiveSec=30s" in setup
     assert 'LIVE_SWEEP_CONCURRENCY="${LIVE_SWEEP_CONCURRENCY:-50}"' in runner
+    assert 'LIVE_SWEEP_TIERS="${LIVE_SWEEP_TIERS:-hns_handoff,shared_delegation}"' in runner
     assert "hns-live-directory.timer" in setup
     assert "configure-live-directory-nginx.sh" in setup
     assert "publish-hns-topology-navigation.sh" in setup

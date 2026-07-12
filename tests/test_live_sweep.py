@@ -9,6 +9,7 @@ from hns_topology.live_db import (
     record_authority_health,
 )
 from hns_topology.live_delegations import refresh_delegation_groups
+from hns_topology.live_handoffs import refresh_hns_handoff_groups
 from hns_topology.live_models import HostProbeResult
 from hns_topology.live_probe import ProbeConfig, probe_dns
 from hns_topology.live_sweep import (
@@ -49,8 +50,9 @@ def test_sweep_prioritizes_ds_bootstrap_before_other_root_signals(tmp_path):
 
 
 def test_priority_sweep_tiers_exclude_unindexed_generic_backlog():
-    assert PRIORITY_SWEEP_TIERS == ("shared_delegation",)
-    assert parse_sweep_tiers("shared_delegation,ds_bootstrap") == (
+    assert PRIORITY_SWEEP_TIERS == ("hns_handoff", "shared_delegation")
+    assert parse_sweep_tiers("hns_handoff,shared_delegation,ds_bootstrap") == (
+        "hns_handoff",
         "shared_delegation",
         "ds_bootstrap",
     )
@@ -254,6 +256,128 @@ def test_delegation_index_keeps_only_bounded_shared_groups(tmp_path):
     assert [(row["nameserver"], row["member_count"]) for row in groups] == [
         ("ns1.trapify", 5)
     ]
+
+
+def test_handoff_index_keeps_only_bounded_route_cohorts(tmp_path):
+    live_db = tmp_path / "live.sqlite"
+    topology_site = tmp_path / "site"
+    artifact = topology_site / "data" / "hns-handoff-groups.json"
+    artifact.parent.mkdir(parents=True)
+    members = [
+        {
+            "name": name,
+            "provider_guess": "self-hosted",
+            "provider_type": "external_dns",
+            "resource_hash": f"hash-{name}",
+            "last_seen_height": 100,
+            "ns_names": ["ns1.skyinclude"],
+            "ds_records": [{"keyTag": 1}],
+            "has_ds": True,
+        }
+        for name in ("alpha", "beta")
+    ]
+    artifact.write_text(
+        json.dumps(
+            {
+                "format": "hns-handoff-cohorts-v1",
+                "groups": [
+                    {
+                        "nameserver": "ns1.skyinclude",
+                        "root_name": "skyinclude",
+                        "bootstrap_addresses": ["8.8.8.8"],
+                        "bootstrap_field": "glue4",
+                        "member_count": 2,
+                        "members": members,
+                    },
+                    {
+                        "nameserver": "ns1.large",
+                        "root_name": "large",
+                        "bootstrap_addresses": ["8.8.4.4"],
+                        "bootstrap_field": "glue4",
+                        "member_count": 251,
+                        "members": [members[0]] * 251,
+                    },
+                ],
+            }
+        )
+    )
+
+    with connect_live(live_db) as conn:
+        init_live_db(conn)
+        first = refresh_hns_handoff_groups(conn, topology_site=topology_site)
+        second = refresh_hns_handoff_groups(conn, topology_site=topology_site)
+        groups = [dict(row) for row in conn.execute("SELECT * FROM hns_handoff_groups")]
+
+    assert first["indexed"] is True
+    assert second["indexed"] is False
+    assert [(row["nameserver"], row["root_name"], row["member_count"]) for row in groups] == [
+        ("ns1.skyinclude", "skyinclude", 2)
+    ]
+
+
+def test_handoff_cohort_sweep_uses_compact_index_without_topology_database(tmp_path):
+    live_db = tmp_path / "live.sqlite"
+    with connect_live(live_db) as conn:
+        init_live_db(conn)
+        conn.execute(
+            """
+            INSERT INTO hns_handoff_groups(
+              nameserver, root_name, bootstrap_ip, bootstrap_field, member_count,
+              members_json, source_signature, indexed_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "a.namenode",
+                "namenode",
+                "138.199.197.111",
+                "glue4",
+                2,
+                json.dumps(
+                    [
+                        {
+                            "name": "alpha",
+                            "provider_guess": "self-hosted",
+                            "provider_type": "external_dns",
+                            "resource_hash": "hash-alpha",
+                            "last_seen_height": 100,
+                            "ns_names": ["a.namenode"],
+                            "ds_records": [{"keyTag": 1}],
+                            "has_ds": True,
+                        },
+                        {
+                            "name": "beta",
+                            "provider_guess": "self-hosted",
+                            "provider_type": "external_dns",
+                            "resource_hash": "hash-beta",
+                            "last_seen_height": 100,
+                            "ns_names": ["a.namenode"],
+                            "ds_records": [],
+                            "has_ds": False,
+                        },
+                    ]
+                ),
+                "test",
+                "2026-07-12T00:00:00Z",
+            ),
+        )
+        selection = select_sweep_candidates(
+            conn,
+            topology_db=tmp_path / "not-needed.sqlite",
+            limit=10,
+            page_size=100,
+            tiers=("hns_handoff",),
+        )
+
+    assert [item["root_name"] for item in selection["candidates"]] == ["alpha", "beta"]
+    assert [item["signal_tier"] for item in selection["candidates"]] == [
+        "ds_handoff",
+        "delegation_handoff",
+    ]
+    assert {tuple(item["authority_keys"]) for item in selection["candidates"]} == {
+        ("hns-handoff:a.namenode|namenode|138.199.197.111",)
+    }
+    assert {tuple(item["authority_health_keys"]) for item in selection["candidates"]} == {()}
+    assert {item["ns_handoffs"][0]["root_name"] for item in selection["candidates"]} == {"namenode"}
 
 
 def test_sweep_prioritizes_members_of_a_shared_delegation_group(tmp_path):

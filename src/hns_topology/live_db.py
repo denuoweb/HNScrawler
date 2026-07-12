@@ -16,7 +16,7 @@ from .live_models import (
 )
 from .timeutil import utc_now
 
-LIVE_SCHEMA_VERSION = "5"
+LIVE_SCHEMA_VERSION = "6"
 
 SCHEMA_SQL = """
 PRAGMA journal_mode = WAL;
@@ -150,6 +150,18 @@ CREATE TABLE IF NOT EXISTS delegation_groups (
   indexed_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS hns_handoff_groups (
+  nameserver TEXT NOT NULL,
+  root_name TEXT NOT NULL,
+  bootstrap_ip TEXT NOT NULL,
+  bootstrap_field TEXT NOT NULL,
+  member_count INTEGER NOT NULL,
+  members_json TEXT NOT NULL,
+  source_signature TEXT NOT NULL,
+  indexed_at TEXT NOT NULL,
+  PRIMARY KEY(nameserver, root_name, bootstrap_ip, bootstrap_field)
+);
+
 CREATE INDEX IF NOT EXISTS idx_roots_active ON roots(active, strict_ready, name);
 CREATE INDEX IF NOT EXISTS idx_candidates_active_priority
   ON candidates(active, suppressed, priority DESC, host);
@@ -161,6 +173,8 @@ CREATE INDEX IF NOT EXISTS idx_authority_health_due
   ON authority_health(next_probe_at, state);
 CREATE INDEX IF NOT EXISTS idx_delegation_groups_priority
   ON delegation_groups(member_count DESC, nameserver);
+CREATE INDEX IF NOT EXISTS idx_hns_handoff_groups_priority
+  ON hns_handoff_groups(member_count DESC, nameserver, root_name, bootstrap_ip);
 """
 
 

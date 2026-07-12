@@ -13,6 +13,7 @@ from .live_db import (
 )
 from .live_delegations import refresh_delegation_groups
 from .live_exporter import export_live_site, validate_live_site
+from .live_handoffs import refresh_hns_handoff_groups
 from .live_probe import DEFAULT_HNS_DOH_URL
 from .live_runner import ProbeBatchConfig, run_probe_batch
 from .live_sweep import (
@@ -69,6 +70,16 @@ def parser() -> argparse.ArgumentParser:
     delegation_index.add_argument("--min-members", type=int, default=5)
     delegation_index.add_argument("--max-members", type=int, default=250)
     delegation_index.set_defaults(func=cmd_index_delegations)
+
+    handoff_index = sub.add_parser(
+        "index-handoffs",
+        help="Refresh the compact HNS nameserver-handoff priority index from topology artifacts.",
+    )
+    _add_db(handoff_index)
+    handoff_index.add_argument("--topology-site", required=True)
+    handoff_index.add_argument("--min-members", type=int, default=2)
+    handoff_index.add_argument("--max-members", type=int, default=250)
+    handoff_index.set_defaults(func=cmd_index_handoffs)
 
     export = sub.add_parser("export", help="Generate the standalone live-directory static site.")
     _add_db(export)
@@ -154,6 +165,23 @@ def cmd_index_delegations(args: argparse.Namespace) -> int:
     with connect_live(args.db) as conn:
         init_live_db(conn)
         result = refresh_delegation_groups(
+            conn,
+            topology_site=args.topology_site,
+            min_members=args.min_members,
+            max_members=args.max_members,
+        )
+    _print(result)
+    return 0
+
+
+def cmd_index_handoffs(args: argparse.Namespace) -> int:
+    if args.min_members < 1:
+        raise SystemExit("--min-members must be at least one")
+    if args.max_members < args.min_members:
+        raise SystemExit("--max-members must be at least --min-members")
+    with connect_live(args.db) as conn:
+        init_live_db(conn)
+        result = refresh_hns_handoff_groups(
             conn,
             topology_site=args.topology_site,
             min_members=args.min_members,

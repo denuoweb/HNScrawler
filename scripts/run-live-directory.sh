@@ -23,7 +23,7 @@ LIVE_SWEEP_AUTHORITY_DELAY_MS="${LIVE_SWEEP_AUTHORITY_DELAY_MS:-500}"
 LIVE_SWEEP_TIMEOUT="${LIVE_SWEEP_TIMEOUT:-2}"
 LIVE_SWEEP_MAX_NAMESERVERS="${LIVE_SWEEP_MAX_NAMESERVERS:-2}"
 LIVE_SWEEP_MAX_ADDRESSES="${LIVE_SWEEP_MAX_ADDRESSES:-2}"
-LIVE_SWEEP_TIERS="${LIVE_SWEEP_TIERS:-shared_delegation}"
+LIVE_SWEEP_TIERS="${LIVE_SWEEP_TIERS:-hns_handoff,shared_delegation}"
 
 mountpoint -q /mnt/hns-topology || {
   echo "/mnt/hns-topology is not mounted; refusing to use the web VM boot disk" >&2

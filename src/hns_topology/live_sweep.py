@@ -27,18 +27,20 @@ from .live_db import (
     upsert_root,
 )
 from .live_delegations import delegation_group_rows
+from .live_handoffs import hns_handoff_group_rows
 from .live_models import ONLINE_CATEGORIES, LiveCandidate, TopologyRoot
 from .live_probe import DEFAULT_HNS_DOH_URL, ProbeConfig, probe_host
 from .timeutil import utc_now
 
 SWEEP_TIERS = (
+    "hns_handoff",
     "shared_delegation",
     "ds_bootstrap",
     "bootstrap",
     "ds_delegated",
     "delegated",
 )
-PRIORITY_SWEEP_TIERS = ("shared_delegation",)
+PRIORITY_SWEEP_TIERS = ("hns_handoff", "shared_delegation")
 UNKNOWN_AUTHORITY_SAMPLES = 3
 EXCLUDED_BOOTSTRAP_IPS = frozenset([*BULK_DEFAULT_RESOURCE_IPS, *KNOWN_HNS_RESOLVER_IPS])
 
@@ -279,28 +281,48 @@ def select_sweep_candidates(
     page_size: int,
     tiers: tuple[str, ...] = SWEEP_TIERS,
 ) -> dict[str, Any]:
-    source = Path(topology_db)
-    if not source.is_file():
-        raise FileNotFoundError(f"topology database does not exist: {source}")
     selected: list[dict[str, Any]] = []
     unknown_authority_samples: dict[str, int] = {}
     progress: dict[str, str] = {}
     completed: list[str] = []
     now = utc_now()
     maximum = None if limit is None else max(0, limit)
+    if "hns_handoff" in tiers and get_live_meta(conn, _not_before_key("hns_handoff")) <= now:
+        handoff_selected, handoff_complete = _select_hns_handoff_candidates(
+            conn,
+            limit=maximum,
+            now=now,
+        )
+        selected.extend(handoff_selected)
+        if handoff_complete:
+            completed.append("hns_handoff")
+
+    topology_tiers = tuple(tier for tier in tiers if tier != "hns_handoff")
+    if not topology_tiers or (maximum is not None and len(selected) >= maximum):
+        return {
+            "candidates": selected,
+            "cursor_updates": progress,
+            "completed_tiers": completed,
+            "tiers": [str(candidate["signal_tier"]) for candidate in selected],
+            "selected_at": now,
+        }
+
+    source = Path(topology_db)
+    if not source.is_file():
+        raise FileNotFoundError(f"topology database does not exist: {source}")
     uri = f"file:{source.resolve().as_posix()}?mode=ro"
     with sqlite3.connect(uri, uri=True) as topology:
         topology.row_factory = sqlite3.Row
-        if "shared_delegation" in tiers and get_live_meta(conn, _not_before_key("shared_delegation")) <= now:
+        if "shared_delegation" in topology_tiers and get_live_meta(conn, _not_before_key("shared_delegation")) <= now:
             selected.extend(
                 _select_shared_delegation_candidates(
                     conn,
                     topology=topology,
-                    limit=maximum,
+                    limit=_remaining_limit(maximum, len(selected)),
                     now=now,
                 )
             )
-        for tier in tiers:
+        for tier in topology_tiers:
             if tier == "shared_delegation":
                 continue
             if tier not in _TIER_PREDICATES:
@@ -438,6 +460,11 @@ def _promote_endpoint(conn: sqlite3.Connection, candidate: dict[str, Any], resul
 
 
 def _sweep_source_detail(candidate: dict[str, Any]) -> str:
+    handoff_cohort = candidate.get("handoff_cohort")
+    if isinstance(handoff_cohort, dict):
+        nameserver = str(handoff_cohort.get("nameserver") or "")
+        root_name = str(handoff_cohort.get("root_name") or "")
+        return f"HNS handoff cohort {nameserver} via {root_name} endpoint sweep"
     delegation_host = str(candidate.get("delegation_host") or "")
     if delegation_host:
         return f"shared delegation {delegation_host} endpoint sweep"
@@ -451,6 +478,10 @@ def _store_selection_progress(conn: sqlite3.Connection, selection: dict[str, Any
             set_live_meta(conn, _not_before_key(tier), "")
     for tier in selection["completed_tiers"]:
         set_live_meta(conn, _not_before_key(tier), _after(str(selection["selected_at"]), days=7))
+
+
+def _remaining_limit(limit: int | None, selected_count: int) -> int | None:
+    return None if limit is None else max(0, limit - selected_count)
 
 
 def _topology_page(
@@ -541,6 +572,91 @@ def _select_shared_delegation_candidates(
             ):
                 selected.append(candidate)
     return selected
+
+
+def _select_hns_handoff_candidates(
+    conn: sqlite3.Connection,
+    *,
+    limit: int | None,
+    now: str,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Select artifact-indexed HNS delegation cohorts without topology DB reads."""
+
+    selected: list[dict[str, Any]] = []
+    for group in hns_handoff_group_rows(conn):
+        members = list(group["members"])
+        coverage = sweep_coverage_for_roots(
+            conn,
+            [str(member["name"]) for member in members],
+        )
+        for member in members:
+            candidate = _candidate_from_handoff_member(group, member)
+            previous = coverage.get(str(candidate["root_name"]))
+            if not _coverage_is_due(
+                previous,
+                resource_hash=str(candidate["topology_resource_hash"]),
+                now=now,
+            ):
+                continue
+            if limit is not None and len(selected) >= limit:
+                return selected, False
+            selected.append(candidate)
+    return selected, True
+
+
+def _candidate_from_handoff_member(
+    group: dict[str, Any],
+    member: dict[str, Any],
+) -> dict[str, Any]:
+    nameserver = str(group["nameserver"])
+    root_name = str(group["root_name"])
+    bootstrap_ip = str(group["bootstrap_ip"])
+    handoff = {
+        "nameserver": nameserver,
+        "root_name": root_name,
+        "bootstrap_addresses": [bootstrap_ip],
+    }
+    root = TopologyRoot(
+        name=str(member["name"]),
+        provider_guess=str(member["provider_guess"]),
+        provider_type=str(member["provider_type"]),
+        resource_hash=str(member["resource_hash"]),
+        last_seen_height=member.get("last_seen_height"),
+        ns_names=[nameserver],
+        bootstrap_addresses=[],
+        ns_handoffs=[handoff],
+        ds_records=[item for item in member.get("ds_records", []) if isinstance(item, dict)],
+        has_ds=bool(member.get("has_ds")),
+        strict_ready=False,
+    )
+    authority_key = f"hns-handoff:{nameserver}|{root_name}|{bootstrap_ip}"
+    return {
+        "root_name": root.name,
+        "host": root.name,
+        "topology_resource_hash": root.resource_hash,
+        "provider_guess": root.provider_guess,
+        "provider_type": root.provider_type,
+        "ns_names": root.ns_names,
+        "bootstrap_addresses": root.bootstrap_addresses,
+        "ns_handoffs": root.ns_handoffs,
+        "ds_records": root.ds_records,
+        "has_ds": root.has_ds,
+        "strict_ready": root.strict_ready,
+        "signal_tier": "ds_handoff" if root.has_ds else "delegation_handoff",
+        "topology_root": root,
+        "skip_sweep": False,
+        "authority_keys": [authority_key],
+        # The direct bootstrap address can be a conventional DNS endpoint even
+        # when the HNS DoH fallback resolves this route. Do not globally mute a
+        # cohort based on those direct-authority failures.
+        "authority_health_keys": [],
+        "handoff_cohort": {
+            "nameserver": nameserver,
+            "root_name": root_name,
+            "bootstrap_ip": bootstrap_ip,
+            "bootstrap_field": str(group["bootstrap_field"]),
+        },
+    }
 
 
 def _coverage_may_be_due(coverage: dict[str, Any] | None, *, now: str) -> bool:

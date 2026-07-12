@@ -300,6 +300,7 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
         "data/manifest.json",
         "data/overview-pages.json",
         "data/names-pages.json",
+        "data/hns-handoff-groups.json",
         "data/nameservers/index.json",
         "data/ip-addresses/198.51.100.2.json",
         "data/ip-addresses/203.0.113.10.json",
@@ -409,6 +410,7 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert "classes.json" not in manifest_artifacts
     assert "broken.json" not in manifest_artifacts
     assert "names-pages.json" in manifest_artifacts
+    assert "hns-handoff-groups.json" in manifest_artifacts
     assert "names-pages/all/page-1.json" in manifest_artifacts
     assert "ip-addresses/198.51.100.2.json" in manifest_artifacts
     assert "ip-addresses/198.51.100.2/page-1.json" in manifest_artifacts
