@@ -11,7 +11,7 @@ from .live_db import get_live_meta, set_live_meta
 from .timeutil import utc_now
 
 DELEGATION_INDEX_META_KEY = "delegation_groups.source_signature"
-DEFAULT_MIN_MEMBERS = 5
+DEFAULT_MIN_MEMBERS = 2
 DEFAULT_MAX_MEMBERS = 250
 
 
@@ -68,7 +68,7 @@ def delegation_group_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         SELECT nameserver, member_count, member_roots_json
         FROM delegation_groups
         ORDER BY
-          CASE WHEN member_count BETWEEN 5 AND 100 THEN 0 ELSE 1 END,
+          CASE WHEN member_count BETWEEN 2 AND 100 THEN 0 ELSE 1 END,
           member_count DESC,
           nameserver
         """

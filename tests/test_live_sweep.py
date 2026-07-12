@@ -9,6 +9,7 @@ from hns_topology.live_db import (
 )
 from hns_topology.live_delegations import refresh_delegation_groups
 from hns_topology.live_models import HostProbeResult
+from hns_topology.live_probe import ProbeConfig, probe_dns
 from hns_topology.live_sweep import SweepBatchConfig, run_sweep_batch, select_sweep_candidates
 
 
@@ -223,8 +224,8 @@ def test_delegation_index_keeps_only_bounded_shared_groups(tmp_path):
 
     with connect_live(live_db) as conn:
         init_live_db(conn)
-        first = refresh_delegation_groups(conn, topology_site=topology_site)
-        second = refresh_delegation_groups(conn, topology_site=topology_site)
+        first = refresh_delegation_groups(conn, topology_site=topology_site, min_members=5)
+        second = refresh_delegation_groups(conn, topology_site=topology_site, min_members=5)
         groups = [dict(row) for row in conn.execute("SELECT * FROM delegation_groups")]
 
     assert first["indexed"] is True
@@ -238,6 +239,7 @@ def test_sweep_prioritizes_members_of_a_shared_delegation_group(tmp_path):
     topology_db = tmp_path / "topology.sqlite"
     live_db = tmp_path / "live.sqlite"
     _seed_shared_authority_topology(topology_db)
+    _seed_handoff_root(topology_db, name="trapify")
 
     with connect_live(live_db) as conn:
         init_live_db(conn)
@@ -275,6 +277,46 @@ def test_sweep_prioritizes_members_of_a_shared_delegation_group(tmp_path):
     assert {tuple(item["ns_names"]) for item in selection["candidates"]} == {
         ("ns1.trapify",)
     }
+    assert {item["signal_tier"] for item in selection["candidates"]} == {"ds_handoff"}
+    assert {item["ns_handoffs"][0]["root_name"] for item in selection["candidates"]} == {
+        "trapify"
+    }
+
+
+def test_probe_resolves_a_hns_nameserver_handoff_before_the_delegated_zone(monkeypatch):
+    calls = []
+
+    def fake_resolve_addresses(servers, host, root_name, **kwargs):
+        calls.append((servers, host, root_name))
+        if host == "ns1.skyinclude":
+            return ["9.9.9.9"], [], set(), "8.8.8.8"
+        return ["93.184.216.34"], [], set(), "9.9.9.9"
+
+    monkeypatch.setattr("hns_topology.live_probe._resolve_addresses", fake_resolve_addresses)
+    result = probe_dns(
+        {
+            "root_name": "agent",
+            "host": "agent",
+            "bootstrap_addresses": [],
+            "ns_names": ["ns1.skyinclude"],
+            "ns_handoffs": [
+                {
+                    "nameserver": "ns1.skyinclude",
+                    "root_name": "skyinclude",
+                    "bootstrap_addresses": ["8.8.8.8"],
+                }
+            ],
+            "ds_records": [],
+        },
+        config=ProbeConfig(timeout=1, max_nameservers=2, max_addresses=2),
+        include_dns_details=False,
+    )
+
+    assert result.status == "resolved"
+    assert calls == [
+        (["8.8.8.8"], "ns1.skyinclude", "skyinclude"),
+        (["9.9.9.9"], "agent", "agent"),
+    ]
 
 
 def _seed_topology(path):
@@ -385,6 +427,23 @@ def _seed_shared_authority_topology(path, *, address="93.184.216.34"):
                     f"hash-{name}",
                 ),
             )
+
+
+def _seed_handoff_root(path, *, name):
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "INSERT INTO names(name, provider_guess, last_seen_height, resource_hash) VALUES(?, ?, ?, ?)",
+            (name, "self-hosted", 100, f"hash-{name}"),
+        )
+        conn.execute(
+            """
+            INSERT INTO resource_summary(
+              name, ns_names, glue4, glue6, synth4, synth6, ds_records,
+              has_ds, has_ns, has_glue, has_synth, resource_hash
+            ) VALUES(?, ?, '[]', '[]', ?, '[]', '[]', 0, 1, 0, 1, ?)
+            """,
+            (name, json.dumps([f"ns1.{name}"]), json.dumps(["8.8.8.8"]), f"hash-{name}"),
+        )
 
 
 def _result(*, root_name, resource_hash, category):

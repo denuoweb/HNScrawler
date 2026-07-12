@@ -477,7 +477,17 @@ def _select_shared_delegation_candidates(
     now: str,
 ) -> list[dict[str, Any]]:
     selected: list[dict[str, Any]] = []
-    for group in delegation_group_rows(conn):
+    groups = delegation_group_rows(conn)
+    handoffs = _delegation_handoffs(topology, groups)
+    groups.sort(
+        key=lambda group: (
+            str(group["nameserver"]) not in handoffs,
+            -(int(group["member_count"]) if int(group["member_count"]) <= 100 else 0),
+            -int(group["member_count"]),
+            str(group["nameserver"]),
+        )
+    )
+    for group in groups:
         if limit is not None and len(selected) >= limit:
             break
         roots = [str(root) for root in group["member_roots"]]
@@ -495,6 +505,10 @@ def _select_shared_delegation_candidates(
             candidate["ns_names"] = [str(group["nameserver"])]
             candidate["authority_keys"] = [f"ns:{group['nameserver']}"]
             candidate["authority_health_keys"] = []
+            handoff = handoffs.get(str(group["nameserver"]))
+            if handoff:
+                candidate["ns_handoffs"] = [handoff]
+                candidate["signal_tier"] = "ds_handoff" if candidate["has_ds"] else "delegation_handoff"
             if _coverage_is_due(
                 coverage.get(root_name),
                 resource_hash=str(candidate["topology_resource_hash"]),
@@ -502,6 +516,37 @@ def _select_shared_delegation_candidates(
             ):
                 selected.append(candidate)
     return selected
+
+
+def _delegation_handoffs(
+    topology: sqlite3.Connection,
+    groups: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    root_by_nameserver = {
+        str(group["nameserver"]): _nameserver_hns_root(str(group["nameserver"]))
+        for group in groups
+    }
+    rows = _topology_rows_for_names(topology, list(root_by_nameserver.values()))
+    bootstrap_by_root: dict[str, list[str]] = {}
+    for row in rows:
+        candidate = _candidate_from_row(row, tier="shared_delegation")
+        addresses = list(candidate["bootstrap_addresses"])
+        if addresses:
+            bootstrap_by_root[str(row["name"])] = addresses
+    return {
+        nameserver: {
+            "nameserver": nameserver,
+            "root_name": root_name,
+            "bootstrap_addresses": bootstrap_by_root[root_name],
+        }
+        for nameserver, root_name in root_by_nameserver.items()
+        if root_name in bootstrap_by_root
+    }
+
+
+def _nameserver_hns_root(nameserver: str) -> str:
+    labels = [label for label in str(nameserver).strip().lower().rstrip(".").split(".") if label]
+    return labels[-1] if labels else ""
 
 
 def _topology_rows_for_names(conn: sqlite3.Connection, names: list[str]) -> list[sqlite3.Row]:

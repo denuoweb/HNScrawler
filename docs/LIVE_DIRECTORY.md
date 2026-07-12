@@ -28,7 +28,7 @@ The evidence queue compares the topology tip, height, provider-rule hash, and ge
 
 ## Candidate Policy
 
-The scanner imports active, actionable roots with direct HNS nameserver IP evidence from SYNTH or GLUE. It also treats a moderate shared delegation host as a first-tier website signal: a host serving 5–250 current HNS roots contributes its member roots to the broad sweep, with per-host pacing. This catches hosted groups such as `ns1.trapify` without treating the largest generic parking clusters as likely websites. DS raises the priority of a root that has another admission signal, but DS alone is too broad to establish likely website service. The scanner creates only the root apex candidate by default.
+The scanner imports active, actionable roots with direct HNS nameserver IP evidence from SYNTH or GLUE. It also treats a shared delegation host as a first-tier website signal: a host serving 2–250 current HNS roots contributes its member roots to the broad sweep, with per-host pacing. This catches hosted groups such as `ns1.trapify` without treating the largest generic parking clusters as likely websites. A DNSSEC-signed delegation whose NS host is itself under an HNS root with actionable SYNTH/GLUE is also promoted: the probe first resolves that HNS NS handoff, then queries the delegated zone. This captures managed namespace patterns such as HeadlessDomains without embedding namespace names. DS alone remains too broad to establish likely website service. The scanner creates only the root apex candidate by default.
 
 Within the same due tier, the initial discovery order is:
 
@@ -56,7 +56,7 @@ Known parking infrastructure, public HNS resolvers, expired roots, private names
 
 The broad sweep is separate from the evidence queue. It streams roots from the read-only topology snapshot with persistent cursors, so it does not create one `candidates` or `host_status` row for every root. Its priority order is:
 
-1. members of shared delegation hosts with 5–250 roots;
+1. members of shared delegation hosts with 2–250 roots, especially DNSSEC-signed HNS NS handoffs;
 2. DS roots with direct SYNTH or GLUE bootstrap;
 3. other direct SYNTH or GLUE bootstrap roots;
 4. DS delegations whose nameserver address must be resolved;

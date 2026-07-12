@@ -171,6 +171,13 @@ def probe_dns(
         address for address in candidate.get("bootstrap_addresses", []) if _public_ip(address)
     ][: config.max_nameservers]
     if not servers:
+        servers = _resolve_handoff_nameserver_addresses(
+            candidate.get("ns_handoffs", []),
+            timeout=config.timeout,
+            fallback_resolver=config.fallback_resolver,
+            limit=config.max_nameservers,
+        )
+    if not servers:
         servers = _resolve_nameserver_addresses(
             candidate.get("ns_names", []),
             timeout=config.timeout,
@@ -510,6 +517,36 @@ def _resolve_nameserver_addresses(
         if len(public) >= limit:
             return public[:limit]
     return [address for address in _dedupe(addresses) if _public_ip(address)][:limit]
+
+
+def _resolve_handoff_nameserver_addresses(
+    handoffs: list[dict[str, Any]],
+    *,
+    timeout: float,
+    fallback_resolver: str | None,
+    limit: int,
+) -> list[str]:
+    for handoff in handoffs:
+        nameserver = str(handoff.get("nameserver") or "").strip().lower().rstrip(".")
+        root_name = str(handoff.get("root_name") or "").strip().lower().rstrip(".")
+        bootstrap = [
+            str(address)
+            for address in handoff.get("bootstrap_addresses", [])
+            if _public_ip(str(address))
+        ][: max(1, limit)]
+        if not nameserver or not root_name or not bootstrap:
+            continue
+        addresses, _, _, _ = _resolve_addresses(
+            bootstrap,
+            nameserver,
+            root_name,
+            timeout=timeout,
+            fallback_resolver=fallback_resolver,
+        )
+        public = [address for address in _dedupe(addresses) if _public_ip(address)]
+        if public:
+            return public[:limit]
+    return []
 
 
 def _discovered_hosts(response: dns.message.Message, root_name: str) -> set[str]:
