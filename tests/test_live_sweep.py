@@ -1,7 +1,12 @@
 import json
 import sqlite3
+from dataclasses import replace
 
-from hns_topology.live_db import connect_live, init_live_db
+from hns_topology.live_db import (
+    connect_live,
+    init_live_db,
+    record_authority_health,
+)
 from hns_topology.live_models import HostProbeResult
 from hns_topology.live_sweep import SweepBatchConfig, run_sweep_batch, select_sweep_candidates
 
@@ -70,6 +75,7 @@ def test_sweep_promotes_http_endpoint_but_keeps_offline_root_compact(tmp_path, m
             dict(row)
             for row in conn.execute("SELECT root_name, host, category FROM host_status ORDER BY root_name")
         ]
+        authority_health_rows = conn.execute("SELECT COUNT(*) FROM authority_health").fetchone()[0]
 
     assert result["checked"] == 2
     assert result["online"] == 1
@@ -78,6 +84,103 @@ def test_sweep_promotes_http_endpoint_but_keeps_offline_root_compact(tmp_path, m
     assert endpoints == [
         {"root_name": "a-ds-bootstrap", "host": "a-ds-bootstrap", "category": "http_only"}
     ]
+    assert authority_health_rows == 0
+
+
+def test_sweep_samples_unknown_authorities_then_skips_shared_unreachable_group(tmp_path):
+    topology_db = tmp_path / "topology.sqlite"
+    live_db = tmp_path / "live.sqlite"
+    _seed_shared_authority_topology(topology_db)
+
+    with connect_live(live_db) as conn:
+        init_live_db(conn)
+        initial = select_sweep_candidates(
+            conn,
+            topology_db=topology_db,
+            limit=500,
+            page_size=100,
+            tiers=("ds_bootstrap",),
+        )
+        assert [item["root_name"] for item in initial["candidates"]] == [
+            "aa-shared",
+            "ab-shared",
+            "ac-shared",
+        ]
+        assert initial["cursor_updates"] == {}
+
+        unreachable = replace(
+            _result(root_name="aa-shared", resource_hash="hash-aa-shared", category="offline"),
+            dns_status="unreachable",
+            failure_reason="authoritative_dns_unreachable",
+        )
+        for _ in range(3):
+            record_authority_health(
+                conn,
+                authority_keys=["ip:93.184.216.34"],
+                result=unreachable,
+            )
+
+        skipped = select_sweep_candidates(
+            conn,
+            topology_db=topology_db,
+            limit=500,
+            page_size=100,
+            tiers=("ds_bootstrap",),
+        )
+
+    assert skipped["candidates"] == []
+    assert skipped["completed_tiers"] == ["ds_bootstrap"]
+
+
+def test_sweep_expands_a_shared_healthy_authority(tmp_path):
+    topology_db = tmp_path / "topology.sqlite"
+    live_db = tmp_path / "live.sqlite"
+    _seed_shared_authority_topology(topology_db)
+
+    with connect_live(live_db) as conn:
+        init_live_db(conn)
+        record_authority_health(
+            conn,
+            authority_keys=["ip:93.184.216.34"],
+            result=_result(
+                root_name="aa-shared",
+                resource_hash="hash-aa-shared",
+                category="offline",
+            ),
+        )
+        selection = select_sweep_candidates(
+            conn,
+            topology_db=topology_db,
+            limit=500,
+            page_size=100,
+            tiers=("ds_bootstrap",),
+        )
+
+    assert [item["root_name"] for item in selection["candidates"]] == [
+        "aa-shared",
+        "ab-shared",
+        "ac-shared",
+        "ad-shared",
+    ]
+
+
+def test_sweep_excludes_known_generic_bootstrap_addresses(tmp_path):
+    topology_db = tmp_path / "topology.sqlite"
+    live_db = tmp_path / "live.sqlite"
+    _seed_shared_authority_topology(topology_db, address="44.231.6.183")
+
+    with connect_live(live_db) as conn:
+        init_live_db(conn)
+        selection = select_sweep_candidates(
+            conn,
+            topology_db=topology_db,
+            limit=500,
+            page_size=100,
+            tiers=("ds_bootstrap",),
+        )
+
+    assert selection["candidates"] == []
+    assert selection["completed_tiers"] == ["ds_bootstrap"]
 
 
 def _seed_topology(path):
@@ -134,6 +237,57 @@ def _seed_topology(path):
                     has_ds,
                     has_ns,
                     has_synth,
+                    f"hash-{name}",
+                ),
+            )
+
+
+def _seed_shared_authority_topology(path, *, address="93.184.216.34"):
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE names (
+              name TEXT PRIMARY KEY,
+              expired INTEGER DEFAULT 0,
+              provider_guess TEXT,
+              last_seen_height INTEGER,
+              updated_at TEXT,
+              resource_hash TEXT
+            );
+            CREATE TABLE resource_summary (
+              name TEXT PRIMARY KEY,
+              ns_names TEXT,
+              glue4 TEXT,
+              glue6 TEXT,
+              synth4 TEXT,
+              synth6 TEXT,
+              ds_records TEXT,
+              has_ds INTEGER,
+              has_ns INTEGER,
+              has_glue INTEGER,
+              has_synth INTEGER,
+              resource_hash TEXT
+            );
+            CREATE TABLE provider_summary (provider_key TEXT PRIMARY KEY, provider_type TEXT);
+            """
+        )
+        for name in ("aa-shared", "ab-shared", "ac-shared", "ad-shared"):
+            conn.execute(
+                "INSERT INTO names(name, provider_guess, last_seen_height, resource_hash) VALUES(?, ?, ?, ?)",
+                (name, "self-hosted", 100, f"hash-{name}"),
+            )
+            conn.execute(
+                """
+                INSERT INTO resource_summary(
+                  name, ns_names, glue4, glue6, synth4, synth6, ds_records,
+                  has_ds, has_ns, has_glue, has_synth, resource_hash
+                ) VALUES(?, ?, '[]', '[]', ?, '[]', ?, 1, 1, 0, 1, ?)
+                """,
+                (
+                    name,
+                    json.dumps([f"ns1.{name}"]),
+                    json.dumps([address]),
+                    json.dumps([{"keyTag": 1}]),
                     f"hash-{name}",
                 ),
             )

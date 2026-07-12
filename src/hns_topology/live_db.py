@@ -16,7 +16,7 @@ from .live_models import (
 )
 from .timeutil import utc_now
 
-LIVE_SCHEMA_VERSION = "2"
+LIVE_SCHEMA_VERSION = "3"
 
 SCHEMA_SQL = """
 PRAGMA journal_mode = WAL;
@@ -132,6 +132,15 @@ CREATE TABLE IF NOT EXISTS sweep_runs (
   status TEXT NOT NULL DEFAULT 'running'
 );
 
+CREATE TABLE IF NOT EXISTS authority_health (
+  authority_key TEXT PRIMARY KEY,
+  state TEXT NOT NULL,
+  consecutive_failures INTEGER NOT NULL DEFAULT 0,
+  checked_at TEXT NOT NULL,
+  next_probe_at TEXT NOT NULL,
+  failure_reason TEXT NOT NULL DEFAULT ''
+);
+
 CREATE INDEX IF NOT EXISTS idx_roots_active ON roots(active, strict_ready, name);
 CREATE INDEX IF NOT EXISTS idx_candidates_active_priority
   ON candidates(active, suppressed, priority DESC, host);
@@ -139,6 +148,8 @@ CREATE INDEX IF NOT EXISTS idx_host_status_due ON host_status(next_check_at, lis
 CREATE INDEX IF NOT EXISTS idx_host_status_category ON host_status(category, listing_state, host);
 CREATE INDEX IF NOT EXISTS idx_sweep_coverage_tier_due
   ON sweep_coverage(signal_tier, next_check_at, root_name);
+CREATE INDEX IF NOT EXISTS idx_authority_health_due
+  ON authority_health(next_probe_at, state);
 """
 
 
@@ -542,6 +553,61 @@ def store_sweep_coverage(
     return outcome
 
 
+def authority_health_for_keys(
+    conn: sqlite3.Connection,
+    authority_keys: Iterable[str],
+) -> dict[str, dict[str, Any]]:
+    keys = sorted({str(key) for key in authority_keys if str(key)})
+    result: dict[str, dict[str, Any]] = {}
+    for start in range(0, len(keys), 500):
+        batch = keys[start : start + 500]
+        placeholders = ",".join("?" for _ in batch)
+        for row in conn.execute(
+            f"SELECT * FROM authority_health WHERE authority_key IN ({placeholders})",
+            batch,
+        ):
+            result[str(row["authority_key"])] = dict(row)
+    return result
+
+
+def record_authority_health(
+    conn: sqlite3.Connection,
+    *,
+    authority_keys: Iterable[str],
+    result: HostProbeResult,
+) -> None:
+    keys = sorted({str(key) for key in authority_keys if str(key)})
+    if not keys:
+        return
+    for key in keys:
+        previous = conn.execute(
+            "SELECT state, consecutive_failures FROM authority_health WHERE authority_key = ?",
+            (key,),
+        ).fetchone()
+        state, failures, review_days = _authority_health_update(result, previous)
+        conn.execute(
+            """
+            INSERT INTO authority_health(
+              authority_key, state, consecutive_failures, checked_at, next_probe_at, failure_reason
+            ) VALUES(?, ?, ?, ?, ?, ?)
+            ON CONFLICT(authority_key) DO UPDATE SET
+              state=excluded.state,
+              consecutive_failures=excluded.consecutive_failures,
+              checked_at=excluded.checked_at,
+              next_probe_at=excluded.next_probe_at,
+              failure_reason=excluded.failure_reason
+            """,
+            (
+                key,
+                state,
+                failures,
+                result.checked_at,
+                _after(result.checked_at, days=review_days),
+                str(result.failure_reason or "")[:240],
+            ),
+        )
+
+
 def store_probe_result(conn: sqlite3.Connection, result: HostProbeResult) -> None:
     previous = conn.execute(
         "SELECT * FROM host_status WHERE root_name = ? AND host = ?",
@@ -846,6 +912,23 @@ def _sweep_outcome(result: HostProbeResult) -> tuple[str, int]:
     if result.dns_status == "unreachable" or result.failure_reason.startswith("probe_error:"):
         return "transient_failure", 7
     return "no_endpoint", 90
+
+
+def _authority_health_update(
+    result: HostProbeResult,
+    previous: sqlite3.Row | None,
+) -> tuple[str, int, int]:
+    if result.dns_status in {"resolved", "no_address"}:
+        return "healthy", 0, 0
+    failures = int(previous["consecutive_failures"] or 0) if previous is not None else 0
+    if previous is None or previous["state"] not in {"unreachable", "unresolved"}:
+        failures = 0
+    failures += 1
+    if result.dns_status == "no_bootstrap":
+        return "unresolved", failures, min(30, 7 * failures)
+    if result.dns_status == "unreachable":
+        return "unreachable", failures, min(7, 2 ** max(0, failures - 1))
+    return "transient", failures, 1
 
 
 def _directory_row(row: sqlite3.Row) -> dict[str, Any]:

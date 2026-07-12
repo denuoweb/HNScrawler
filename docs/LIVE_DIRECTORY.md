@@ -108,7 +108,7 @@ The service command combines them:
 scripts/run-live-directory.sh
 ```
 
-`plan` is the no-network evidence-queue audit. A scan limit of zero is explicitly unlimited; production probes up to 100 detailed candidates and a 500-root streamed sweep batch per cycle.
+`plan` is the no-network evidence-queue audit. A scan limit of zero is explicitly unlimited; production runs the 500-root streamed sweep before a 20-candidate detailed-evidence tranche. The sweep excludes known parking and public-resolver bootstrap addresses. It samples a new shared authority up to three times, expands immediately when that authority resolves, and places repeatedly unreachable authority groups on a compact cooldown rather than repeatedly probing every root behind them. The cache contains shared authority keys only; unique roots remain compact per-root coverage records.
 
 ## Denuoweb VM Deployment
 

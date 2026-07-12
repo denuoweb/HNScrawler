@@ -142,12 +142,12 @@ def cmd_cycle(args: argparse.Namespace) -> int:
         init_live_db(conn)
         synced = sync_topology_if_changed(conn, args.topology_db)
         before = candidate_plan(conn)
-        probed = run_probe_batch(conn, config=_probe_config(args))
         sweep = run_sweep_batch(
             conn,
             topology_db=args.topology_db,
             config=_cycle_sweep_config(args),
         )
+        probed = run_probe_batch(conn, config=_probe_config(args))
         summary = export_live_site(conn, args.out)
     errors = validate_live_site(args.out)
     result = {
@@ -168,12 +168,12 @@ def _add_db(command: argparse.ArgumentParser) -> None:
 
 
 def _add_probe_options(command: argparse.ArgumentParser) -> None:
-    command.add_argument("--limit", type=int, default=100)
-    command.add_argument("--concurrency", type=int, default=4)
-    command.add_argument("--min-delay-ms", type=int, default=250)
-    command.add_argument("--timeout", type=float, default=5.0)
-    command.add_argument("--max-nameservers", type=int, default=3)
-    command.add_argument("--max-addresses", type=int, default=4)
+    command.add_argument("--limit", type=int, default=20)
+    command.add_argument("--concurrency", type=int, default=20)
+    command.add_argument("--min-delay-ms", type=int, default=100)
+    command.add_argument("--timeout", type=float, default=2.0)
+    command.add_argument("--max-nameservers", type=int, default=2)
+    command.add_argument("--max-addresses", type=int, default=2)
     command.add_argument("--fallback-resolver")
 
 

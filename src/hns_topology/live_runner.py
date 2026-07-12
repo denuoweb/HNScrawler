@@ -18,12 +18,12 @@ from .live_probe import ProbeConfig, RateLimiter, probe_host
 
 @dataclass(frozen=True)
 class ProbeBatchConfig:
-    limit: int | None = 100
-    concurrency: int = 4
-    min_delay_ms: int = 250
-    timeout: float = 5.0
-    max_nameservers: int = 3
-    max_addresses: int = 4
+    limit: int | None = 20
+    concurrency: int = 20
+    min_delay_ms: int = 100
+    timeout: float = 2.0
+    max_nameservers: int = 2
+    max_addresses: int = 2
     fallback_resolver: str | None = None
 
 

@@ -11,11 +11,13 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .infra import NON_ACTIONABLE_PROVIDER_TYPES
+from .infra import BULK_DEFAULT_RESOURCE_IPS, KNOWN_HNS_RESOLVER_IPS, NON_ACTIONABLE_PROVIDER_TYPES
 from .live_db import (
+    authority_health_for_keys,
     begin_sweep_run,
     finish_sweep_run,
     get_live_meta,
+    record_authority_health,
     set_live_meta,
     store_probe_result,
     store_sweep_coverage,
@@ -34,6 +36,8 @@ SWEEP_TIERS = (
     "ds_delegated",
     "delegated",
 )
+UNKNOWN_AUTHORITY_SAMPLES = 3
+EXCLUDED_BOOTSTRAP_IPS = frozenset([*BULK_DEFAULT_RESOURCE_IPS, *KNOWN_HNS_RESOLVER_IPS])
 
 _TIER_PREDICATES = {
     "ds_bootstrap": """
@@ -110,7 +114,6 @@ class AdaptiveAuthorityLimiter:
         overloaded = (
             result.http_status_code in {429, 503}
             or result.https_status_code in {429, 503}
-            or result.dns_status == "unreachable"
         )
         with self._lock:
             for key in keys:
@@ -196,6 +199,11 @@ def run_sweep_batch(
                 candidate = futures[future]
                 result = future.result()
                 with conn:
+                    record_authority_health(
+                        conn,
+                        authority_keys=candidate["authority_health_keys"],
+                        result=result,
+                    )
                     store_sweep_coverage(
                         conn,
                         root_name=result.root_name,
@@ -260,6 +268,7 @@ def select_sweep_candidates(
     if not source.is_file():
         raise FileNotFoundError(f"topology database does not exist: {source}")
     selected: list[dict[str, Any]] = []
+    unknown_authority_samples: dict[str, int] = {}
     progress: dict[str, str] = {}
     completed: list[str] = []
     now = utc_now()
@@ -288,21 +297,73 @@ def select_sweep_candidates(
                     progress[tier] = ""
                     completed.append(tier)
                     break
-                coverage = sweep_coverage_for_roots(conn, [str(row["name"]) for row in rows])
+                page = [_candidate_from_row(row, tier=tier) for row in rows]
+                _mark_shared_authority_keys(page)
+                coverage = sweep_coverage_for_roots(
+                    conn,
+                    [str(candidate["root_name"]) for candidate in page if not candidate["skip_sweep"]],
+                )
+                authority_health = authority_health_for_keys(
+                    conn,
+                    [
+                        key
+                        for candidate in page
+                        if not candidate["skip_sweep"]
+                        for key in candidate["authority_health_keys"]
+                    ],
+                )
                 reached_limit = False
-                for row in rows:
-                    root_name = str(row["name"])
-                    resource_hash = str(row["resource_hash"] or "")
+                waiting_for_authority_health = False
+                for candidate in page:
+                    root_name = str(candidate["root_name"])
+                    if candidate["skip_sweep"]:
+                        if not waiting_for_authority_health:
+                            cursor = root_name
+                            progress[tier] = cursor
+                        continue
+                    resource_hash = str(candidate["topology_resource_hash"])
                     previous = coverage.get(root_name)
-                    if _coverage_is_due(previous, resource_hash=resource_hash, now=now):
-                        if maximum is not None and len(selected) >= maximum:
-                            reached_limit = True
-                            break
-                        selected.append(_candidate_from_row(row, tier=tier))
-                    cursor = root_name
-                    progress[tier] = cursor
-                if reached_limit or len(rows) < max(1, page_size):
-                    if len(rows) < max(1, page_size) and not reached_limit:
+                    if not _coverage_is_due(previous, resource_hash=resource_hash, now=now):
+                        if not waiting_for_authority_health:
+                            cursor = root_name
+                            progress[tier] = cursor
+                        continue
+                    authority_state = _authority_selection_state(
+                        candidate["authority_health_keys"],
+                        authority_health,
+                        now=now,
+                    )
+                    if authority_state == "suppressed":
+                        if not waiting_for_authority_health:
+                            cursor = root_name
+                            progress[tier] = cursor
+                        continue
+                    authority_key = ""
+                    if authority_state == "unknown":
+                        authority_key = _unknown_authority_key(
+                            candidate["authority_health_keys"],
+                            authority_health,
+                            now=now,
+                        )
+                        if unknown_authority_samples.get(authority_key, 0) >= UNKNOWN_AUTHORITY_SAMPLES:
+                            waiting_for_authority_health = True
+                            continue
+                    if maximum is not None and len(selected) >= maximum:
+                        reached_limit = True
+                        break
+                    selected.append(candidate)
+                    if authority_state == "unknown":
+                        unknown_authority_samples[authority_key] = (
+                            unknown_authority_samples.get(authority_key, 0) + 1
+                        )
+                        # Do not move the persistent cursor past speculative samples.
+                        # The next cycle expands healthy groups and skips unhealthy ones.
+                        waiting_for_authority_health = True
+                    elif not waiting_for_authority_health:
+                        cursor = root_name
+                        progress[tier] = cursor
+                if waiting_for_authority_health or reached_limit or len(rows) < max(1, page_size):
+                    if len(rows) < max(1, page_size) and not (waiting_for_authority_health or reached_limit):
                         progress[tier] = ""
                         completed.append(tier)
                     break
@@ -320,7 +381,7 @@ def _probe_sweep_candidate(
     config: ProbeConfig,
     limiter: AdaptiveAuthorityLimiter,
 ):
-    authority_keys = _authority_keys(candidate)
+    authority_keys = candidate["authority_keys"]
     limiter.wait(authority_keys)
     result = probe_host(
         candidate,
@@ -395,7 +456,7 @@ def _candidate_from_row(row: sqlite3.Row, *, tier: str) -> dict[str, Any]:
             address
             for column in ("synth4", "synth6", "glue4", "glue6")
             for address in _json_strings(row[column])
-            if _public_ip(address)
+            if _actionable_bootstrap_ip(address)
         }
     )
     root = TopologyRoot(
@@ -412,7 +473,7 @@ def _candidate_from_row(row: sqlite3.Row, *, tier: str) -> dict[str, Any]:
         has_ds=bool(row["has_ds"]),
         strict_ready=bool(bootstrap_addresses),
     )
-    return {
+    candidate = {
         "root_name": root.name,
         "host": root.name,
         "topology_resource_hash": root.resource_hash,
@@ -425,7 +486,11 @@ def _candidate_from_row(row: sqlite3.Row, *, tier: str) -> dict[str, Any]:
         "strict_ready": root.strict_ready,
         "signal_tier": tier,
         "topology_root": root,
+        "skip_sweep": tier in {"ds_bootstrap", "bootstrap"} and not root.bootstrap_addresses,
     }
+    candidate["authority_keys"] = _authority_keys(candidate)
+    candidate["authority_health_keys"] = []
+    return candidate
 
 
 def _coverage_is_due(
@@ -445,7 +510,7 @@ def _authority_keys(candidate: dict[str, Any]) -> list[str]:
     addresses = [
         f"ip:{address}"
         for address in candidate.get("bootstrap_addresses", [])
-        if _public_ip(str(address))
+        if _actionable_bootstrap_ip(str(address))
     ]
     if addresses:
         return addresses
@@ -453,6 +518,48 @@ def _authority_keys(candidate: dict[str, Any]) -> list[str]:
     return [name for name in names if name != "ns:"] or [
         f"provider:{str(candidate.get('provider_guess') or 'unknown')}"
     ]
+
+
+def _authority_selection_state(
+    authority_keys: list[str],
+    health: dict[str, dict[str, Any]],
+    *,
+    now: str,
+) -> str:
+    if not authority_keys:
+        return "ready"
+    records = [health.get(key) for key in authority_keys]
+    if any(record is not None and record.get("state") == "healthy" for record in records):
+        return "healthy"
+    if any(record is None or str(record.get("next_probe_at") or "") <= now for record in records):
+        return "unknown"
+    return "suppressed"
+
+
+def _unknown_authority_key(
+    authority_keys: list[str],
+    health: dict[str, dict[str, Any]],
+    *,
+    now: str,
+) -> str:
+    for key in authority_keys:
+        record = health.get(key)
+        if record is None or str(record.get("next_probe_at") or "") <= now:
+            return key
+    return authority_keys[0] if authority_keys else "unknown"
+
+
+def _mark_shared_authority_keys(candidates: list[dict[str, Any]]) -> None:
+    counts: dict[str, int] = {}
+    for candidate in candidates:
+        if candidate["skip_sweep"]:
+            continue
+        for key in candidate["authority_keys"]:
+            counts[key] = counts.get(key, 0) + 1
+    for candidate in candidates:
+        candidate["authority_health_keys"] = [
+            key for key in candidate["authority_keys"] if counts.get(key, 0) > 1
+        ]
 
 
 def _cursor_key(tier: str) -> str:
@@ -492,3 +599,13 @@ def _public_ip(value: str) -> bool:
     except ValueError:
         return False
     return address.is_global and not address.is_multicast
+
+
+def _actionable_bootstrap_ip(value: str) -> bool:
+    if not _public_ip(value):
+        return False
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return str(address) not in EXCLUDED_BOOTSTRAP_IPS
