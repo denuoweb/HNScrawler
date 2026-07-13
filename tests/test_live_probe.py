@@ -185,6 +185,35 @@ def test_hns_doh_preflight_resolves_only_addresses_and_preserves_ad_signal(monke
     assert result.tlsa_status == "not_checked"
 
 
+def test_ad_preflight_candidate_forces_validating_hns_doh_for_website_scan(monkeypatch):
+    doh_calls = []
+
+    def doh(qname, rrtype, *, resolver_url, timeout):
+        doh_calls.append((qname, rrtype))
+        if rrtype == "A":
+            return _authenticated_response(_response_with_a(qname, "93.184.216.34"))
+        return _authenticated_response(_empty_response(qname, rrtype))
+
+    monkeypatch.setattr("hns_topology.live_probe._hns_doh_query", doh)
+    monkeypatch.setattr(
+        "hns_topology.live_probe._resolve_addresses",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("direct DNS must not run")),
+    )
+
+    result = probe_dns(
+        {**_candidate(), "sources": ["hns_doh_preflight"]},
+        config=ProbeConfig(hns_doh_url="https://resolver.example/dns-query"),
+    )
+
+    assert doh_calls == [
+        ("example", "A"),
+        ("example", "AAAA"),
+        ("_443._tcp.example", "TLSA"),
+    ]
+    assert result.status == "resolved"
+    assert result.dnssec_status == "resolver_validated"
+
+
 def test_dns_probe_falls_back_to_hns_doh_after_direct_authority_has_no_address(monkeypatch):
     direct_queries = []
 
@@ -265,6 +294,33 @@ def test_probe_rejects_web_response_when_parent_ds_cannot_validate_dnssec(monkey
 
     assert result.category == "offline"
     assert result.canonical_url == ""
+    assert result.https_status == "blocked_dnssec"
+    assert result.failure_reason == "dnssec_validation_failed"
+
+
+def test_probe_rejects_unverified_hns_doh_preflight_result(monkeypatch):
+    monkeypatch.setattr(
+        "hns_topology.live_probe.probe_dns",
+        lambda *args, **kwargs: DnsProbeResult(
+            status="resolved",
+            addresses=["93.184.216.34"],
+            dnssec_status="resolver_unverified",
+            tlsa_status="missing",
+        ),
+    )
+    monkeypatch.setattr(
+        "hns_topology.live_probe._probe_web",
+        lambda _host, _addresses, *, scheme, config: WebProbeResult(
+            scheme=scheme, status="response", status_code=200, webpki_status="valid"
+        ),
+    )
+
+    result = probe_host(
+        {**_candidate(), "sources": ["hns_doh_preflight"], "ds_records": []},
+        config=ProbeConfig(),
+    )
+
+    assert result.category == "offline"
     assert result.https_status == "blocked_dnssec"
     assert result.failure_reason == "dnssec_validation_failed"
 

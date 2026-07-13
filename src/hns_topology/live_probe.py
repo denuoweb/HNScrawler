@@ -100,7 +100,10 @@ def probe_host(
             dane_status=dane_status,
         )
         if (
-            candidate.get("ds_records")
+            (
+                candidate.get("ds_records")
+                or "hns_doh_preflight" in candidate.get("sources", [])
+            )
             and dns_result.status == "resolved"
             and dns_result.dnssec_status not in {"valid", "resolver_validated"}
         ):
@@ -184,6 +187,19 @@ def probe_dns(
 ) -> DnsProbeResult:
     root_name = str(candidate["root_name"])
     host = str(candidate["host"])
+    # Resolver-first admissions are deliberately rechecked through the same
+    # HNS-aware validating path. Their compact artifact does not need to
+    # duplicate parent DS material, and a conventional authority answer must
+    # not replace the AD signal that admitted the name to web probing.
+    if "hns_doh_preflight" in candidate.get("sources", []):
+        doh_result = _resolve_hns_doh(candidate, config=config, include_dns_details=include_dns_details)
+        if doh_result is not None:
+            return doh_result
+        return DnsProbeResult(
+            status="no_bootstrap",
+            dnssec_status="unknown",
+            failure_reason="hns_doh_no_public_a_or_aaaa",
+        )
     servers = [
         address for address in candidate.get("bootstrap_addresses", []) if _public_ip(address)
     ][: config.max_nameservers]
