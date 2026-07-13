@@ -69,6 +69,7 @@ HANDOFF_COHORT_CLASSES = (
     "DNSSEC_CANDIDATE",
 )
 HANDOFF_COHORT_CLASSES_SQL = ", ".join(f"'{item}'" for item in HANDOFF_COHORT_CLASSES)
+HANDOFF_UNBOUNDED_CANARY_MEMBERS = 3
 
 
 class NextActionSpec(NamedTuple):
@@ -859,6 +860,7 @@ def write_hns_handoff_groups(conn: sqlite3.Connection, out: Path) -> int:
     )
     groups: list[dict[str, Any]] = []
     ds_priority_groups: list[dict[str, Any]] = []
+    unbounded_canary_groups: list[dict[str, Any]] = []
     current_key: tuple[str, str, str, str] | None = None
     current_members: list[dict[str, Any]] = []
 
@@ -880,6 +882,12 @@ def write_hns_handoff_groups(conn: sqlite3.Connection, out: Path) -> int:
             ds_priority_groups.append(
                 {**group, "member_count": len(ds_members), "members": ds_members}
             )
+        elif len(current_members) > HANDOFF_COHORT_MAX_MEMBERS and ds_members:
+            canaries = _handoff_canaries(ds_members)
+            if canaries:
+                unbounded_canary_groups.append(
+                    {**group, "member_count": len(canaries), "members": canaries}
+                )
 
     try:
         rows = conn.execute(
@@ -955,9 +963,27 @@ def write_hns_handoff_groups(conn: sqlite3.Connection, out: Path) -> int:
                 int(group["member_count"]) for group in ds_priority_groups
             ),
             "ds_priority_groups": ds_priority_groups,
+            "unbounded_canary_group_count": len(unbounded_canary_groups),
+            "unbounded_canary_member_count": sum(
+                int(group["member_count"]) for group in unbounded_canary_groups
+            ),
+            "unbounded_canary_groups": unbounded_canary_groups,
         },
     )
-    return len(groups) + len(ds_priority_groups)
+    return len(groups) + len(ds_priority_groups) + len(unbounded_canary_groups)
+
+
+def _handoff_canaries(members: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Choose stable, spread-out DS roots from an unbounded route."""
+
+    if len(members) <= HANDOFF_UNBOUNDED_CANARY_MEMBERS:
+        return list(members)
+    last = len(members) - 1
+    indices = {
+        round(index * last / (HANDOFF_UNBOUNDED_CANARY_MEMBERS - 1))
+        for index in range(HANDOFF_UNBOUNDED_CANARY_MEMBERS)
+    }
+    return [members[index] for index in sorted(indices)]
 
 
 def _cohort_json_list(value: Any) -> list[Any]:

@@ -467,6 +467,11 @@ def _sweep_source_detail(candidate: dict[str, Any]) -> str:
     if isinstance(handoff_cohort, dict):
         nameserver = str(handoff_cohort.get("nameserver") or "")
         root_name = str(handoff_cohort.get("root_name") or "")
+        priority = int(handoff_cohort.get("priority") or 0)
+        if priority == 2:
+            return f"HNS handoff DS singleton {nameserver} via {root_name} endpoint sweep"
+        if priority == 1:
+            return f"HNS handoff unbounded-route canary {nameserver} via {root_name} endpoint sweep"
         return f"HNS handoff cohort {nameserver} via {root_name} endpoint sweep"
     delegation_host = str(candidate.get("delegation_host") or "")
     if delegation_host:
@@ -637,7 +642,7 @@ def _candidate_from_handoff_member(
         (
             root.resource_hash,
             "hns-handoff-v1",
-            "ds-priority" if group.get("priority") else "cohort",
+            _handoff_coverage_class(int(group.get("priority") or 0)),
             nameserver,
             root_name,
             bootstrap_ip,
@@ -672,9 +677,17 @@ def _candidate_from_handoff_member(
             "root_name": root_name,
             "bootstrap_ip": bootstrap_ip,
             "bootstrap_field": str(group["bootstrap_field"]),
-            "priority": bool(group.get("priority")),
+            "priority": int(group.get("priority") or 0),
         },
     }
+
+
+def _handoff_coverage_class(priority: int) -> str:
+    if priority == 2:
+        return "ds-singleton"
+    if priority == 1:
+        return "unbounded-canary"
+    return "cohort"
 
 
 def _coverage_may_be_due(coverage: dict[str, Any] | None, *, now: str) -> bool:

@@ -2,6 +2,7 @@ import json
 import sqlite3
 from dataclasses import replace
 
+from hns_topology.exporter import _handoff_canaries
 from hns_topology.live_cli import parser
 from hns_topology.live_db import (
     HNS_HANDOFF_NOT_BEFORE_META_KEY,
@@ -58,6 +59,14 @@ def test_priority_sweep_tiers_exclude_unindexed_generic_backlog():
         "shared_delegation",
         "ds_bootstrap",
     )
+
+
+def test_unbounded_handoff_canaries_are_stable_and_spread_across_the_route():
+    members = [{"name": f"root-{index}", "has_ds": True} for index in range(11)]
+
+    selected = _handoff_canaries(members)
+
+    assert [member["name"] for member in selected] == ["root-0", "root-5", "root-10"]
 
 
 def test_cycle_defers_full_topology_sync_by_default():
@@ -324,6 +333,20 @@ def test_handoff_index_keeps_only_bounded_route_cohorts(tmp_path):
                         "members": members,
                     },
                 ],
+                "unbounded_canary_groups": [
+                    {
+                        "nameserver": "a.shakestation",
+                        "root_name": "shakestation",
+                        "bootstrap_addresses": ["44.231.6.183"],
+                        "bootstrap_field": "glue4",
+                        "member_count": 3,
+                        "members": [
+                            {**members[0], "name": "canary-a"},
+                            {**members[0], "name": "canary-b"},
+                            {**members[0], "name": "canary-c"},
+                        ],
+                    }
+                ],
             }
         )
     )
@@ -351,8 +374,10 @@ def test_handoff_index_keeps_only_bounded_route_cohorts(tmp_path):
     assert third["indexed"] is True
     assert not_before == ""
     assert first["ds_priority_groups"] == 1
+    assert first["unbounded_canary_groups"] == 1
     assert [(row["nameserver"], row["root_name"], row["member_count"], row["priority"]) for row in groups] == [
-        ("a.namenode", "namenode", 1, 1),
+        ("a.namenode", "namenode", 1, 2),
+        ("a.shakestation", "shakestation", 3, 1),
         ("ns1.skyinclude", "skyinclude", 2, 0),
     ]
 
@@ -408,7 +433,7 @@ def test_ds_priority_handoff_singleton_precedes_bounded_cohorts(tmp_path):
                     "namenode",
                     "138.199.197.111",
                     "glue4",
-                    1,
+                    2,
                     1,
                     json.dumps(
                         [
@@ -427,21 +452,50 @@ def test_ds_priority_handoff_singleton_precedes_bounded_cohorts(tmp_path):
                     "test",
                     "2026-07-12T00:00:00Z",
                 ),
+                (
+                    "a.shakestation",
+                    "shakestation",
+                    "44.231.6.183",
+                    "glue4",
+                    1,
+                    1,
+                    json.dumps(
+                        [
+                            {
+                                "name": "canary",
+                                "provider_guess": "unknown/custom",
+                                "provider_type": "unknown",
+                                "resource_hash": "hash-canary",
+                                "last_seen_height": 100,
+                                "ns_names": ["a.shakestation"],
+                                "ds_records": [{"keyTag": 1}],
+                                "has_ds": True,
+                            }
+                        ]
+                    ),
+                    "test",
+                    "2026-07-12T00:00:00Z",
+                ),
             ],
         )
         selection = select_sweep_candidates(
             conn,
             topology_db=tmp_path / "not-needed.sqlite",
-            limit=1,
+            limit=2,
             page_size=100,
             tiers=("hns_handoff",),
         )
 
-    candidate = selection["candidates"][0]
-    assert candidate["root_name"] == "shakeshift"
-    assert candidate["signal_tier"] == "ds_handoff"
-    assert candidate["handoff_cohort"]["priority"] is True
-    assert "ds-priority" in candidate["sweep_coverage_resource_hash"]
+    assert [candidate["root_name"] for candidate in selection["candidates"]] == [
+        "shakeshift",
+        "canary",
+    ]
+    singleton, canary = selection["candidates"]
+    assert singleton["signal_tier"] == "ds_handoff"
+    assert singleton["handoff_cohort"]["priority"] == 2
+    assert "ds-singleton" in singleton["sweep_coverage_resource_hash"]
+    assert canary["handoff_cohort"]["priority"] == 1
+    assert "unbounded-canary" in canary["sweep_coverage_resource_hash"]
 
 
 def test_handoff_cohort_sweep_uses_compact_index_without_topology_database(tmp_path):

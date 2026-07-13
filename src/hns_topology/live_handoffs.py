@@ -45,7 +45,7 @@ def refresh_hns_handoff_groups(
             signature=signature,
             minimum=minimum,
             maximum=maximum,
-            priority=False,
+            priority=0,
         )
         if item is not None:
             groups.append(item)
@@ -55,7 +55,17 @@ def refresh_hns_handoff_groups(
             signature=signature,
             minimum=1,
             maximum=1,
-            priority=True,
+            priority=2,
+        )
+        if item is not None:
+            groups.append(item)
+    for group in _json_list(payload.get("unbounded_canary_groups")):
+        item = _import_group(
+            group,
+            signature=signature,
+            minimum=1,
+            maximum=3,
+            priority=1,
         )
         if item is not None:
             groups.append(item)
@@ -78,7 +88,8 @@ def refresh_hns_handoff_groups(
     return {
         "indexed": True,
         "groups": len(groups),
-        "ds_priority_groups": sum(1 for group in groups if group[4]),
+        "ds_priority_groups": sum(1 for group in groups if group[4] == 2),
+        "unbounded_canary_groups": sum(1 for group in groups if group[4] == 1),
         "source_signature": signature,
     }
 
@@ -89,7 +100,7 @@ def _import_group(
     signature: str,
     minimum: int,
     maximum: int | None,
-    priority: bool,
+    priority: int,
 ) -> tuple[str, str, str, str, int, int, str, str, str] | None:
     nameserver = _name(group.get("nameserver"))
     root_name = _name(group.get("root_name"))
@@ -115,7 +126,7 @@ def _import_group(
         root_name,
         bootstrap_ip,
         bootstrap_field,
-        int(priority),
+        priority,
         member_count,
         dumps_json(members),
         signature,
@@ -144,7 +155,7 @@ def hns_handoff_group_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             "root_name": str(row["root_name"]),
             "bootstrap_ip": str(row["bootstrap_ip"]),
             "bootstrap_field": str(row["bootstrap_field"]),
-            "priority": bool(row["priority"]),
+            "priority": int(row["priority"]),
             "member_count": int(row["member_count"]),
             "members": _members(row["members_json"]),
         }
