@@ -97,11 +97,15 @@ def test_init_live_db_migrates_handoff_storage(tmp_path):
         handoff_columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(hns_handoff_groups)")
         }
+        preflight_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(hns_handoff_preflight)")
+        }
         schema_version = get_live_meta(conn, "schema_version")
 
     assert "ns_handoffs_json" in columns
     assert "priority" in handoff_columns
-    assert schema_version == "8"
+    assert {"root_name", "dnssec_status", "next_check_at"}.issubset(preflight_columns)
+    assert schema_version == "9"
 
 
 def test_topology_hash_change_makes_candidate_immediately_due(tmp_path):

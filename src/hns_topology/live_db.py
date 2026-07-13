@@ -16,7 +16,7 @@ from .live_models import (
 )
 from .timeutil import utc_now
 
-LIVE_SCHEMA_VERSION = "8"
+LIVE_SCHEMA_VERSION = "9"
 HNS_HANDOFF_NOT_BEFORE_META_KEY = "sweep.not_before.hns_handoff"
 
 SCHEMA_SQL = """
@@ -164,6 +164,24 @@ CREATE TABLE IF NOT EXISTS hns_handoff_groups (
   PRIMARY KEY(nameserver, root_name, bootstrap_ip, bootstrap_field)
 );
 
+CREATE TABLE IF NOT EXISTS hns_handoff_preflight (
+  root_name TEXT PRIMARY KEY,
+  nameserver TEXT NOT NULL,
+  handoff_root TEXT NOT NULL,
+  bootstrap_ip TEXT NOT NULL,
+  bootstrap_field TEXT NOT NULL,
+  resource_hash TEXT NOT NULL,
+  member_json TEXT NOT NULL,
+  source_signature TEXT NOT NULL,
+  indexed_at TEXT NOT NULL,
+  dns_status TEXT NOT NULL DEFAULT 'not_checked',
+  dnssec_status TEXT NOT NULL DEFAULT 'not_checked',
+  addresses_json TEXT NOT NULL DEFAULT '[]',
+  checked_at TEXT,
+  next_check_at TEXT NOT NULL DEFAULT '',
+  failure_reason TEXT NOT NULL DEFAULT ''
+);
+
 CREATE INDEX IF NOT EXISTS idx_roots_active ON roots(active, strict_ready, name);
 CREATE INDEX IF NOT EXISTS idx_candidates_active_priority
   ON candidates(active, suppressed, priority DESC, host);
@@ -177,6 +195,8 @@ CREATE INDEX IF NOT EXISTS idx_delegation_groups_priority
   ON delegation_groups(member_count DESC, nameserver);
 CREATE INDEX IF NOT EXISTS idx_hns_handoff_groups_priority
   ON hns_handoff_groups(priority DESC, member_count DESC, nameserver, root_name, bootstrap_ip);
+CREATE INDEX IF NOT EXISTS idx_hns_handoff_preflight_due
+  ON hns_handoff_preflight(next_check_at, root_name);
 """
 
 

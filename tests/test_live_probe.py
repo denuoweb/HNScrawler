@@ -14,7 +14,13 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 from hns_topology.live_models import DnsProbeResult, WebProbeResult
-from hns_topology.live_probe import ProbeConfig, _public_ip, probe_dns, probe_host
+from hns_topology.live_probe import (
+    ProbeConfig,
+    _public_ip,
+    probe_dns,
+    probe_hns_doh_preflight,
+    probe_host,
+)
 
 
 def test_probe_classifies_dane_authenticated_https(monkeypatch):
@@ -151,6 +157,32 @@ def test_dns_probe_uses_hns_doh_when_direct_bootstrap_is_unavailable(monkeypatch
     assert result.dnssec_status == "resolver_validated"
     assert result.tlsa_status == "present_secure"
     assert result.tlsa_secure is True
+
+
+def test_hns_doh_preflight_resolves_only_addresses_and_preserves_ad_signal(monkeypatch):
+    calls = []
+
+    def doh(qname, rrtype, *, resolver_url, timeout):
+        calls.append((qname, rrtype, resolver_url, timeout))
+        if rrtype == "A":
+            return _authenticated_response(_response_with_a(qname, "93.184.216.34"))
+        return _authenticated_response(_empty_response(qname, rrtype))
+
+    monkeypatch.setattr("hns_topology.live_probe._hns_doh_query", doh)
+
+    result = probe_hns_doh_preflight(
+        _candidate(),
+        config=ProbeConfig(hns_doh_url="https://resolver.example/dns-query"),
+    )
+
+    assert calls == [
+        ("example", "A", "https://resolver.example/dns-query", 5.0),
+        ("example", "AAAA", "https://resolver.example/dns-query", 5.0),
+    ]
+    assert result.status == "resolved"
+    assert result.addresses == ["93.184.216.34"]
+    assert result.dnssec_status == "resolver_validated"
+    assert result.tlsa_status == "not_checked"
 
 
 def test_dns_probe_falls_back_to_hns_doh_after_direct_authority_has_no_address(monkeypatch):

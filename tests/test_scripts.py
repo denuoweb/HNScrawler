@@ -76,6 +76,9 @@ def test_live_directory_runner_uses_web_vm_snapshot_and_separate_state():
     assert "OnUnitInactiveSec=30s" in setup
     assert 'LIVE_SWEEP_CONCURRENCY="${LIVE_SWEEP_CONCURRENCY:-50}"' in runner
     assert 'LIVE_SWEEP_TIERS="${LIVE_SWEEP_TIERS:-hns_handoff,shared_delegation}"' in runner
+    assert 'LIVE_HANDOFF_PREFLIGHT_LIMIT="${LIVE_HANDOFF_PREFLIGHT_LIMIT:-50}"' in runner
+    assert "--handoff-preflight-limit" in runner
+    assert "LIVE_HANDOFF_PREFLIGHT_LIMIT=$LIVE_HANDOFF_PREFLIGHT_LIMIT" in setup
     assert "hns-live-directory.timer" in setup
     assert "configure-live-directory-nginx.sh" in setup
     assert "publish-hns-topology-navigation.sh" in setup

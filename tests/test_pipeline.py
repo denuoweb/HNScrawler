@@ -415,6 +415,7 @@ def test_generate_site_writes_requested_artifacts(tmp_path):
     assert handoff_groups["format"] == "hns-handoff-cohorts-v1"
     assert "ds_priority_groups" in handoff_groups
     assert "unbounded_canary_groups" in handoff_groups
+    assert "ds_preflight_groups" in handoff_groups
     assert "names-pages/all/page-1.json" in manifest_artifacts
     assert "ip-addresses/198.51.100.2.json" in manifest_artifacts
     assert "ip-addresses/198.51.100.2/page-1.json" in manifest_artifacts

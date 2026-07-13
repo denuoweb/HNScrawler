@@ -283,6 +283,17 @@ def probe_dns(
     )
 
 
+def probe_hns_doh_preflight(candidate: dict[str, Any], *, config: ProbeConfig) -> DnsProbeResult:
+    """Resolve only through the HNS-aware resolver, requiring AD at the caller."""
+
+    result = _resolve_hns_doh(candidate, config=config, include_dns_details=False)
+    return result or DnsProbeResult(
+        status="no_bootstrap",
+        dnssec_status="unknown",
+        failure_reason="hns_doh_no_public_a_or_aaaa",
+    )
+
+
 def _resolve_hns_doh(
     candidate: dict[str, Any],
     *,

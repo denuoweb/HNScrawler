@@ -861,6 +861,7 @@ def write_hns_handoff_groups(conn: sqlite3.Connection, out: Path) -> int:
     groups: list[dict[str, Any]] = []
     ds_priority_groups: list[dict[str, Any]] = []
     unbounded_canary_groups: list[dict[str, Any]] = []
+    ds_preflight_groups: list[dict[str, Any]] = []
     current_key: tuple[str, str, str, str] | None = None
     current_members: list[dict[str, Any]] = []
 
@@ -874,10 +875,18 @@ def write_hns_handoff_groups(conn: sqlite3.Connection, out: Path) -> int:
             "bootstrap_addresses": [bootstrap_ip],
             "bootstrap_field": bootstrap_field,
         }
+        # The resolver-first preflight is intentionally independent from the
+        # bounded website-cohort policy.  A valid AD response is a much
+        # stronger, per-name signal than a shared nameserver route, so retain
+        # every DS-backed indirect handoff here, including bounded cohorts.
+        ds_members = [member for member in current_members if member["has_ds"]]
+        if ds_members:
+            ds_preflight_groups.append(
+                {**group, "member_count": len(ds_members), "members": ds_members}
+            )
         if HANDOFF_COHORT_MIN_MEMBERS <= len(current_members) <= HANDOFF_COHORT_MAX_MEMBERS:
             groups.append({**group, "member_count": len(current_members), "members": current_members})
             return
-        ds_members = [member for member in current_members if member["has_ds"]]
         if len(current_members) == 1 and ds_members:
             ds_priority_groups.append(
                 {**group, "member_count": len(ds_members), "members": ds_members}
@@ -968,6 +977,11 @@ def write_hns_handoff_groups(conn: sqlite3.Connection, out: Path) -> int:
                 int(group["member_count"]) for group in unbounded_canary_groups
             ),
             "unbounded_canary_groups": unbounded_canary_groups,
+            "ds_preflight_group_count": len(ds_preflight_groups),
+            "ds_preflight_member_count": sum(
+                int(group["member_count"]) for group in ds_preflight_groups
+            ),
+            "ds_preflight_groups": ds_preflight_groups,
         },
     )
     return len(groups) + len(ds_priority_groups) + len(unbounded_canary_groups)

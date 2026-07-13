@@ -27,9 +27,19 @@ from .live_db import (
     upsert_root,
 )
 from .live_delegations import delegation_group_rows
-from .live_handoffs import hns_handoff_group_rows
+from .live_handoffs import (
+    due_hns_handoff_preflight_rows,
+    hns_handoff_group_rows,
+    record_hns_handoff_preflight,
+)
 from .live_models import ONLINE_CATEGORIES, LiveCandidate, TopologyRoot
-from .live_probe import DEFAULT_HNS_DOH_URL, ProbeConfig, probe_host
+from .live_probe import (
+    DEFAULT_HNS_DOH_URL,
+    ProbeConfig,
+    RateLimiter,
+    probe_hns_doh_preflight,
+    probe_host,
+)
 from .timeutil import utc_now
 
 SWEEP_TIERS = (
@@ -81,6 +91,18 @@ class SweepBatchConfig:
     fallback_resolver: str | None = None
     hns_doh_url: str | None = DEFAULT_HNS_DOH_URL
     tiers: tuple[str, ...] = SWEEP_TIERS
+
+
+@dataclass(frozen=True)
+class HnsHandoffPreflightConfig:
+    """Bounded resolver-only discovery for DS-backed indirect handoffs."""
+
+    limit: int | None = 50
+    concurrency: int = 10
+    min_delay_ms: int = 200
+    timeout: float = 3.0
+    max_addresses: int = 2
+    hns_doh_url: str | None = DEFAULT_HNS_DOH_URL
 
 
 def parse_sweep_tiers(value: str) -> tuple[str, ...]:
@@ -274,6 +296,113 @@ def run_sweep_batch(
         "tiers": selection["tiers"],
         **limiter.summary(),
     }
+
+
+def run_hns_handoff_preflight(
+    conn: sqlite3.Connection,
+    *,
+    config: HnsHandoffPreflightConfig,
+) -> dict[str, Any]:
+    """Promote only DS handoffs which an HNS resolver returns with DNS AD.
+
+    This deliberately makes no authoritative-DNS or HTTP/HTTPS request.  A
+    resolver-validated public A/AAAA result is merely admission to the normal
+    detailed scanner, which performs the web probe and records its evidence.
+    """
+
+    rows = due_hns_handoff_preflight_rows(conn, now=utc_now(), limit=config.limit)
+    if not rows:
+        return {
+            "selected": 0,
+            "checked": 0,
+            "resolver_validated": 0,
+            "promoted": 0,
+            "errors": 0,
+        }
+
+    probe_config = ProbeConfig(
+        timeout=config.timeout,
+        max_addresses=config.max_addresses,
+        hns_doh_url=config.hns_doh_url,
+    )
+    limiter = RateLimiter(config.min_delay_ms)
+    checked = 0
+    resolver_validated = 0
+    promoted = 0
+    errors = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, config.concurrency)) as executor:
+        futures = {
+            executor.submit(_probe_hns_handoff_preflight, row, probe_config, limiter): row
+            for row in rows
+        }
+        for future in concurrent.futures.as_completed(futures):
+            row = futures[future]
+            result = future.result()
+            validated = (
+                result.status == "resolved"
+                and result.dnssec_status == "resolver_validated"
+                and bool(result.addresses)
+            )
+            with conn:
+                record_hns_handoff_preflight(
+                    conn,
+                    root_name=str(row["root_name"]),
+                    result=result,
+                )
+                if validated:
+                    candidate = _candidate_from_preflight_row(row)
+                    _promote_preflight_candidate(conn, candidate)
+                    promoted += 1
+            checked += 1
+            resolver_validated += int(validated)
+            errors += int(str(result.failure_reason).startswith("probe_error:"))
+    return {
+        "selected": len(rows),
+        "checked": checked,
+        "resolver_validated": resolver_validated,
+        "promoted": promoted,
+        "errors": errors,
+    }
+
+
+def _probe_hns_handoff_preflight(
+    row: dict[str, Any],
+    config: ProbeConfig,
+    limiter: RateLimiter,
+):
+    limiter.wait()
+    return probe_hns_doh_preflight(_candidate_from_preflight_row(row), config=config)
+
+
+def _candidate_from_preflight_row(row: dict[str, Any]) -> dict[str, Any]:
+    return _candidate_from_handoff_member(
+        {
+            "nameserver": str(row["nameserver"]),
+            "root_name": str(row["handoff_root"]),
+            "bootstrap_ip": str(row["bootstrap_ip"]),
+            "bootstrap_field": str(row["bootstrap_field"]),
+            "priority": 3,
+        },
+        dict(row["member"]),
+    )
+
+
+def _promote_preflight_candidate(conn: sqlite3.Connection, candidate: dict[str, Any]) -> None:
+    root = candidate["topology_root"]
+    checked_at = utc_now()
+    upsert_root(conn, root, synced_at=checked_at)
+    upsert_candidate(
+        conn,
+        LiveCandidate(
+            root_name=root.name,
+            host=root.name,
+            source="hns_doh_preflight",
+            source_detail="AD-validated HNS DoH resolution for DS-backed indirect NS handoff",
+            priority=90,
+            topology_resource_hash=root.resource_hash,
+        ),
+        seen_at=checked_at,
+    )
 
 
 def select_sweep_candidates(

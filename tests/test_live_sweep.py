@@ -13,12 +13,14 @@ from hns_topology.live_db import (
 )
 from hns_topology.live_delegations import refresh_delegation_groups
 from hns_topology.live_handoffs import refresh_hns_handoff_groups
-from hns_topology.live_models import HostProbeResult
+from hns_topology.live_models import DnsProbeResult, HostProbeResult
 from hns_topology.live_probe import ProbeConfig, probe_dns
 from hns_topology.live_sweep import (
     PRIORITY_SWEEP_TIERS,
+    HnsHandoffPreflightConfig,
     SweepBatchConfig,
     parse_sweep_tiers,
+    run_hns_handoff_preflight,
     run_sweep_batch,
     select_sweep_candidates,
 )
@@ -130,7 +132,9 @@ def test_sweep_promotes_http_endpoint_but_keeps_offline_root_compact(tmp_path, m
         }
         endpoints = [
             dict(row)
-            for row in conn.execute("SELECT root_name, host, category FROM host_status ORDER BY root_name")
+            for row in conn.execute(
+                "SELECT root_name, host, category FROM host_status ORDER BY root_name"
+            )
         ]
         authority_health_rows = conn.execute("SELECT COUNT(*) FROM authority_health").fetchone()[0]
 
@@ -264,9 +268,7 @@ def test_delegation_index_keeps_only_bounded_shared_groups(tmp_path):
 
     assert first["indexed"] is True
     assert second["indexed"] is False
-    assert [(row["nameserver"], row["member_count"]) for row in groups] == [
-        ("ns1.trapify", 5)
-    ]
+    assert [(row["nameserver"], row["member_count"]) for row in groups] == [("ns1.trapify", 5)]
 
 
 def test_handoff_index_keeps_only_bounded_route_cohorts(tmp_path):
@@ -347,6 +349,24 @@ def test_handoff_index_keeps_only_bounded_route_cohorts(tmp_path):
                         ],
                     }
                 ],
+                "ds_preflight_groups": [
+                    {
+                        "nameserver": "ns1.skyinclude",
+                        "root_name": "skyinclude",
+                        "bootstrap_addresses": ["8.8.8.8"],
+                        "bootstrap_field": "glue4",
+                        "member_count": 2,
+                        "members": members,
+                    },
+                    {
+                        "nameserver": "a.namenode",
+                        "root_name": "namenode",
+                        "bootstrap_addresses": ["138.199.197.111"],
+                        "bootstrap_field": "glue4",
+                        "member_count": 1,
+                        "members": [{**members[0], "name": "shakeshift"}],
+                    },
+                ],
             }
         )
     )
@@ -375,11 +395,124 @@ def test_handoff_index_keeps_only_bounded_route_cohorts(tmp_path):
     assert not_before == ""
     assert first["ds_priority_groups"] == 1
     assert first["unbounded_canary_groups"] == 1
-    assert [(row["nameserver"], row["root_name"], row["member_count"], row["priority"]) for row in groups] == [
+    assert first["preflight_roots"] == 3
+    assert [
+        (row["nameserver"], row["root_name"], row["member_count"], row["priority"])
+        for row in groups
+    ] == [
         ("a.namenode", "namenode", 1, 2),
         ("a.shakestation", "shakestation", 3, 1),
         ("ns1.skyinclude", "skyinclude", 2, 0),
     ]
+
+
+def test_handoff_preflight_promotes_only_ad_validated_hns_doh_roots(tmp_path, monkeypatch):
+    live_db = tmp_path / "live.sqlite"
+    topology_site = tmp_path / "site"
+    artifact = topology_site / "data" / "hns-handoff-groups.json"
+    artifact.parent.mkdir(parents=True)
+    members = [
+        {
+            "name": name,
+            "provider_guess": "self-hosted",
+            "provider_type": "external_dns",
+            "resource_hash": f"hash-{name}",
+            "last_seen_height": 100,
+            "ns_names": ["ns1.handoff"],
+            "ds_records": [{"keyTag": 1}],
+            "has_ds": True,
+        }
+        for name in ("validated", "unverified")
+    ]
+    artifact.write_text(
+        json.dumps(
+            {
+                "format": "hns-handoff-cohorts-v1",
+                "groups": [],
+                "ds_priority_groups": [],
+                "unbounded_canary_groups": [],
+                "ds_preflight_groups": [
+                    {
+                        "nameserver": "ns1.handoff",
+                        "root_name": "handoff",
+                        "bootstrap_addresses": ["8.8.8.8"],
+                        "bootstrap_field": "glue4",
+                        "member_count": 2,
+                        "members": members,
+                    }
+                ],
+            }
+        )
+    )
+    seen = []
+
+    def fake_preflight(candidate, *, config):
+        seen.append((candidate["root_name"], candidate["host"], candidate["ns_handoffs"]))
+        return DnsProbeResult(
+            status="resolved",
+            addresses=["93.184.216.34"],
+            dnssec_status=(
+                "resolver_validated"
+                if candidate["root_name"] == "validated"
+                else "resolver_unverified"
+            ),
+        )
+
+    monkeypatch.setattr("hns_topology.live_sweep.probe_hns_doh_preflight", fake_preflight)
+    with connect_live(live_db) as conn:
+        init_live_db(conn)
+        refresh_hns_handoff_groups(conn, topology_site=topology_site)
+        result = run_hns_handoff_preflight(
+            conn,
+            config=HnsHandoffPreflightConfig(limit=10, concurrency=1, min_delay_ms=0),
+        )
+        preflight = {
+            row["root_name"]: dict(row)
+            for row in conn.execute("SELECT * FROM hns_handoff_preflight ORDER BY root_name")
+        }
+        candidates = [
+            dict(row)
+            for row in conn.execute("SELECT root_name, sources_json, priority FROM candidates")
+        ]
+
+    assert result == {
+        "selected": 2,
+        "checked": 2,
+        "resolver_validated": 1,
+        "promoted": 1,
+        "errors": 0,
+    }
+    assert seen == [
+        (
+            "unverified",
+            "unverified",
+            [
+                {
+                    "nameserver": "ns1.handoff",
+                    "root_name": "handoff",
+                    "bootstrap_addresses": ["8.8.8.8"],
+                }
+            ],
+        ),
+        (
+            "validated",
+            "validated",
+            [
+                {
+                    "nameserver": "ns1.handoff",
+                    "root_name": "handoff",
+                    "bootstrap_addresses": ["8.8.8.8"],
+                }
+            ],
+        ),
+    ]
+    assert preflight["validated"]["dnssec_status"] == "resolver_validated"
+    assert preflight["validated"]["next_check_at"]
+    assert preflight["unverified"]["dnssec_status"] == "resolver_unverified"
+    assert len(candidates) == 1
+    assert candidates[0]["root_name"] == "validated"
+    assert json.loads(candidates[0]["sources_json"]) == ["hns_doh_preflight"]
+    assert candidates[0]["priority"] == 90
 
 
 def test_ds_priority_handoff_singleton_precedes_bounded_cohorts(tmp_path):
@@ -577,7 +710,9 @@ def test_handoff_cohort_sweep_uses_compact_index_without_topology_database(tmp_p
     }
     assert {tuple(item["authority_health_keys"]) for item in selection["candidates"]} == {()}
     assert {item["ns_handoffs"][0]["root_name"] for item in selection["candidates"]} == {"namenode"}
-    assert all("hns-handoff-v1" in item["sweep_coverage_resource_hash"] for item in selection["candidates"])
+    assert all(
+        "hns-handoff-v1" in item["sweep_coverage_resource_hash"] for item in selection["candidates"]
+    )
 
 
 def test_sweep_prioritizes_members_of_a_shared_delegation_group(tmp_path):
@@ -619,16 +754,14 @@ def test_sweep_prioritizes_members_of_a_shared_delegation_group(tmp_path):
     assert {tuple(item["authority_keys"]) for item in selection["candidates"]} == {
         ("ns:ns1.trapify",)
     }
-    assert {tuple(item["ns_names"]) for item in selection["candidates"]} == {
-        ("ns1.trapify",)
-    }
+    assert {tuple(item["ns_names"]) for item in selection["candidates"]} == {("ns1.trapify",)}
     assert {item["signal_tier"] for item in selection["candidates"]} == {"ds_handoff"}
-    assert {item["ns_handoffs"][0]["root_name"] for item in selection["candidates"]} == {
-        "trapify"
-    }
+    assert {item["ns_handoffs"][0]["root_name"] for item in selection["candidates"]} == {"trapify"}
 
 
-def test_shared_delegation_selection_skips_covered_groups_without_topology_reads(tmp_path, monkeypatch):
+def test_shared_delegation_selection_skips_covered_groups_without_topology_reads(
+    tmp_path, monkeypatch
+):
     topology_db = tmp_path / "topology.sqlite"
     live_db = tmp_path / "live.sqlite"
     _seed_shared_authority_topology(topology_db)
@@ -670,7 +803,9 @@ def test_shared_delegation_selection_skips_covered_groups_without_topology_reads
         )
         monkeypatch.setattr(
             "hns_topology.live_sweep._topology_rows_for_names",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected topology read")),
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("unexpected topology read")
+            ),
         )
         selection = select_sweep_candidates(
             conn,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +31,15 @@ def refresh_hns_handoff_groups(
     signature = _source_signature(source)
     if get_live_meta(conn, HANDOFF_GROUP_INDEX_META_KEY) == signature:
         count = int(conn.execute("SELECT COUNT(*) FROM hns_handoff_groups").fetchone()[0])
-        return {"indexed": False, "groups": count, "source_signature": signature}
+        preflight_roots = int(
+            conn.execute("SELECT COUNT(*) FROM hns_handoff_preflight").fetchone()[0]
+        )
+        return {
+            "indexed": False,
+            "groups": count,
+            "preflight_roots": preflight_roots,
+            "source_signature": signature,
+        }
 
     payload = _json_object(source.read_text(encoding="utf-8"))
     if payload.get("format") != HANDOFF_GROUP_FORMAT:
@@ -49,6 +58,36 @@ def refresh_hns_handoff_groups(
         )
         if item is not None:
             groups.append(item)
+    preflight_by_root: dict[str, tuple[str, str, str, str, str, str, str, str, str]] = {}
+    for group in _json_list(payload.get("ds_preflight_groups")):
+        route = _import_group(
+            group,
+            signature=signature,
+            minimum=1,
+            maximum=None,
+            priority=0,
+        )
+        if route is None:
+            continue
+        nameserver, handoff_root, bootstrap_ip, bootstrap_field, _, _, members_json, _, indexed_at = route
+        for member in _members(members_json):
+            if not member["has_ds"]:
+                continue
+            root_name = str(member["name"])
+            preflight_by_root.setdefault(
+                root_name,
+                (
+                    root_name,
+                    nameserver,
+                    handoff_root,
+                    bootstrap_ip,
+                    bootstrap_field,
+                    str(member["resource_hash"]),
+                    dumps_json(member),
+                    signature,
+                    indexed_at,
+                ),
+            )
     for group in _json_list(payload.get("ds_priority_groups")):
         item = _import_group(
             group,
@@ -72,6 +111,7 @@ def refresh_hns_handoff_groups(
 
     with conn:
         conn.execute("DELETE FROM hns_handoff_groups")
+        conn.execute("DELETE FROM hns_handoff_preflight")
         conn.executemany(
             """
             INSERT INTO hns_handoff_groups(
@@ -80,6 +120,15 @@ def refresh_hns_handoff_groups(
             ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             groups,
+        )
+        conn.executemany(
+            """
+            INSERT INTO hns_handoff_preflight(
+              root_name, nameserver, handoff_root, bootstrap_ip, bootstrap_field,
+              resource_hash, member_json, source_signature, indexed_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            list(preflight_by_root.values()),
         )
         set_live_meta(conn, HANDOFF_GROUP_INDEX_META_KEY, signature)
         # A new artifact can introduce a route that was absent during the
@@ -90,6 +139,7 @@ def refresh_hns_handoff_groups(
         "groups": len(groups),
         "ds_priority_groups": sum(1 for group in groups if group[4] == 2),
         "unbounded_canary_groups": sum(1 for group in groups if group[4] == 1),
+        "preflight_roots": len(preflight_by_root),
         "source_signature": signature,
     }
 
@@ -163,6 +213,71 @@ def hns_handoff_group_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     ]
 
 
+def due_hns_handoff_preflight_rows(
+    conn: sqlite3.Connection,
+    *,
+    now: str,
+    limit: int | None,
+) -> list[dict[str, Any]]:
+    clauses = "" if limit is None else "LIMIT ?"
+    params: tuple[Any, ...] = (now,) if limit is None else (now, max(1, limit))
+    rows = conn.execute(
+        f"""
+        SELECT root_name, nameserver, handoff_root, bootstrap_ip, bootstrap_field,
+               resource_hash, member_json
+        FROM hns_handoff_preflight
+        WHERE next_check_at = '' OR next_check_at <= ?
+        ORDER BY root_name
+        {clauses}
+        """,
+        params,
+    )
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        members = _members(row["member_json"])
+        if not members:
+            continue
+        result.append(
+            {
+                "root_name": str(row["root_name"]),
+                "nameserver": str(row["nameserver"]),
+                "handoff_root": str(row["handoff_root"]),
+                "bootstrap_ip": str(row["bootstrap_ip"]),
+                "bootstrap_field": str(row["bootstrap_field"]),
+                "resource_hash": str(row["resource_hash"]),
+                "member": members[0],
+            }
+        )
+    return result
+
+
+def record_hns_handoff_preflight(
+    conn: sqlite3.Connection,
+    *,
+    root_name: str,
+    result: Any,
+) -> None:
+    validated = result.status == "resolved" and result.dnssec_status == "resolver_validated"
+    retry_days = 7 if validated else 30
+    checked_at = utc_now()
+    conn.execute(
+        """
+        UPDATE hns_handoff_preflight
+        SET dns_status=?, dnssec_status=?, addresses_json=?, checked_at=?, next_check_at=?, failure_reason=?
+        WHERE root_name=?
+        """,
+        (
+            str(result.status),
+            str(result.dnssec_status),
+            dumps_json(result.addresses),
+            checked_at,
+            _after_days(checked_at, retry_days),
+            str(result.failure_reason),
+            root_name,
+        ),
+    )
+
+
 def _source_signature(source: Path) -> str:
     stat = source.stat()
     digest = hashlib.sha256()
@@ -200,6 +315,8 @@ def _members(value: Any) -> list[dict[str, Any]]:
             value = json.loads(value)
         except json.JSONDecodeError:
             return []
+    if isinstance(value, dict):
+        value = [value]
     members = _json_list(value)
     normalized: list[dict[str, Any]] = []
     for member in members:
@@ -239,3 +356,13 @@ def _integer_or_none(value: Any) -> int | None:
         return int(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _after_days(now: str, days: int) -> str:
+    parsed = datetime.fromisoformat(now.replace("Z", "+00:00"))
+    return (
+        (parsed.astimezone(UTC) + timedelta(days=days))
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )

@@ -24,6 +24,11 @@ LIVE_SWEEP_TIMEOUT="${LIVE_SWEEP_TIMEOUT:-2}"
 LIVE_SWEEP_MAX_NAMESERVERS="${LIVE_SWEEP_MAX_NAMESERVERS:-2}"
 LIVE_SWEEP_MAX_ADDRESSES="${LIVE_SWEEP_MAX_ADDRESSES:-2}"
 LIVE_SWEEP_TIERS="${LIVE_SWEEP_TIERS:-hns_handoff,shared_delegation}"
+LIVE_HANDOFF_PREFLIGHT_LIMIT="${LIVE_HANDOFF_PREFLIGHT_LIMIT:-50}"
+LIVE_HANDOFF_PREFLIGHT_CONCURRENCY="${LIVE_HANDOFF_PREFLIGHT_CONCURRENCY:-10}"
+LIVE_HANDOFF_PREFLIGHT_MIN_DELAY_MS="${LIVE_HANDOFF_PREFLIGHT_MIN_DELAY_MS:-200}"
+LIVE_HANDOFF_PREFLIGHT_TIMEOUT="${LIVE_HANDOFF_PREFLIGHT_TIMEOUT:-3}"
+LIVE_HANDOFF_PREFLIGHT_MAX_ADDRESSES="${LIVE_HANDOFF_PREFLIGHT_MAX_ADDRESSES:-2}"
 
 mountpoint -q /mnt/hns-topology || {
   echo "/mnt/hns-topology is not mounted; refusing to use the web VM boot disk" >&2
@@ -63,13 +68,16 @@ args=(cycle
   --sweep-timeout "$LIVE_SWEEP_TIMEOUT"
   --sweep-max-nameservers "$LIVE_SWEEP_MAX_NAMESERVERS"
   --sweep-max-addresses "$LIVE_SWEEP_MAX_ADDRESSES"
-  --sweep-tiers "$LIVE_SWEEP_TIERS")
+  --sweep-tiers "$LIVE_SWEEP_TIERS"
+  --handoff-preflight-limit "$LIVE_HANDOFF_PREFLIGHT_LIMIT"
+  --handoff-preflight-concurrency "$LIVE_HANDOFF_PREFLIGHT_CONCURRENCY"
+  --handoff-preflight-min-delay-ms "$LIVE_HANDOFF_PREFLIGHT_MIN_DELAY_MS"
+  --handoff-preflight-timeout "$LIVE_HANDOFF_PREFLIGHT_TIMEOUT"
+  --handoff-preflight-max-addresses "$LIVE_HANDOFF_PREFLIGHT_MAX_ADDRESSES")
 if [[ -n "$LIVE_FALLBACK_RESOLVER" ]]; then
   args+=(--fallback-resolver "$LIVE_FALLBACK_RESOLVER")
 fi
-if [[ -n "$LIVE_HNS_DOH_URL" ]]; then
-  args+=(--hns-doh-url "$LIVE_HNS_DOH_URL")
-fi
+args+=(--hns-doh-url "$LIVE_HNS_DOH_URL")
 if [[ "$LIVE_SYNC_TOPOLOGY" == "1" ]]; then
   args+=(--sync-topology)
 fi

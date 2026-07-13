@@ -19,8 +19,10 @@ from .live_runner import ProbeBatchConfig, run_probe_batch
 from .live_sweep import (
     PRIORITY_SWEEP_TIERS,
     SWEEP_TIERS,
+    HnsHandoffPreflightConfig,
     SweepBatchConfig,
     parse_sweep_tiers,
+    run_hns_handoff_preflight,
     run_sweep_batch,
 )
 
@@ -60,6 +62,14 @@ def parser() -> argparse.ArgumentParser:
     sweep.add_argument("--topology-db", required=True)
     _add_sweep_options(sweep)
     sweep.set_defaults(func=cmd_sweep)
+
+    preflight = sub.add_parser(
+        "preflight-handoffs",
+        help="Resolve DS-backed indirect HNS handoffs through HNS DoH before web probing.",
+    )
+    _add_db(preflight)
+    _add_handoff_preflight_options(preflight)
+    preflight.set_defaults(func=cmd_preflight_handoffs)
 
     delegation_index = sub.add_parser(
         "index-delegations",
@@ -157,6 +167,14 @@ def cmd_sweep(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_preflight_handoffs(args: argparse.Namespace) -> int:
+    with connect_live(args.db) as conn:
+        init_live_db(conn)
+        result = run_hns_handoff_preflight(conn, config=_handoff_preflight_config(args))
+    _print(result)
+    return 0
+
+
 def cmd_index_delegations(args: argparse.Namespace) -> int:
     if args.min_members < 1:
         raise SystemExit("--min-members must be at least one")
@@ -211,9 +229,19 @@ def cmd_cycle(args: argparse.Namespace) -> int:
         synced = (
             sync_topology_if_changed(conn, args.topology_db)
             if args.sync_topology
-            else {"roots": 0, "candidates": 0, "changed_roots": 0, "skipped": True, "deferred": True}
+            else {
+                "roots": 0,
+                "candidates": 0,
+                "changed_roots": 0,
+                "skipped": True,
+                "deferred": True,
+            }
         )
         before = candidate_plan(conn)
+        preflight = run_hns_handoff_preflight(
+            conn,
+            config=_cycle_handoff_preflight_config(args),
+        )
         sweep = run_sweep_batch(
             conn,
             topology_db=args.topology_db,
@@ -225,6 +253,7 @@ def cmd_cycle(args: argparse.Namespace) -> int:
     result = {
         "sync": synced,
         "plan_before": before,
+        "handoff_preflight": preflight,
         "probe": probed,
         "sweep": sweep,
         "directory_count": summary["directory_count"],
@@ -264,6 +293,15 @@ def _add_sweep_options(command: argparse.ArgumentParser) -> None:
     command.add_argument("--tiers", default=",".join(SWEEP_TIERS))
 
 
+def _add_handoff_preflight_options(command: argparse.ArgumentParser) -> None:
+    command.add_argument("--limit", type=int, default=50)
+    command.add_argument("--concurrency", type=int, default=10)
+    command.add_argument("--min-delay-ms", type=int, default=200)
+    command.add_argument("--timeout", type=float, default=3.0)
+    command.add_argument("--max-addresses", type=int, default=2)
+    command.add_argument("--hns-doh-url", default=DEFAULT_HNS_DOH_URL)
+
+
 def _add_cycle_sweep_options(command: argparse.ArgumentParser) -> None:
     command.add_argument("--sweep-limit", type=int, default=500)
     command.add_argument("--sweep-page-size", type=int, default=1000)
@@ -274,6 +312,11 @@ def _add_cycle_sweep_options(command: argparse.ArgumentParser) -> None:
     command.add_argument("--sweep-max-nameservers", type=int, default=2)
     command.add_argument("--sweep-max-addresses", type=int, default=2)
     command.add_argument("--sweep-tiers", default=",".join(PRIORITY_SWEEP_TIERS))
+    command.add_argument("--handoff-preflight-limit", type=int, default=50)
+    command.add_argument("--handoff-preflight-concurrency", type=int, default=10)
+    command.add_argument("--handoff-preflight-min-delay-ms", type=int, default=200)
+    command.add_argument("--handoff-preflight-timeout", type=float, default=3.0)
+    command.add_argument("--handoff-preflight-max-addresses", type=int, default=2)
 
 
 def _probe_config(args: argparse.Namespace) -> ProbeBatchConfig:
@@ -324,6 +367,53 @@ def _cycle_sweep_config(args: argparse.Namespace) -> SweepBatchConfig:
         fallback_resolver=args.fallback_resolver,
         hns_doh_url=args.hns_doh_url,
         tiers=args.sweep_tiers,
+    )
+
+
+def _handoff_preflight_config(args: argparse.Namespace) -> HnsHandoffPreflightConfig:
+    return _build_handoff_preflight_config(
+        limit=args.limit,
+        concurrency=args.concurrency,
+        min_delay_ms=args.min_delay_ms,
+        timeout=args.timeout,
+        max_addresses=args.max_addresses,
+        hns_doh_url=args.hns_doh_url,
+    )
+
+
+def _cycle_handoff_preflight_config(args: argparse.Namespace) -> HnsHandoffPreflightConfig:
+    return _build_handoff_preflight_config(
+        limit=args.handoff_preflight_limit,
+        concurrency=args.handoff_preflight_concurrency,
+        min_delay_ms=args.handoff_preflight_min_delay_ms,
+        timeout=args.handoff_preflight_timeout,
+        max_addresses=args.handoff_preflight_max_addresses,
+        hns_doh_url=args.hns_doh_url,
+    )
+
+
+def _build_handoff_preflight_config(
+    *,
+    limit: int,
+    concurrency: int,
+    min_delay_ms: int,
+    timeout: float,
+    max_addresses: int,
+    hns_doh_url: str | None,
+) -> HnsHandoffPreflightConfig:
+    if limit < 0:
+        raise SystemExit("--handoff-preflight-limit must be zero or greater")
+    if concurrency < 1:
+        raise SystemExit("--handoff-preflight-concurrency must be at least one")
+    if timeout <= 0:
+        raise SystemExit("--handoff-preflight-timeout must be positive")
+    return HnsHandoffPreflightConfig(
+        limit=None if limit == 0 else limit,
+        concurrency=concurrency,
+        min_delay_ms=max(0, min_delay_ms),
+        timeout=timeout,
+        max_addresses=max(1, max_addresses),
+        hns_doh_url=hns_doh_url,
     )
 
 
