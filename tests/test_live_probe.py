@@ -185,6 +185,22 @@ def test_hns_doh_preflight_resolves_only_addresses_and_preserves_ad_signal(monke
     assert result.tlsa_status == "not_checked"
 
 
+def test_hns_doh_preflight_distinguishes_authenticated_no_address(monkeypatch):
+    monkeypatch.setattr(
+        "hns_topology.live_probe._hns_doh_query",
+        lambda qname, rrtype, **_kwargs: _authenticated_response(_empty_response(qname, rrtype)),
+    )
+
+    result = probe_hns_doh_preflight(
+        _candidate(),
+        config=ProbeConfig(hns_doh_url="https://resolver.example/dns-query"),
+    )
+
+    assert result.status == "no_address"
+    assert result.dnssec_status == "resolver_validated"
+    assert result.failure_reason == "hns_doh_no_public_a_or_aaaa"
+
+
 def test_ad_preflight_candidate_forces_validating_hns_doh_for_website_scan(monkeypatch):
     doh_calls = []
 

@@ -336,7 +336,19 @@ def _resolve_hns_doh(
         timeout=config.timeout,
     )
     addresses = [address for address in _dedupe(addresses) if _public_ip(address)]
+    authenticated = bool(address_responses) and all(
+        response.flags & dns.flags.AD for response in address_responses
+    )
     if not addresses:
+        if address_responses:
+            return DnsProbeResult(
+                status="no_address",
+                dnssec_status="resolver_validated" if authenticated else "resolver_unverified",
+                tlsa_status="not_checked",
+                discovered_hosts=sorted(discovered),
+                server=resolver_url,
+                failure_reason="hns_doh_no_public_a_or_aaaa",
+            )
         return None
 
     if include_dns_details:
@@ -351,9 +363,6 @@ def _resolve_hns_doh(
         if response is not None:
             discovered.update(_discovered_hosts(response, root_name))
 
-    authenticated = bool(address_responses) and all(
-        response.flags & dns.flags.AD for response in address_responses
-    )
     if include_dns_details:
         tlsa_status = (
             "present_secure"

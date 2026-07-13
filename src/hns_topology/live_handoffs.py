@@ -258,7 +258,10 @@ def record_hns_handoff_preflight(
     result: Any,
 ) -> None:
     validated = result.status == "resolved" and result.dnssec_status == "resolver_validated"
-    retry_days = 7 if validated else 30
+    # A response that securely says there is no public address is a useful
+    # negative result. A no-bootstrap result can instead be a resolver timeout
+    # or temporary upstream failure, so do not defer it for a month.
+    retry_days = 7 if validated else 30 if result.status == "no_address" else 1
     checked_at = utc_now()
     conn.execute(
         """

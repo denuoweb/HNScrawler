@@ -98,9 +98,9 @@ class HnsHandoffPreflightConfig:
     """Bounded resolver-only discovery for DS-backed indirect handoffs."""
 
     limit: int | None = 50
-    concurrency: int = 10
-    min_delay_ms: int = 200
-    timeout: float = 3.0
+    concurrency: int = 4
+    min_delay_ms: int = 500
+    timeout: float = 8.0
     max_addresses: int = 2
     hns_doh_url: str | None = DEFAULT_HNS_DOH_URL
 

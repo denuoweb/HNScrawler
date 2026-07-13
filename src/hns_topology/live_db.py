@@ -16,7 +16,7 @@ from .live_models import (
 )
 from .timeutil import utc_now
 
-LIVE_SCHEMA_VERSION = "9"
+LIVE_SCHEMA_VERSION = "10"
 HNS_HANDOFF_NOT_BEFORE_META_KEY = "sweep.not_before.hns_handoff"
 
 SCHEMA_SQL = """
@@ -228,6 +228,16 @@ def init_live_db(conn: sqlite3.Connection) -> None:
         # A prior empty cohort pass may have deferred the tier before the
         # artifact existed. Reopen it once after migration.
         set_live_meta(conn, HNS_HANDOFF_NOT_BEFORE_META_KEY, "")
+        # Versions before 10 could turn a temporary HNS DoH timeout into a
+        # 30-day negative preflight result. Reopen only those transient rows.
+        conn.execute(
+            """
+            UPDATE hns_handoff_preflight
+            SET next_check_at = ''
+            WHERE dns_status = 'no_bootstrap'
+              AND failure_reason = 'hns_doh_no_public_a_or_aaaa'
+            """
+        )
     set_live_meta(conn, "schema_version", LIVE_SCHEMA_VERSION)
     conn.commit()
 

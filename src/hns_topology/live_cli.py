@@ -295,9 +295,9 @@ def _add_sweep_options(command: argparse.ArgumentParser) -> None:
 
 def _add_handoff_preflight_options(command: argparse.ArgumentParser) -> None:
     command.add_argument("--limit", type=int, default=50)
-    command.add_argument("--concurrency", type=int, default=10)
-    command.add_argument("--min-delay-ms", type=int, default=200)
-    command.add_argument("--timeout", type=float, default=3.0)
+    command.add_argument("--concurrency", type=int, default=4)
+    command.add_argument("--min-delay-ms", type=int, default=500)
+    command.add_argument("--timeout", type=float, default=8.0)
     command.add_argument("--max-addresses", type=int, default=2)
     command.add_argument("--hns-doh-url", default=DEFAULT_HNS_DOH_URL)
 
@@ -313,9 +313,9 @@ def _add_cycle_sweep_options(command: argparse.ArgumentParser) -> None:
     command.add_argument("--sweep-max-addresses", type=int, default=2)
     command.add_argument("--sweep-tiers", default=",".join(PRIORITY_SWEEP_TIERS))
     command.add_argument("--handoff-preflight-limit", type=int, default=50)
-    command.add_argument("--handoff-preflight-concurrency", type=int, default=10)
-    command.add_argument("--handoff-preflight-min-delay-ms", type=int, default=200)
-    command.add_argument("--handoff-preflight-timeout", type=float, default=3.0)
+    command.add_argument("--handoff-preflight-concurrency", type=int, default=4)
+    command.add_argument("--handoff-preflight-min-delay-ms", type=int, default=500)
+    command.add_argument("--handoff-preflight-timeout", type=float, default=8.0)
     command.add_argument("--handoff-preflight-max-addresses", type=int, default=2)
 
 

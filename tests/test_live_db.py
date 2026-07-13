@@ -105,7 +105,44 @@ def test_init_live_db_migrates_handoff_storage(tmp_path):
     assert "ns_handoffs_json" in columns
     assert "priority" in handoff_columns
     assert {"root_name", "dnssec_status", "next_check_at"}.issubset(preflight_columns)
-    assert schema_version == "9"
+    assert schema_version == "10"
+
+
+def test_live_schema_reopens_transient_hns_doh_preflights(tmp_path):
+    with connect_live(tmp_path / "live.sqlite") as conn:
+        init_live_db(conn)
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO hns_handoff_preflight(
+                  root_name, nameserver, handoff_root, bootstrap_ip, bootstrap_field,
+                  resource_hash, member_json, source_signature, indexed_at,
+                  dns_status, failure_reason, next_check_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "transient",
+                    "ns1.handoff",
+                    "handoff",
+                    "8.8.8.8",
+                    "glue4",
+                    "hash",
+                    "{}",
+                    "source",
+                    "2026-07-01T00:00:00Z",
+                    "no_bootstrap",
+                    "hns_doh_no_public_a_or_aaaa",
+                    "2099-01-01T00:00:00Z",
+                ),
+            )
+            set_live_meta(conn, "schema_version", "9")
+
+        init_live_db(conn)
+        row = conn.execute(
+            "SELECT next_check_at FROM hns_handoff_preflight WHERE root_name = 'transient'"
+        ).fetchone()
+
+    assert row["next_check_at"] == ""
 
 
 def test_topology_hash_change_makes_candidate_immediately_due(tmp_path):
